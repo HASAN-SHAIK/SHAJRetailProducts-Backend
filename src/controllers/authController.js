@@ -31,7 +31,11 @@ exports.register = async (req, res) => {
 };
 
 exports.getLogin = async (req, res) => {
-  const token = req.cookies.token;
+  const cookieToken = req.cookies?.token;
+  const headerToken = req.headers.authorization
+    ? req.headers.authorization.replace(/^Bearer\s+/i, "")
+    : null;
+  const token = cookieToken || headerToken;
   if (!token) {
     return res.status(401).json({ message: 'Not authenticated' });
   }
@@ -80,11 +84,12 @@ exports.login = async (req, res) => {
         const token = jwt.sign({ id: user.id, role: user.role, user_name: user.name }, process.env.JWT_SECRET, {
             expiresIn: process.env.TOKEN_EXPIRY * 1000,
         });
+        const isProduction = process.env.NODE_ENV === 'production';
         res.cookie("token", token, {
-            httpOnly: true, // true for secure cookies
-            secure: true,
-            sameSite: 'None',
-            maxAge: process.env.TOKEN_EXPIRY *1000, 
+            httpOnly: true,
+            secure: isProduction,
+            sameSite: isProduction ? 'None' : 'Lax',
+            maxAge: process.env.TOKEN_EXPIRY * 1000,
         });
         res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
     } catch (error) {
@@ -113,10 +118,11 @@ exports.deleteUser = async (req, res) => {
 
 exports.logout = async (req, res) => {
     try {
+      const isProduction = process.env.NODE_ENV === 'production';
       res.clearCookie("token", {
         httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "Strict",
+        secure: isProduction,
+        sameSite: isProduction ? "None" : "Lax",
       });
       res.json({message:"Logout Successful"});
 
