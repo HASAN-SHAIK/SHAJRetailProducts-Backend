@@ -29,7 +29,8 @@ const addProduct = async (req, res) => {
     stock_quantity,
     company,
     actual_price,
-    time_for_delivery
+    time_for_delivery,
+    is_weight_based
   } = req.body;
 
   try {
@@ -47,10 +48,17 @@ const addProduct = async (req, res) => {
         `UPDATE products
          SET stock_quantity = stock_quantity + $1,
              actual_price = $2,
-             selling_price = $3
-         WHERE id = $4
+             selling_price = $3,
+             is_weight_based = $4
+         WHERE id = $5
          RETURNING *`,
-        [stock_quantity, actual_price, selling_price, existingProduct.id]
+        [
+          stock_quantity,
+          actual_price,
+          selling_price,
+          is_weight_based ?? existingProduct.is_weight_based ?? 0,
+          existingProduct.id
+        ]
       );
 
       return res.status(200).json({
@@ -60,10 +68,19 @@ const addProduct = async (req, res) => {
     } else {
       // 3. Product doesn't exist: insert new
       const result = await pool.query(
-        `INSERT INTO products (name, category, selling_price, stock_quantity, actual_price, company, time_for_delivery)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO products (name, category, selling_price, stock_quantity, actual_price, company, time_for_delivery, is_weight_based)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING *`,
-        [product_name, category, selling_price, stock_quantity, actual_price, company, time_for_delivery]
+        [
+          product_name,
+          category,
+          selling_price,
+          stock_quantity,
+          actual_price,
+          company,
+          time_for_delivery,
+          is_weight_based ?? 0
+        ]
       );
 
       return res.status(201).json({
@@ -81,7 +98,7 @@ const addProduct = async (req, res) => {
 // ✅ Update product
 const updateProduct = async (req, res) => {
     const { id } = req.params;
-    const {selling_price, actual_price, stock_quantity,name,company } = req.body;
+    const {selling_price, actual_price, stock_quantity,name,company, is_weight_based } = req.body;
     try {
         const productRes = await pool.query('select * from products where id = $1', [id]);
         const product = productRes.rows[0];
@@ -91,8 +108,16 @@ const updateProduct = async (req, res) => {
         //     [product_name|| product.name, category || product.category, selling_price || product.selling_price, stock_quantity || product.stock_quantity,actual_price || product.actual_price, company || product.company, id]
         // );
         const result = await pool.query(
-            'UPDATE products SET name = $1, company = $2, selling_price = $3, actual_price = $4, stock_quantity = $5 WHERE id = $6 RETURNING *',
-            [name || product.name, company || product.company, selling_price || product.selling_price, actual_price || product.actual_price, stock_quantity || product.stock_quantity, id]
+            'UPDATE products SET name = $1, company = $2, selling_price = $3, actual_price = $4, stock_quantity = $5, is_weight_based = $6 WHERE id = $7 RETURNING *',
+            [
+              name || product.name,
+              company || product.company,
+              selling_price ?? product.selling_price,
+              actual_price ?? product.actual_price,
+              stock_quantity ?? product.stock_quantity,
+              is_weight_based ?? product.is_weight_based ?? 0,
+              id
+            ]
         );
         res.json(result.rows[0]);
     } catch (error) {
