@@ -1,5 +1,5 @@
 const { getDaysInMonth } = require('../../utils/dateMethods');
-const jwt = require("jsonwebtoken");
+const { getAuthUser } = require('../utils/auth');
 
 const pool = require('../db');
 // 📊 **Total Sales Report**
@@ -35,7 +35,10 @@ const formatDateUtc = (dateObj) => {
 const getSalesReport = async (req, res) => {
    try {
         //Checking role
-        const decoded = jwt.verify(req.cookies.token, process.env.JWT_SECRET);
+        const decoded = getAuthUser(req);
+        if (!decoded) {
+            return res.status(401).json({ message: "Access Denied" });
+        }
         if(decoded.role !== 'admin')
             return res.json({
                 message: "Haha! You are not admin :)"
@@ -135,7 +138,10 @@ const getInventoryReport = async (req, res) => {
         const actual_stock_value = await pool.query(
             "SELECT SUM(stock_quantity * actual_price) AS total_inventory_actual_value FROM products WHERE is_deleted = FALSE;"
         )
-        const decoded = jwt.verify(req.cookies.token, process.env.JWT_SECRET);
+        const decoded = getAuthUser(req);
+        if (!decoded) {
+            return res.status(401).json({ message: "Access Denied" });
+        }
         res.json({
             total_stock: totalStockResult.rows[0].total_stock || 0,
             low_stock_products: lowStockResult.rows,
@@ -153,7 +159,10 @@ const getInventoryReport = async (req, res) => {
 
  const getProfitReport = async (req, res) => {
     try {  
-        const decoded = jwt.verify(req.cookies.token, process.env.JWT_SECRET);
+        const decoded = getAuthUser(req);
+        if (!decoded) {
+            return res.status(401).json({ message: "Access Denied" });
+        }
         if(decoded.role !== 'admin')
             return res.json({
                 message: "Haha! You are not admin :)"
@@ -204,7 +213,10 @@ const getInventoryReport = async (req, res) => {
 
 const getDailySalesReport = async (req, res) => {
     try {   
-        const decoded = jwt.verify(req.cookies.token, process.env.JWT_SECRET);
+        const decoded = getAuthUser(req);
+        if (!decoded) {
+            return res.status(401).json({ message: "Access Denied" });
+        }
         if(decoded.role !== 'admin')
             return res.json({
                 message: "Haha! You are not admin :)"
@@ -258,7 +270,10 @@ const getDailySalesReport = async (req, res) => {
 
 const getProfitGraph = async (req, res) => {
     try {
-        const decoded = jwt.verify(req.cookies.token, process.env.JWT_SECRET);
+        const decoded = getAuthUser(req);
+        if (!decoded) {
+            return res.status(401).json({ message: "Access Denied" });
+        }
         if (decoded.role !== 'admin') {
             return res.json({ message: "Haha! You are not admin :)" });
         }

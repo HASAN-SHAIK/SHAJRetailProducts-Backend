@@ -1,5 +1,5 @@
 const pool = require('../db');
-const jwt = require('jsonwebtoken');
+const { getAuthUser } = require('../utils/auth');
 
 // ✅ Get all products
 const getProducts = async (req, res) => {
@@ -7,7 +7,10 @@ const getProducts = async (req, res) => {
     if(!sort)
         sort = 'name';
     try {
-        const decoded = jwt.verify(req.cookies.token, process.env.JWT_SECRET);
+        const decoded = getAuthUser(req);
+        if (!decoded) {
+            return res.status(401).json({ message: "Access Denied" });
+        }
         let result;
         if(decoded.role === 'admin')
         result = await pool.query(`SELECT id, name as Name, company as Company, category as Category, selling_price, actual_price,stock_quantity as Quantity  FROM products WHERE is_deleted = false order by ${sort}`);

@@ -1,5 +1,5 @@
 const pool = require('../db'); // Database connection
-const jwt = require("jsonwebtoken");
+const { getAuthUser } = require('../utils/auth');
 
 // 💳 Create a Transaction (Payment Processing)
 const createTransaction = async (req, res) => {
@@ -102,7 +102,10 @@ const getAllTransactions = async (req, res) => {
 
         const total_cash = (parseFloat(result2.rows[0].total_cash) || 0) - (parseFloat(personalCashRes.rows[0].total_cash) || 0) - (parseFloat(purchaseCashRes.rows[0].total_cash) || 0);
         const total_online = (parseFloat(result3.rows[0].total_cash) || 0) - (parseFloat(personalOnlineRes.rows[0].total_cash) || 0) - (parseFloat(purchaseOnlineRes.rows[0].total_cash) || 0);
-        const decoded = jwt.verify(req.cookies.token, process.env.JWT_SECRET);
+        const decoded = getAuthUser(req);
+        if (!decoded) {
+            return res.status(401).json({ message: "Access Denied" });
+        }
         if(decoded.role !== 'admin')
             return res.json({
                 transactions: result.rows,
