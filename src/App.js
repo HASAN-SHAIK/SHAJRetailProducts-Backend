@@ -13,6 +13,7 @@ const { authMiddleware } = require('./middleware/authMiddleware');
 const deviceLock = require('./middleware/deviceLock');
 require("dotenv").config();
 
+app.set('trust proxy', 1);
 app.use(cookieParser());
 app.use((err, req, res, next) => {
   console.error("💥 Global Error:", err);
