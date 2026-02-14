@@ -190,7 +190,7 @@ const createPurchaseOrder = async (req, res) => {
         const orderId = orderResult.rows[0].id;
         // Step 2: Process each item in the purchase order
         for (let item of products) {
-            const { product_name, company, quantity, actual_price, selling_price, category, time_for_delivery } = item;
+            const { product_name, company, quantity, actual_price, selling_price, category, time_for_delivery, is_weight_based } = item;
             // Check if the product already exists
             const productQuery = `SELECT * FROM products WHERE name ilike $1 AND company ilike $2;`;
             const productResult = await client.query(productQuery, [product_name, company]);
@@ -203,17 +203,18 @@ const createPurchaseOrder = async (req, res) => {
                 const newActualPrice = normalizeNumber(totalActualPrice) / normalizeNumber(newQuantity);
                 const updateProductQuery = `
                     UPDATE products
-                    SET stock_quantity = $1, actual_price = $2, selling_price = $3, time_for_delivery = $4
-                    WHERE id = $5;
+                    SET stock_quantity = $1, actual_price = $2, selling_price = $3, time_for_delivery = $4, is_weight_based = $5
+                    WHERE id = $6;
                 `;
-                await client.query(updateProductQuery, [newQuantity, newActualPrice, selling_price, time_for_delivery, existingProduct.id ]);
+                const resolvedWeight = is_weight_based ?? existingProduct.is_weight_based ?? 0;
+                await client.query(updateProductQuery, [newQuantity, newActualPrice, selling_price, time_for_delivery, resolvedWeight, existingProduct.id ]);
             } else {
                 // Product does not exist, insert as a new product
                 const insertProductQuery = `
-                    INSERT INTO products (name, company, stock_quantity, actual_price, selling_price, category,time_for_delivery)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7);
+                    INSERT INTO products (name, company, stock_quantity, actual_price, selling_price, category, time_for_delivery, is_weight_based)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
                 `;
-                await client.query(insertProductQuery, [product_name, company, quantity, actual_price, selling_price, category,time_for_delivery]);
+                await client.query(insertProductQuery, [product_name, company, quantity, actual_price, selling_price, category, time_for_delivery, is_weight_based ?? 0]);
             }
             // Step 3: Insert into order_items
             // const insertOrderItemQuery = `
@@ -791,7 +792,7 @@ const syncOfflineOrders = async (req, res) => {
         orderId = orderResult.rows[0].id;
 
         for (const item of items) {
-          const { product_name, company, quantity, actual_price, selling_price, category, time_for_delivery } = item;
+          const { product_name, company, quantity, actual_price, selling_price, category, time_for_delivery, is_weight_based } = item;
           const productQuery = 'SELECT * FROM products WHERE name ILIKE $1 AND company ILIKE $2;';
           const productResult = await client.query(productQuery, [product_name, company]);
 
@@ -802,13 +803,13 @@ const syncOfflineOrders = async (req, res) => {
             const newActualPrice = normalizeNumber(totalActualPrice) / normalizeNumber(newQuantity);
 
             await client.query(
-              'UPDATE products SET stock_quantity = $1, actual_price = $2, selling_price = $3, time_for_delivery = $4 WHERE id = $5',
-              [newQuantity, newActualPrice, selling_price, time_for_delivery, existingProduct.id]
+              'UPDATE products SET stock_quantity = $1, actual_price = $2, selling_price = $3, time_for_delivery = $4, is_weight_based = $5 WHERE id = $6',
+              [newQuantity, newActualPrice, selling_price, time_for_delivery, is_weight_based ?? existingProduct.is_weight_based ?? 0, existingProduct.id]
             );
           } else {
             await client.query(
-              'INSERT INTO products (name, company, stock_quantity, actual_price, selling_price, category, time_for_delivery) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-              [product_name, company, quantity, actual_price, selling_price, category, time_for_delivery]
+              'INSERT INTO products (name, company, stock_quantity, actual_price, selling_price, category, time_for_delivery, is_weight_based) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+              [product_name, company, quantity, actual_price, selling_price, category, time_for_delivery, is_weight_based ?? 0]
             );
           }
         }
