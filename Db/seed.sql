@@ -7,16 +7,17 @@ INSERT INTO users (name, email, password, role) VALUES
 ('staff', 'staff@example.com', '$2b$10$Jp4F6.jurJAEGyRryuPMB.05IKCRp13rTpP04gpxJQ.uPQRVz/nZW', 'staff');
 
 -- Insert Products (With Actual selling_price for Profit Calculation)
-INSERT INTO products (name, category, selling_price, actual_price,company, stock_quantity, is_deleted, time_for_delivery) VALUES
-('Laptop', 'Electronics', 50000.00, 40000.00,'Dell', 10, FALSE, 5),
-('Smartphone', 'Electronics', 30000.00, 25000.00,'Apple', 15, FALSE, 7),
-('Headphones', 'Accessories', 5000.00, 3000.00,'Boat',50, FALSE, 2),
-('Office Chair', 'Furniture', 8000.00, 6000.00, 'Wipro', 60, FALSE, 4);
+INSERT INTO products (name, category, selling_price, actual_price,company, stock_quantity, is_deleted, time_for_delivery,is_weight_based) VALUES
+('Laptop', 'Electronics', 50000.00, 40000.00,'Dell', 10, FALSE, 5,0),
+('Smartphone', 'Electronics', 30000.00, 25000.00,'Apple', 15, FALSE, 7,0),
+('Headphones', 'Accessories', 5000.00, 3000.00,'Boat',50, FALSE, 2,0),
+('Office Chair', 'Furniture', 8000.00, 6000.00, 'Wipro', 60, FALSE, 4,0),
+('Coffee Maker', 'Appliances', 2000.00, 1500.00,'Philips', 100, FALSE, 3,1);
 
 -- Insert Orders (Initially Pending)
-INSERT INTO orders (user_id, total_price, order_status) VALUES
-(1, 100000.00, 'pending'),
-(2, 5000.00, 'pending');
+INSERT INTO orders (user_id, total_price, order_status, client_order_id) VALUES
+(1, 100000.00, 'pending', uuid_generate_v4()),
+(2, 5000.00, 'pending', uuid_generate_v4());
 
 -- Insert Transactions (With Profit Calculation)
 INSERT INTO transactions (order_id, total_price, profit, transaction_type, payment_mode) VALUES

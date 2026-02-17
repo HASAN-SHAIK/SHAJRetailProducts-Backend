@@ -453,6 +453,14 @@ describe('orderController unit tests', () => {
     });
 
     it('marks duplicate in batch', async () => {
+      const client = buildClient();
+      pool.connect.mockResolvedValueOnce(client);
+      client.query
+        .mockResolvedValueOnce({}) // BEGIN
+        .mockResolvedValueOnce({ rows: [] }) // existing
+        .mockResolvedValueOnce({ rows: [{ id: 100 }] }) // insert order
+        .mockResolvedValueOnce({}) // insert transaction
+        .mockResolvedValueOnce({}); // COMMIT
       const req = {
         body: {
           orders: [
@@ -474,7 +482,7 @@ describe('orderController unit tests', () => {
       pool.connect.mockResolvedValueOnce(client);
       client.query
         .mockResolvedValueOnce({}) // BEGIN
-        .mockResolvedValueOnce({ rows: [{ id: 5, order_status: 'pending' }] }); // existing
+        .mockResolvedValueOnce({ rows: [{ id: 5, order_status: 'pending', transaction_type: null, payment_mode: null }] }); // existing
 
       const req = {
         body: {
@@ -495,7 +503,9 @@ describe('orderController unit tests', () => {
             client_order_id: 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb',
             status: 'duplicate',
             order_id: 5,
-            order_status: 'pending'
+            order_status: 'pending',
+            transaction_type: null,
+            payment_mode: null
           }
         ]
       });

@@ -5,7 +5,6 @@ const orderRoutes = require('./routes/orderRoutes');
 const transactionRoutes = require('./routes/transactionRoutes');
 const authRoutes = require('./routes/authRoutes');
 const reportRoutes = require('./routes/reportRoutes');
-const phonepeRoutes = require('./routes/phonepeRoutes');
 const shopDetailsRoutes = require('./routes/shopDetailsRoutes');
 const app = express();
 const cookieParser = require('cookie-parser');
@@ -57,17 +56,18 @@ app.use('/api/products', productRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/transactions', transactionRoutes);
 app.use('/api/reports', reportRoutes);
-app.use('/api/phonepe', phonepeRoutes);
 app.use('/api/shop-details', shopDetailsRoutes);
 
 app.get("/", (req, res) => {
   res.send("Inventory API is running...");
 });
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
-});
+// Start server only when run directly (not in tests)
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on http://localhost:${PORT}`);
+  });
+}
 
 
 module.exports = app;

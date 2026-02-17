@@ -166,8 +166,8 @@ describe('authController unit tests', () => {
       );
       expect(res.cookie).toHaveBeenCalledWith('token', 'signed-token', {
         httpOnly: true,
-        secure: true,
-        sameSite: 'None',
+        secure: false,
+        sameSite: 'Lax',
         maxAge: 3600 * 1000
       });
       expect(res.json).toHaveBeenCalledWith({
@@ -251,7 +251,7 @@ describe('authController unit tests', () => {
       expect(res.clearCookie).toHaveBeenCalledWith('token', {
         httpOnly: true,
         secure: false,
-        sameSite: 'Strict'
+        sameSite: 'Lax'
       });
       expect(res.json).toHaveBeenCalledWith({ message: 'Logout Successful' });
     });

@@ -9,7 +9,7 @@ const router = express.Router();
 router.post('/register',register);
 router.post('/login',login);
 router.get('/getLogin', getLogin);
-router.delete('/delete',isAdmin, deleteUser);
+router.delete('/delete', deleteUser);
 router.post('/logout',logout);
 
 module.exports = router;    

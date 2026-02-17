@@ -32,7 +32,7 @@ exports.register = async (req, res) => {
 
 exports.getLogin = async (req, res) => {
   const cookieToken = req.cookies?.token;
-  const headerToken = req.headers.authorization
+  const headerToken = req.headers?.authorization
     ? req.headers.authorization.replace(/^Bearer\s+/i, "")
     : null;
   const token = cookieToken || headerToken;
