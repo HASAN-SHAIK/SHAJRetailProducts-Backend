@@ -1,10 +1,6 @@
 -- Clear existing data
 TRUNCATE TABLE transactions, orders, products, users RESTART IDENTITY CASCADE;
 
--- Insert Users
-INSERT INTO users (name, email, password, role) VALUES
-('admin', 'admin@example.com', '$2b$10$d9W.TpiRocR4egR8TcAXCeJ1UpDokEQXNVCu7XhTeFOVGejFLFuES', 'admin'),
-('staff', 'staff@example.com', '$2b$10$Jp4F6.jurJAEGyRryuPMB.05IKCRp13rTpP04gpxJQ.uPQRVz/nZW', 'staff');
 
 -- Insert Products (With Actual selling_price for Profit Calculation)
 INSERT INTO products (name, category, selling_price, actual_price,company, stock_quantity, is_deleted, time_for_delivery) VALUES
