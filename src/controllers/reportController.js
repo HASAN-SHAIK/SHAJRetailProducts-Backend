@@ -2,6 +2,7 @@ const { getDaysInMonth } = require('../../utils/dateMethods');
 const { getAuthUser } = require('../utils/auth');
 
 const pool = require('../db');
+const getRequestPool = (req) => req.tenantPool || pool;
 // 📊 **Total Sales Report**
 //Today and LastMonth Review
 const getPreviousMonthRangeUtc = () => {
@@ -34,6 +35,7 @@ const formatDateUtc = (dateObj) => {
 
 const getSalesReport = async (req, res) => {
    try {
+        const requestPool = getRequestPool(req);
         //Checking role
         const decoded = getAuthUser(req);
         if (!decoded) {
@@ -52,23 +54,23 @@ const getSalesReport = async (req, res) => {
         to_date = end;
        }
        // Fetch Total Revenue
-       const revenueResult = await pool.query(
-           "SELECT SUM(total_price) AS total_revenue FROM orders WHERE order_status = 'completed' AND order_date BETWEEN $1 AND $2;",
+       const revenueResult = await requestPool.query(
+           "SELECT SUM(total_price) AS total_revenue FROM orders WHERE order_status = 'completed' AND created_at BETWEEN $1 AND $2;",
            [from_date, to_date]
        );
        // Fetch Total Orders
-       const ordersResult = await pool.query(
-           "SELECT COUNT(*) AS total_orders FROM orders WHERE order_status = 'completed' AND order_date BETWEEN $1 AND $2;",
+       const ordersResult = await requestPool.query(
+           "SELECT COUNT(*) AS total_orders FROM orders WHERE order_status = 'completed' AND created_at BETWEEN $1 AND $2;",
            [from_date, to_date]
        );
 
         // Total Cost (How much we paid for sold products)
-        const costResult = await pool.query(
+        const costResult = await requestPool.query(
                 `SELECT SUM(oi.quantity * p.actual_price) AS total_cost
                  FROM order_items oi
                  JOIN products p ON oi.product_id = p.id
                  JOIN orders o ON oi.order_id = o.id
-                 WHERE o.order_status = 'completed' and o.order_date BETWEEN $1 and $2;`,
+                 WHERE o.order_status = 'completed' and o.created_at BETWEEN $1 and $2;`,
                  [from_date, to_date]
         );
 
@@ -76,8 +78,8 @@ const getSalesReport = async (req, res) => {
         const totalRevenue = revenueResult.rows[0].total_revenue || 0;
         const totalCost = costResult.rows[0].total_cost || 0;
         const totalProfit = totalRevenue - totalCost;
-        const bestSellingProducts = await getBestSellingProducts();
-        const profitByProductResult = await getprofitByProductResult();
+        const bestSellingProducts = await getBestSellingProducts(requestPool);
+        const profitByProductResult = await getprofitByProductResult(requestPool);
 
        return res.json({
            total_revenue: revenueResult.rows[0].total_revenue || 0,
@@ -92,9 +94,9 @@ const getSalesReport = async (req, res) => {
    }
 };
 
-const getBestSellingProducts = async () =>{
+const getBestSellingProducts = async (db) =>{
     // Fetch Best-Selling Products
-    const bestSellingResult = await pool.query(
+    const bestSellingResult = await db.query(
             `select  sum(t.profit) as Profit, p.name as Name,p.company as Company, sum(oi.quantity) as NoOfSold from order_items oi 
               join transactions t on t.order_id = oi.order_id
               join products p on p.id = oi.product_id
@@ -103,9 +105,9 @@ const getBestSellingProducts = async () =>{
     return bestSellingResult;
 }
 
-const getprofitByProductResult = async () => {
+const getprofitByProductResult = async (db) => {
     // Profit by Product
-    const profitByProductResult = await pool.query(
+    const profitByProductResult = await db.query(
         `select  sum(t.profit) as Profit, p.name as Name,p.company as Company, sum(oi.quantity) as NoOfSold, p.selling_price as Price from order_items oi 
         join transactions t on t.order_id = oi.order_id
         join products p on p.id = oi.product_id
@@ -116,26 +118,27 @@ const getprofitByProductResult = async () => {
 // 📦 **Inventory Stock Report**
 const getInventoryReport = async (req, res) => {
     try {
+        const requestPool = getRequestPool(req);
         const { threshold = 5 } = req.query; // Default threshold = 5
         // Total Stock Count
-        const totalStockResult = await pool.query(
+        const totalStockResult = await requestPool.query(
             "SELECT SUM(stock_quantity) AS total_stock FROM products WHERE is_deleted = FALSE;"
         );
         // Low Stock Products (Threshold based)
-        const lowStockResult = await pool.query(
+        const lowStockResult = await requestPool.query(
             "SELECT id as ProductId, name as Name,stock_quantity as Quantity, actual_price as ActualPrice , company as Seller,time_for_delivery as TimeForDelivery FROM products WHERE stock_quantity > 0 AND stock_quantity <= $1 AND is_deleted = FALSE order by stock_quantity",
             [threshold]
         );
         // Out of Stock Products
-        const outOfStockResult = await pool.query(
+        const outOfStockResult = await requestPool.query(
             "SELECT id as ProductId, name as Name, actual_price as ActualPrice , company as Seller,time_for_delivery as TimeForDelivery FROM products WHERE stock_quantity = 0 AND is_deleted = FALSE;"
         );
         // Total Inventory Value
-        const stockValueResult = await pool.query(
+        const stockValueResult = await requestPool.query(
             "SELECT SUM(stock_quantity * selling_price) AS total_inventory_value FROM products WHERE is_deleted = FALSE;"
         );
         // Estimated Profit
-        const actual_stock_value = await pool.query(
+        const actual_stock_value = await requestPool.query(
             "SELECT SUM(stock_quantity * actual_price) AS total_inventory_actual_value FROM products WHERE is_deleted = FALSE;"
         )
         const decoded = getAuthUser(req);
@@ -157,8 +160,9 @@ const getInventoryReport = async (req, res) => {
     }
  };
 
- const getProfitReport = async (req, res) => {
+const getProfitReport = async (req, res) => {
     try {  
+        const requestPool = getRequestPool(req);
         const decoded = getAuthUser(req);
         if (!decoded) {
             return res.status(401).json({ message: "Access Denied" });
@@ -176,11 +180,11 @@ const getInventoryReport = async (req, res) => {
             to_date = end;
         }
         if (from_date && to_date) {
-            dateFilter = "AND t.transaction_date BETWEEN $1 AND $2";
+            dateFilter = "AND t.created_at BETWEEN $1 AND $2";
             values.push(from_date, to_date);
         }
         // Total Revenue (Completed Sales)
-        const revenueResult = await pool.query(
+        const revenueResult = await requestPool.query(
             `SELECT SUM(o.total_price) AS total_revenue
              FROM orders o
              JOIN transactions t ON o.id = t.order_id
@@ -188,11 +192,11 @@ const getInventoryReport = async (req, res) => {
             values
         );
         // Total Profit (How much we Got for sold products)
-        const profitResult = await pool.query(
-            `select sum(profit) as total_profit from transactions where transaction_date  BETWEEN $1 and $2;`, [from_date, to_date]
+        const profitResult = await requestPool.query(
+            `select sum(profit) as total_profit from transactions where created_at BETWEEN $1 and $2;`, [from_date, to_date]
         );
 
-        const totalProductsRes = await pool.query(`select count(*) as total_products from products`);
+        const totalProductsRes = await requestPool.query(`select count(*) as total_products from products`);
        
         const totalRevenue = revenueResult.rows[0].total_revenue || 0;
         // const totalCost = costResult.rows[0].total_cost || 0;
@@ -213,6 +217,7 @@ const getInventoryReport = async (req, res) => {
 
 const getDailySalesReport = async (req, res) => {
     try {   
+        const requestPool = getRequestPool(req);
         const decoded = getAuthUser(req);
         if (!decoded) {
             return res.status(401).json({ message: "Access Denied" });
@@ -221,25 +226,23 @@ const getDailySalesReport = async (req, res) => {
             return res.json({
                 message: "Haha! You are not admin :)"
         })
-        let { date } = req.query;
-        if(!date){
-            date = new Date();
+        const { date } = req.query;
+        const salesDate = date ? new Date(date) : new Date();
+        if (Number.isNaN(salesDate.getTime())) {
+            return res.status(400).json({ message: "Invalid date. Use YYYY-MM-DD." });
         }
-        let salesDate = date || new Date().toISOString().split("T")[0]; // Default to today
-        salesDate.setHours(0,0,0,0);
+        salesDate.setHours(0, 0, 0, 0);
         // Total Sales Revenue for the day
-        const salesResult = await pool.query(
-            `SELECT SUM(o.total_price*oi.quantity) AS total_revenue
+        const salesResult = await requestPool.query(
+            `SELECT SUM(oi.quantity * oi.selling_price) AS total_revenue
              FROM orders o join order_items oi on oi.order_id = o.id
-             join transactions t on t.order_id = o.id
              WHERE o.order_status = 'completed'
-             AND t.transaction_type = 'sale' 
-             AND DATE(o.order_date) = $1;`,
+             AND DATE(o.created_at) = $1;`,
             [salesDate]
         );
-        const totalOrderRes = await pool.query(`select count(*) as total_orders from orders o join transactions t on t.order_id = o.id where order_status = 'completed' and t.transaction_type = 'sale' and  Date(order_date) = $1`,[salesDate]);
+        const totalOrderRes = await requestPool.query(`select count(*) as total_orders from orders where order_status = 'completed' and Date(created_at) = $1`,[salesDate]);
         // Best-Selling Products
-        const bestSellingProducts = await pool.query(
+        const bestSellingProducts = await requestPool.query(
             `SELECT p.name, SUM(oi.quantity) AS total_sold
              FROM order_items oi
              JOIN products p ON oi.product_id = p.id
@@ -249,9 +252,9 @@ const getDailySalesReport = async (req, res) => {
              ORDER BY total_sold DESC;`
         );
         let endOfDay = new Date(salesDate);
-        endOfDay.setHours(23,23,23,23);
-        const profitResult = await pool.query(
-            `select sum(t.profit) as total_profit from transactions t join orders o on o.id = t.order_id where o.order_status = 'completed' and t.transaction_type = 'sale' and t.transaction_date between $1 and $2;`, [salesDate, endOfDay]
+        endOfDay.setHours(23, 59, 59, 999);
+        const profitResult = await requestPool.query(
+            `select sum(t.profit) as total_profit from transactions t join orders o on o.id = t.order_id where o.order_status = 'completed' and t.created_at between $1 and $2;`, [salesDate, endOfDay]
         );
         
         res.json({
@@ -270,6 +273,7 @@ const getDailySalesReport = async (req, res) => {
 
 const getProfitGraph = async (req, res) => {
     try {
+        const requestPool = getRequestPool(req);
         const decoded = getAuthUser(req);
         if (!decoded) {
             return res.status(401).json({ message: "Access Denied" });
@@ -281,14 +285,13 @@ const getProfitGraph = async (req, res) => {
         const range = req.query.range === '365' ? 365 : 30;
         const { start, end } = getLastNDaysRangeUtc(range);
 
-        const profitRes = await pool.query(
-            `SELECT DATE(t.transaction_date AT TIME ZONE 'UTC') AS day, SUM(t.profit) AS profit
+        const profitRes = await requestPool.query(
+            `SELECT DATE(t.created_at AT TIME ZONE 'UTC') AS day, SUM(t.profit) AS profit
              FROM transactions t
              JOIN orders o ON o.id = t.order_id
              WHERE o.order_status = 'completed'
-               AND t.transaction_type = 'sale'
-               AND t.transaction_date >= $1
-               AND t.transaction_date < $2
+               AND t.created_at >= $1
+               AND t.created_at < $2
              GROUP BY day
              ORDER BY day ASC;`,
             [start, end]

@@ -1,28 +1,95 @@
 const pool = require('../db');
+const getRequestPool = (req) => req.tenantPool || pool;
 const { getAuthUser } = require('../utils/auth');
 
-// ✅ Get all products
+// ✅ Get all products (search, filter, sort, pagination)
 const getProducts = async (req, res) => {
-    let {sort} = req.query;
-    if(!sort)
-        sort = 'name';
+    const {
+        page,
+        limit,
+        search,
+        category_id: categoryIdRaw,
+        sort_by: sortByRaw,
+        sort_order: sortOrderRaw
+    } = req.query || {};
+
+    const resolvedPage = Math.max(parseInt(page, 10) || 1, 1);
+    const resolvedLimit = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100);
+    const offset = (resolvedPage - 1) * resolvedLimit;
+
+    const sortKey = (sortByRaw || 'created_at').toLowerCase();
+    const sortOrder = (sortOrderRaw || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    const allowedSorts = new Set(['name', 'selling_price', 'stock_quantity', 'created_at']);
+    const resolvedSort = allowedSorts.has(sortKey) ? sortKey : 'created_at';
+
+    const searchValue = typeof search === 'string' && search.trim() ? `%${search.trim()}%` : null;
+    const categoryValue =
+        typeof categoryIdRaw === 'string' && categoryIdRaw.trim() ? categoryIdRaw.trim() : null;
+
     try {
+        const requestPool = getRequestPool(req);
         const decoded = getAuthUser(req);
         if (!decoded) {
             return res.status(401).json({ message: "Access Denied" });
         }
-        let result;
-        if(decoded.role === 'admin')
-        result = await pool.query(`SELECT id, name as Name, company as Company, category as Category, selling_price, actual_price,stock_quantity as Quantity  FROM products WHERE is_deleted = false order by ${sort}`);
-        else
-        result = await pool.query(`SELECT id, name as Name, company as Company, category as Category, selling_price,stock_quantity as Quantity  FROM products WHERE is_deleted = false order by ${sort}`);
-        
-        res.json(result.rows);
+
+        const productsRes = await requestPool.query(
+            `SELECT id,
+                    name,
+                    company AS company_name,
+                    category AS category_name,
+                    selling_price,
+                    actual_price,
+                    stock_quantity,
+                    NULL::int AS min_stock_level,
+                    created_at
+             FROM products
+             WHERE is_deleted = FALSE
+               AND ($1::text IS NULL OR category = $1)
+               AND (
+                 $2::text IS NULL
+                 OR name ILIKE $2
+                 OR company ILIKE $2
+               )
+             ORDER BY
+               CASE WHEN $3 = 'name' THEN name END ${sortOrder},
+               CASE WHEN $3 = 'selling_price' THEN selling_price END ${sortOrder},
+               CASE WHEN $3 = 'stock_quantity' THEN stock_quantity END ${sortOrder},
+               CASE WHEN $3 = 'created_at' THEN created_at END ${sortOrder},
+               created_at DESC
+             LIMIT $4 OFFSET $5`,
+            [categoryValue, searchValue, resolvedSort, resolvedLimit, offset]
+        );
+
+        const totalCountRes = await requestPool.query(
+            `SELECT COUNT(*)::int AS total_records
+             FROM products
+             WHERE is_deleted = FALSE
+               AND ($1::text IS NULL OR category = $1)
+               AND (
+                 $2::text IS NULL
+                 OR name ILIKE $2
+                 OR company ILIKE $2
+               )`,
+            [categoryValue, searchValue]
+        );
+
+        const totalRecords = Number(totalCountRes.rows[0]?.total_records || 0);
+        const totalPages = totalRecords === 0 ? 0 : Math.ceil(totalRecords / resolvedLimit);
+
+        return res.json({
+            products: productsRes.rows,
+            pagination: {
+                page: resolvedPage,
+                limit: resolvedLimit,
+                total_records: totalRecords,
+                total_pages: totalPages
+            }
+        });
     } catch (error) {
         res.status(500).json({ error: 'Database error' });
     }
 };
-
 // ✅ Add new product
 const addProduct = async (req, res) => {
   const {
@@ -37,8 +104,9 @@ const addProduct = async (req, res) => {
   } = req.body;
 
   try {
+    const requestPool = getRequestPool(req);
     // 1. Check if product already exists with same name and company
-    const existing = await pool.query(
+    const existing = await requestPool.query(
       'SELECT * FROM products WHERE name = $1 AND company = $2',
       [product_name, company]
     );
@@ -47,7 +115,7 @@ const addProduct = async (req, res) => {
       // 2. Product exists: update stock and prices
       const existingProduct = existing.rows[0];
 
-      const updated = await pool.query(
+      const updated = await requestPool.query(
         `UPDATE products
          SET stock_quantity = stock_quantity + $1,
              actual_price = $2,
@@ -70,7 +138,7 @@ const addProduct = async (req, res) => {
       });
     } else {
       // 3. Product doesn't exist: insert new
-      const result = await pool.query(
+      const result = await requestPool.query(
         `INSERT INTO products (name, category, selling_price, stock_quantity, actual_price, company, time_for_delivery, is_weight_based)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING *`,
@@ -103,14 +171,15 @@ const updateProduct = async (req, res) => {
     const { id } = req.params;
     const {selling_price, actual_price, stock_quantity,name,company, is_weight_based } = req.body;
     try {
-        const productRes = await pool.query('select * from products where id = $1', [id]);
+        const requestPool = getRequestPool(req);
+        const productRes = await requestPool.query('select * from products where id = $1', [id]);
         const product = productRes.rows[0];
         // console.log(product)
         // const result = await pool.query(
         //     'UPDATE products SET name = $1, category = $2, selling_price = $3, stock_quantity = $4, actual_price = $5, company = $6 WHERE id = $7 RETURNING *',
         //     [product_name|| product.name, category || product.category, selling_price || product.selling_price, stock_quantity || product.stock_quantity,actual_price || product.actual_price, company || product.company, id]
         // );
-        const result = await pool.query(
+        const result = await requestPool.query(
             'UPDATE products SET name = $1, company = $2, selling_price = $3, actual_price = $4, stock_quantity = $5, is_weight_based = $6 WHERE id = $7 RETURNING *',
             [
               name || product.name,
@@ -132,31 +201,67 @@ const updateProduct = async (req, res) => {
 const deleteProduct = async (req, res) => {
     const { id } = req.params;
     try {
-        await pool.query('UPDATE products SET is_deleted = true WHERE id = $1', [id]);
+        const requestPool = getRequestPool(req);
+        await requestPool.query('UPDATE products SET is_deleted = true WHERE id = $1', [id]);
         res.json({ message: 'Product deleted' });
     } catch (error) {
         res.status(500).json({ error: 'Database error' });
     }
 };
 
-// Search products by name (case-insensitive)
 const searchProducts = async (req, res) => {
     try {
-        const { name } = req.query;
-        if (!name) {
+        const requestPool = getRequestPool(req);
+        const { name, barcode } = req.query;
+        const term = (name || barcode || '').toString().trim();
+        if (!term) {
             return res.status(400).json({ error: "Product name is required for search." });
         }
+
         const query = `
             SELECT * FROM products
-            WHERE LOWER(name) LIKE LOWER($1) OR LOWER(company) LIKE LOWER($1) AND is_deleted = FALSE
+            WHERE is_deleted = FALSE
+              AND (LOWER(name) LIKE LOWER($1) OR LOWER(company) LIKE LOWER($1))
         `;
-        const values = [`%${name}%`]; // Using LIKE for partial match
-        const { rows } = await pool.query(query, values);
-        res.status(200).json({ products: rows });
+        const values = [`%${term}%`]; // Using LIKE for partial match
+        const { rows } = await requestPool.query(query, values);
+        return res.status(200).json({ products: rows });
     } catch (error) {
         console.error("Error searching products:", error);
-        res.status(500).json({ error: "Internal Server Error" });
+        return res.status(500).json({ error: "Internal Server Error" });
     }
  }
 
-module.exports = { getProducts, addProduct, updateProduct, deleteProduct, searchProducts };
+const getProductByBarcode = async (req, res) => {
+    try {
+        const requestPool = getRequestPool(req);
+        const code = (req.params.code || req.query.code || req.query.barcode || '').toString().trim();
+        if (!code) {
+            return res.status(400).json({ error: "Barcode is required." });
+        }
+
+        let rows = [];
+        if (/^\d+$/.test(code)) {
+            const result = await requestPool.query(
+                'SELECT * FROM products WHERE id = $1 AND is_deleted = FALSE',
+                [Number(code)]
+            );
+            rows = result.rows;
+        } else {
+            const result = await requestPool.query(
+                `SELECT * FROM products
+                 WHERE is_deleted = FALSE
+                   AND (LOWER(name) LIKE LOWER($1) OR LOWER(company) LIKE LOWER($1))`,
+                [`%${code}%`]
+            );
+            rows = result.rows;
+        }
+
+        return res.status(200).json({ product: rows[0] || null, products: rows });
+    } catch (error) {
+        console.error("Error searching product by barcode:", error);
+        return res.status(500).json({ error: "Internal Server Error" });
+    }
+};
+
+module.exports = { getProducts, addProduct, updateProduct, deleteProduct, searchProducts, getProductByBarcode };

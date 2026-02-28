@@ -1,73 +1,74 @@
 const express = require('express');
 const cors = require('cors');
-const productRoutes = require('./routes/productRoutes');
-const orderRoutes = require('./routes/orderRoutes');
-const transactionRoutes = require('./routes/transactionRoutes');
+const platformRoutes = require('./routes/platform.routes');
+const platformAuthRoutes = require('./routes/platform.auth.routes');
+const tenantRoutes = require('./routes/tenant.routes');
 const authRoutes = require('./routes/authRoutes');
-const reportRoutes = require('./routes/reportRoutes');
-const phonepeRoutes = require('./routes/phonepeRoutes');
-const shopDetailsRoutes = require('./routes/shopDetailsRoutes');
 const app = express();
 const cookieParser = require('cookie-parser');
-const { authMiddleware } = require('./middleware/authMiddleware');
-const deviceLock = require('./middleware/deviceLock');
-require("dotenv").config();
+const { tenantAuthMiddleware } = require('./middleware/tenantAuthMiddleware');
+const { adminAuthMiddleware } = require('./middleware/adminAuthMiddleware');
+const { subscriptionMiddleware } = require('./middleware/subscription');
+const { mergeFeatureFlags } = require('./middleware/featureFlags');
+const { errorHandler } = require('./middleware/errorHandler');
+const { getTenantMe, getPlatformBanner } = require('./controllers/tenantController');
+const { bootstrapMasterDatabase } = require('./services/masterBootstrap');
+require('dotenv').config();
 
 app.set('trust proxy', 1);
 app.use(cookieParser());
-app.use((err, req, res, next) => {
-  console.error("💥 Global Error:", err);
-
-  res.status(err.statusCode || 500).json({
-    success: false,
-    message: err.message || "Internal Server Error",
-  });
-});
 const allowedOrigins = [
-   process.env.FRONTEND_URL,
-  'https://inventorymanagement-frontend-qa.onrender.com',
-  'https://inventorymanagement-frontend.onrender.com',
-  'http://localhost:3000'
+  process.env.FRONTEND_ADMIN_URL,
+  process.env.FRONTEND_TENANT_URL,
 ];
-const PORT = process.env.PORT || 5000; 
+const PORT = process.env.PORT || 5000;
 
-app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true
-}));
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    credentials: true
+  })
+);
 app.use(express.json());
 
-// 1️⃣ Public routes (NO auth, NO device lock)
+// Public routes
+app.use('/platform/auth', platformAuthRoutes);
+app.use('/platform', adminAuthMiddleware, platformRoutes);
+
 app.use('/api/auth', authRoutes);
+app.use('/api', tenantAuthMiddleware, subscriptionMiddleware, mergeFeatureFlags, tenantRoutes);
+app.get('/api/banner', tenantAuthMiddleware, mergeFeatureFlags, getPlatformBanner);
+app.get('/tenant/me', tenantAuthMiddleware, mergeFeatureFlags, getTenantMe);
+app.get('/api/tenant/me', tenantAuthMiddleware, mergeFeatureFlags, getTenantMe);
 
-// 2️⃣ Auth middleware (everything below needs login)
-app.use('/api', authMiddleware);
-
-// 3️⃣ Device lock middleware (after auth)
-app.use('/api', deviceLock);
-
-// 4️⃣ Protected routes
-app.use('/api/products', productRoutes);
-app.use('/api/orders', orderRoutes);
-app.use('/api/transactions', transactionRoutes);
-app.use('/api/reports', reportRoutes);
-app.use('/api/phonepe', phonepeRoutes);
-app.use('/api/shop-details', shopDetailsRoutes);
-
-app.get("/", (req, res) => {
-  res.send("Inventory API is running...");
+app.get('/', (req, res) => {
+  res.send('SHAJ NextGen Technologies API is running...');
 });
 
 // Start server
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
-});
+app.use(errorHandler);
 
+const startServer = async () => {
+  try {
+    await bootstrapMasterDatabase();
+  } catch (error) {
+    console.error('Master DB bootstrap skipped:', error.message || error);
+  }
+
+  app.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+};
+
+startServer().catch((error) => {
+  console.error('Failed to start server:', error);
+  process.exit(1);
+});
 
 module.exports = app;

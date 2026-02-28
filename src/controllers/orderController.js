@@ -1,6 +1,58 @@
 
 const pool = require('../db'); // PostgreSQL connection pool
+const getRequestPool = (req) => req.tenantPool || pool;
 const { createTransaction } = require('./transactionController');
+const { getDateRange } = require('../utils/dateRange');
+
+const normalizePaymentModeValue = (value) => {
+  const mode = (value || '').toLowerCase();
+  if (mode === 'upi' || mode === 'online') return 'online';
+  if (mode === 'card' || mode === 'cash') return 'cash';
+  return mode || null;
+};
+
+const resolveOrderLocation = (payload) => {
+  if (!payload || typeof payload !== 'object') return null;
+  return payload.location || payload.customer_location || null;
+};
+
+const buildCustomerPayload = (req) => {
+  const { customer, customer_name, customer_phone, customer_address, customer_location, location } = req.body || {};
+  if (customer && typeof customer === 'object') return customer;
+  if (!customer_name && !customer_phone && !customer_address && !customer_location && !location) return null;
+  return {
+    name: customer_name,
+    mobile: customer_phone,
+    address: customer_address,
+    location: customer_location || location || null
+  };
+};
+
+const validateCustomer = (req) => {
+  const { customer_id } = req.body || {};
+  if (customer_id) return null;
+  const resolvedCustomer = buildCustomerPayload(req);
+  if (!resolvedCustomer) return null;
+  if (!resolvedCustomer.name || !resolvedCustomer.mobile) {
+    return 'Customer name and phone are required';
+  }
+  return null;
+};
+
+const upsertCustomer = async (tenantPool, customer) => {
+  const { name, mobile, address, location } = customer;
+  const existing = await tenantPool.query(
+    'SELECT id FROM customers WHERE mobile = $1',
+    [mobile]
+  );
+  if (existing.rowCount > 0) return existing.rows[0].id;
+
+  const insertRes = await tenantPool.query(
+    'INSERT INTO customers (name, mobile, address, location) VALUES ($1, $2, $3, $4) RETURNING id',
+    [name || null, mobile || null, address || null, location || null]
+  );
+  return insertRes.rows[0].id;
+};
 
 const buildValidationError = (message) => {
   const err = new Error(message);
@@ -32,25 +84,26 @@ const validateQuantityForProduct = (quantity, product, productIdForMessage) => {
 };
 
 //Get Order Profit
-const getProfitByOrderId = async (orderId) => {
+const getProfitByOrderId = async (orderId, db) => {
     try {
+      const requestPool = db || pool;
       const query = `
         SELECT 
           oi.quantity,
-          oi.price AS selling_price,
-          p.cost_price
+          oi.selling_price,
+          p.actual_price
         FROM order_items oi
         JOIN products p ON oi.product_id = p.id
         WHERE oi.order_id = $1
       `;
   
-      const { rows } = await pool.query(query, [orderId]);
+      const { rows } = await requestPool.query(query, [orderId]);
   
       let totalProfit = 0, total_price = 0;
   
       for (const item of rows) {
-        const profitPerItem = (item.selling_price - item.cost_price) * item.quantity;
-        total_price += item.selling_price;
+        const profitPerItem = (item.selling_price - item.actual_price) * item.quantity;
+        total_price += item.selling_price * item.quantity;
         totalProfit += profitPerItem;
       }
   
@@ -112,12 +165,20 @@ const processOrderItems = async (client, orderId, items) => {
 };
 
 const saleOrder = async(req, res) => {
-    const client = await pool.connect();
+    const requestPool = getRequestPool(req);
+    const client = await requestPool.connect();
     try {
         await client.query("BEGIN");
-        const { user_id, products, payment_method } = req.body;
-        if(!user_id || products.length == 0)
-            return res.status(400).json({error: "Should have userid, products"})
+        const { products, payment_method, payment_mode } = req.body;
+        const resolvedLocation = resolveOrderLocation(req.body);
+        if (!products || products.length === 0)
+            return res.status(400).json({error: "Should have products"})
+        if (req.planFeatures?.customer_details_enabled) {
+            const customerError = validateCustomer(req);
+            if (customerError) {
+                return res.status(400).json({ error: customerError });
+            }
+        }
         let total_price = 0;
         let total_profit = 0;
         for (const product of products) {
@@ -142,9 +203,18 @@ const saleOrder = async(req, res) => {
             );
 
         }
+        const resolvedPaymentMode = normalizePaymentModeValue(payment_mode || payment_method);
+        const orderStatus = 'pending';
+
+        let resolvedCustomerId = req.body?.customer_id || null;
+        const resolvedCustomer = buildCustomerPayload(req);
+        if (!resolvedCustomerId && resolvedCustomer) {
+            resolvedCustomerId = await upsertCustomer(client, resolvedCustomer);
+        }
+
         const orderResult = await client.query(
-            "INSERT INTO orders (user_id, total_price, order_status, order_date) VALUES ($1, $2, 'pending', now()) RETURNING id",
-            [user_id, total_price]
+            "INSERT INTO orders (user_id, customer_id, total_price, order_status, payment_mode, location, transaction_type) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+            [req.user?.user_id || null, resolvedCustomerId, total_price, orderStatus, resolvedPaymentMode || null, resolvedLocation, 'sale']
         );
         const order_id = orderResult.rows[0].id;
         for (const item of products) {
@@ -157,13 +227,9 @@ const saleOrder = async(req, res) => {
             [order_id, product.id, qty, sellingPrice]
         );
         }
-        // Create a transaction entry
-        await client.query(
-            "INSERT INTO transactions (order_id, total_price, transaction_type, profit, payment_mode, transaction_date) VALUES ($1, (SELECT total_price FROM orders WHERE id = $1), $2, $3, $4, now());",
-            [order_id, 'sale', total_profit, payment_method]
-        );
+        // Payment should be recorded only when payment is actually made (mark paid).
         await client.query("COMMIT");
-        res.status(201).json({ message: "Order created successfully", order_id, payment_method: payment_method });
+        res.status(201).json({ message: "Order created successfully", order_id, payment_mode: resolvedPaymentMode });
     } catch (error) {
         await client.query("ROLLBACK");
         const status = error.status || 400;
@@ -174,19 +240,23 @@ const saleOrder = async(req, res) => {
 }
 
 const createPurchaseOrder = async (req, res) => {
-    const client = await pool.connect();
+    const requestPool = getRequestPool(req);
+    const client = await requestPool.connect();
     try {
         await client.query("BEGIN"); // Start transaction
-        const { user_id, products, total_amount, payment_mode, transaction_type } = req.body;
+        const { products, total_amount, payment_mode } = req.body;
+        const resolvedLocation = resolveOrderLocation(req.body);
         if (!products || products.length === 0) {
             return res.status(400).json({ message: "No items provided for purchase" });
         }
         // Step 1: Create the order entry
+        const resolvedPaymentMode = normalizePaymentModeValue(payment_mode);
+        const orderStatus = 'pending';
         const orderQuery = `
-            INSERT INTO orders (user_id, total_price, order_status, order_date)
-            VALUES ($1, $2, 'completed', now()) RETURNING id;
+            INSERT INTO orders (total_price, order_status, payment_mode, location, transaction_type)
+            VALUES ($1, $2, $3, $4, $5) RETURNING id;
         `;
-        const orderResult = await client.query(orderQuery, [user_id, total_amount]);
+        const orderResult = await client.query(orderQuery, [total_amount, orderStatus, resolvedPaymentMode || null, resolvedLocation, 'purchase']);
         const orderId = orderResult.rows[0].id;
         // Step 2: Process each item in the purchase order
         for (let item of products) {
@@ -224,13 +294,9 @@ const createPurchaseOrder = async (req, res) => {
             // await client.query(insertOrderItemQuery, [orderId, product_name, company, quantity, actual_price, selling_price]);
         }
         // Step 4: Insert into transactions as a purchase
-        const insertTransactionQuery = `
-            INSERT INTO transactions (order_id, transaction_type, total_price, profit, payment_mode, transaction_date)
-            VALUES ($1, 'purchase', $2, 0, $3, now());
-        `;
-        await client.query(insertTransactionQuery, [orderId, total_amount, payment_mode]);
+        // Payment should be recorded only when payment is actually made (mark paid).
         await client.query("COMMIT"); // Commit transaction
-        res.status(201).json({ message: "Purchase order created successfully", transaction_type, orderId });
+        res.status(201).json({ message: "Purchase order created successfully", orderId });
     } catch (error) {
         await client.query("ROLLBACK"); // Rollback transaction on error
         console.error("Error creating purchase order:", error);
@@ -241,52 +307,42 @@ const createPurchaseOrder = async (req, res) => {
  };
 
 const createPersonalOrder = async (req, res) => {
-
-  const client = await pool.connect();
+  const requestPool = getRequestPool(req);
+  const client = await requestPool.connect();
 
   try {
 
-    const { user_id, total_amount, payment_method ,transaction_type} = req.body;
+    const { total_amount, payment_method, payment_mode } = req.body;
+    const resolvedLocation = resolveOrderLocation(req.body);
 
-    if (!user_id || !total_amount) {
-
-      return res.status(400).json({ error: "User ID and amount are required" });
-
+    if (!total_amount) {
+      return res.status(400).json({ error: "Amount is required" });
     }
 
     await client.query("BEGIN"); // Start transaction
 
     // 1️⃣ Create a Personal Order
 
+    const resolvedPaymentMode = normalizePaymentModeValue(payment_mode || payment_method);
+    const orderStatus = 'pending';
+
     const orderQuery = `
-
-      INSERT INTO orders (user_id, total_price, order_status, order_date)
-
-      VALUES ($1, $2, 'completed', now())
-
+      INSERT INTO orders (total_price, order_status, payment_mode, location, transaction_type)
+      VALUES ($1, $2, $3, $4, $5)
       RETURNING id;
-
     `;
 
-    const orderResult = await client.query(orderQuery, [user_id, total_amount]);
+    const orderResult = await client.query(orderQuery, [total_amount, orderStatus, resolvedPaymentMode || null, resolvedLocation, 'personal']);
 
     const orderId = orderResult.rows[0].id;
 
     // 2️⃣ Insert into Transactions (Type: Personal)
 
-    const transactionQuery = `
-
-      INSERT INTO transactions (order_id, transaction_type, total_price,profit, payment_mode, transaction_date)
-
-      VALUES ($1, 'personal', $2, 0,$3, now());
-
-    `;
-
-    await client.query(transactionQuery, [orderId, total_amount, payment_method]);
+    // Payment should be recorded only when payment is actually made (mark paid).
 
     await client.query("COMMIT"); // Commit transaction
 
-    res.status(201).json({ message: "Personal transaction recorded successfully", orderId, transaction_type });
+    res.status(201).json({ message: "Personal transaction recorded successfully", orderId });
 
   } catch (error) {
 
@@ -308,9 +364,8 @@ const createPersonalOrder = async (req, res) => {
 // 🟢 Create Order
 const createOrder = async (req, res) => {
     const { transaction_type } = req.body;
-    const { user_id, products, payment_mode } = req.body;
-    if(!user_id || !transaction_type)
-        return res.status(400).json({ error: "userId and transaction type should be There"});
+    if(!transaction_type)
+        return res.status(400).json({ error: "transaction type should be provided"});
     if(transaction_type === 'sale') 
         await saleOrder(req, res);
     else if(transaction_type === 'purchase')
@@ -374,19 +429,124 @@ const createOrder = async (req, res) => {
 // 🟢 Get Order by ID
 const getOrderById = async (req, res) => {
     try {
+        const tenantId = req.user?.tenant_id;
+        if (req.tenantPool && !tenantId) {
+            return res.status(401).json({ error: "Missing tenant_id" });
+        }
+        const requestPool = getRequestPool(req);
         const { id } = req.params;
-        const orderRes = await pool.query('SELECT o.*, u.name, t.transaction_type, t.payment_mode FROM orders o join users u on o.user_id = u.id join transactions t on t.order_id = o.id WHERE o.id = $1', [id]);
+        const orderRes = await requestPool.query(
+            `SELECT o.id,
+                    o.total_price AS total_amount,
+                    o.order_status,
+                    o.payment_mode,
+                    o.created_at,
+                    o.customer_id,
+                    u.name AS user_name,
+                    c.name AS customer_name,
+                    c.mobile AS customer_mobile,
+                    c.address AS customer_address,
+                      COALESCE(t.total_paid, 0)::numeric AS total_paid
+             FROM orders o
+             LEFT JOIN users u ON o.user_id = u.id
+             LEFT JOIN customers c ON c.id = o.customer_id
+             LEFT JOIN (
+               SELECT order_id, COALESCE(SUM(total_price), 0)::numeric AS total_paid
+               FROM transactions
+               GROUP BY order_id
+             ) t ON t.order_id = o.id
+             WHERE o.id = $1`,
+            [id]
+        );
 
         if (orderRes.rowCount === 0) {
             return res.status(404).json({ error: "Order not found" });
         }
 
-        const orderItems = await pool.query(
-            'SELECT p.name, p.is_weight_based, o.quantity, o.selling_price FROM order_items o join products p on p.id=o.product_id WHERE o.order_id = $1',
+        const orderItems = await requestPool.query(
+            `SELECT p.id AS product_id,
+                    p.name AS product_name,
+                    p.is_weight_based,
+                    oi.quantity,
+                    oi.selling_price,
+                    (oi.quantity * oi.selling_price)::numeric AS line_total
+             FROM order_items oi
+             JOIN products p ON p.id = oi.product_id
+             WHERE oi.order_id = $1`,
             [id]
         );
 
-        res.json({ order: orderRes.rows[0], items: orderItems.rows });
+        const paymentsRes = await requestPool.query(
+            `SELECT id,
+                    total_price AS amount,
+                    payment_mode,
+                    created_at
+             FROM transactions
+             WHERE order_id = $1
+             ORDER BY created_at ASC`,
+            [id]
+        );
+
+        const orderRow = orderRes.rows[0];
+        const totalAmount = Number(orderRow.total_amount || 0);
+        const totalPaid = Number(orderRow.total_paid || 0);
+        const balance = Math.max(totalAmount - totalPaid, 0);
+        const paymentHistory = orderRow.order_status === 'completed'
+            ? paymentsRes.rows.map((row) => ({
+                id: row.id,
+                amount: Number(row.amount || 0),
+                payment_mode: row.payment_mode,
+                created_at: row.created_at
+            }))
+            : [];
+        let paymentAction = 'none';
+        if (orderRow.order_status !== 'completed') {
+            const mode = (orderRow.payment_mode || '').toLowerCase();
+            paymentAction = mode === 'online' ? 'pay_online' : 'mark_paid';
+        }
+
+        let paymentStatus = 'unpaid';
+        if (totalPaid === 0) {
+            paymentStatus = 'unpaid';
+        } else if (totalPaid < totalAmount) {
+            paymentStatus = 'partial';
+        } else {
+            paymentStatus = 'paid';
+        }
+
+        const customerDetailsEnabled = Boolean(req.planFeatures?.customer_details_enabled);
+        res.json({
+            order: {
+                id: orderRow.id,
+                order_status: orderRow.order_status,
+                customer: customerDetailsEnabled && orderRow.customer_id
+                    ? {
+                          id: orderRow.customer_id,
+                          name: orderRow.customer_name,
+                          mobile: orderRow.customer_mobile,
+                          address: orderRow.customer_address
+                      }
+                    : null,
+                items: orderItems.rows.map((row) => ({
+                    product_id: row.product_id,
+                    product_name: row.product_name,
+                    quantity: Number(row.quantity || 0),
+                    selling_price: Number(row.selling_price || 0),
+                    line_total: Number(row.line_total || 0),
+                    is_weight_based: row.is_weight_based
+                })),
+                payments: paymentHistory,
+                payment_history: paymentHistory,
+                total_amount: totalAmount,
+                total_paid: totalPaid,
+                balance,
+                payment_status: paymentStatus,
+                payment_mode: orderRow.payment_mode,
+                payment_action: paymentAction,
+                created_at: orderRow.created_at
+            },
+            customer_details_enabled: customerDetailsEnabled
+        });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -395,83 +555,203 @@ const getOrderById = async (req, res) => {
 // 🟢 Get All Orders
 const getAllOrders = async (req, res) => {
     try {
-        let {sort} = req.query;
-        if(!sort)
-            sort = 'order_date';
-        const ordersRes = await pool.query(`select o.*, u.name as username,t.payment_mode as payment, t.transaction_type as type from orders o join users u on o.user_id = u.id join transactions t on t.order_id = o.id ORDER BY o.${sort} DESC`);
+        const tenantId = req.user?.tenant_id;
+        if (req.tenantPool && !tenantId) {
+            return res.status(401).json({ error: "Missing tenant_id" });
+        }
+        const requestPool = getRequestPool(req);
+        let {
+            range,
+            start_date: startDateRaw,
+            end_date: endDateRaw,
+            page,
+            limit,
+            search,
+            sort_by: sortByRaw,
+            sort_order: sortOrderRaw
+        } = req.query || {};
+        const sortKey = (sortByRaw || 'created_at').toLowerCase();
+        const sortOrder = (sortOrderRaw || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+        const allowedSorts = new Set(['created_at', 'total_amount', 'total_paid', 'balance']);
+        const resolvedSort = allowedSorts.has(sortKey) ? sortKey : 'created_at';
+        const resolvedPage = Math.max(parseInt(page, 10) || 1, 1);
+        const resolvedLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+        const offset = (resolvedPage - 1) * resolvedLimit;
+
+        const { start, end } = getDateRange(range, startDateRaw, endDateRaw);
+
+        const searchValue = typeof search === 'string' && search.trim() ? `%${search.trim()}%` : null;
+        const ordersRes = await requestPool.query(
+            `SELECT o.id,
+                    o.total_price AS total_amount,
+                    o.created_at,
+                    o.order_status,
+                    o.payment_mode,
+                    c.name AS customer_name,
+                    COALESCE(oi.item_count, 0)::int AS product_count,
+                    COALESCE(oi.product_names, '') AS product_names,
+                    COALESCE(t.total_paid, 0)::numeric AS total_paid
+             FROM orders o
+             LEFT JOIN customers c ON c.id = o.customer_id
+             LEFT JOIN (
+               SELECT oi.order_id,
+                      COUNT(*) AS item_count,
+                      STRING_AGG(DISTINCT p.name, ', ' ORDER BY p.name) AS product_names
+               FROM order_items oi
+               JOIN products p ON p.id = oi.product_id
+               GROUP BY oi.order_id
+             ) oi ON oi.order_id = o.id
+             LEFT JOIN (
+               SELECT order_id, COALESCE(SUM(total_price), 0)::numeric AS total_paid
+               FROM transactions
+               GROUP BY order_id
+             ) t ON t.order_id = o.id
+             WHERE o.created_at BETWEEN $1 AND $2
+               AND (
+                 $5::text IS NULL
+                 OR o.id::text ILIKE $5
+                 OR c.name ILIKE $5
+                 OR EXISTS (
+                   SELECT 1
+                   FROM order_items oi2
+                   JOIN products p2 ON p2.id = oi2.product_id
+                   WHERE oi2.order_id = o.id
+                     AND p2.name ILIKE $5
+                 )
+               )
+             ORDER BY
+               CASE WHEN $6 = 'created_at' THEN o.created_at END ${sortOrder},
+               CASE WHEN $6 = 'total_amount' THEN o.total_price END ${sortOrder},
+                 CASE WHEN $6 = 'total_paid' THEN COALESCE(t.total_paid, 0)::numeric END ${sortOrder},
+                 CASE WHEN $6 = 'balance' THEN (o.total_price - COALESCE(t.total_paid, 0)::numeric) END ${sortOrder},
+               o.created_at DESC
+             LIMIT $3 OFFSET $4`,
+            [start, end, resolvedLimit, offset, searchValue, resolvedSort]
+        );
 
         if (ordersRes.rowCount === 0) {
-            return res.status(404).json({ error: "No orders found" });
+            return res.status(200).json({ error: "No orders found" });
         }
 
-        // Fetch order items for each order
-        const orders = await Promise.all(
-            ordersRes.rows.map(async (order) => {
-                const itemsRes = await pool.query(
-                    'SELECT p.id as product_id, p.name as product_name, p.is_weight_based, oi.quantity, oi.selling_price FROM order_items oi join products p on p.id = oi.product_id WHERE order_id = $1',
-                    [order.id]
-                );
-                return { ...order, items: itemsRes.rows };
-            })
+          const customerDetailsEnabled = Boolean(req.planFeatures?.customer_details_enabled);
+        const orders = ordersRes.rows.map((order) => {
+            const totalAmount = Number(order.total_amount || 0);
+            const totalPaid = Number(order.total_paid || 0);
+            const balance = Math.max(totalAmount - totalPaid, 0);
+            const productList = String(order.product_names || '')
+                .split(',')
+                .map((name) => name.trim())
+                .filter(Boolean);
+            const displayProducts = productList.slice(0, 3);
+            const productsSummary =
+                productList.length > 3
+                    ? `${displayProducts.slice(0, 2).join(', ')} +${productList.length - 2} more`
+                    : displayProducts.join(', ');
+        let paymentStatus = 'unpaid';
+        if (totalPaid === 0) {
+            paymentStatus = 'unpaid';
+        } else if (totalPaid < totalAmount) {
+            paymentStatus = 'partial';
+        } else {
+            paymentStatus = 'paid';
+        }
+            let paymentAction = 'none';
+            if (order.order_status !== 'completed') {
+                const mode = (order.payment_mode || '').toLowerCase();
+                paymentAction = mode === 'online' ? 'pay_online' : 'mark_paid';
+            }
+            return {
+                id: order.id,
+                products_summary: productsSummary || `${order.product_count || 0} items`,
+                product_names: productList,
+                product_count: Number(order.product_count || 0),
+                customer_name: customerDetailsEnabled ? order.customer_name : null,
+                total_amount: totalAmount,
+                total_paid: totalPaid,
+                balance,
+                payment_status: paymentStatus,
+                payment_mode: order.payment_mode,
+                payment_action: paymentAction,
+                created_at: order.created_at
+            };
+        });
+        const totalCountRes = await requestPool.query(
+            `SELECT COUNT(*)::int AS total_records
+             FROM orders o
+             LEFT JOIN customers c ON c.id = o.customer_id
+             WHERE o.created_at BETWEEN $1 AND $2
+               AND (
+                 $3::text IS NULL
+                 OR o.id::text ILIKE $3
+                 OR c.name ILIKE $3
+                 OR EXISTS (
+                   SELECT 1
+                   FROM order_items oi2
+                   JOIN products p2 ON p2.id = oi2.product_id
+                   WHERE oi2.order_id = o.id
+                     AND p2.name ILIKE $3
+                 )
+               )`,
+            [start, end, searchValue]
         );
-        const completedOrdersRes = await pool.query(`select count(*) as total_orders from orders where order_status = 'completed'`);
-        const completedOrders = parseInt(completedOrdersRes.rows[0].total_orders);
-        const pendingOrdersRes = await pool.query(`select count(*) as total_orders from orders where order_status = 'pending'`);
-        const pendingOrders = parseInt(pendingOrdersRes.rows[0].total_orders);
-        const totalOrders = pendingOrders + completedOrders;
+        const totalRecords = Number(totalCountRes.rows[0]?.total_records || 0);
+        const totalPages = totalRecords === 0 ? 0 : Math.ceil(totalRecords / resolvedLimit);
 
-        res.json({ orders,  completedOrders: completedOrders, pendingOrders:pendingOrders, totalOrders: totalOrders});
+        res.json({
+            orders,
+            customer_details_enabled: customerDetailsEnabled,
+            pagination: {
+                page: resolvedPage,
+                limit: resolvedLimit,
+                total_records: totalRecords,
+                total_pages: totalPages
+            }
+        });
     } catch (error) {
+        if (error.message === 'INVALID_DATE_RANGE') {
+            return res.status(400).json({ error: "Invalid date range" });
+        }
         res.status(500).json({ error: error.message });
     }
 };
 
 // 🟢 Delete Order
 const deleteOrder = async (req, res) => {
-    const  order_id  = req.params.id;
+    const order_id = req.params.id;
 
-    const client = await pool.connect();
+    const requestPool = getRequestPool(req);
+    const client = await requestPool.connect();
     try {
       await client.query('BEGIN');
-  
-      // Get the transaction type
-      const { rows: txRows } = await client.query(
-        'SELECT transaction_type FROM transactions WHERE order_id = $1',
+
+      const orderRes = await client.query(
+        'SELECT id FROM orders WHERE id = $1',
         [order_id]
       );
-  
-      if (txRows.length === 0) {
+      if (orderRes.rowCount === 0) {
         await client.query('ROLLBACK');
         return res.status(404).json({ message: 'Order not found' });
       }
-  
-      const transactionType = txRows[0].transaction_type;
-  
-      if (transactionType === 'sale') {
-        // Fetch order_items for this order
-        const { rows: orderItems } = await client.query(
-          'SELECT product_id, quantity FROM order_items WHERE order_id = $1',
-          [order_id]
+
+      const itemsRes = await client.query(
+        'SELECT product_id, quantity FROM order_items WHERE order_id = $1',
+        [order_id]
+      );
+
+      for (const item of itemsRes.rows) {
+        await client.query(
+          'UPDATE products SET stock_quantity = stock_quantity + $1 WHERE id = $2',
+          [item.quantity, item.product_id]
         );
-  
-        // Restore product quantities
-        for (const item of orderItems) {
-          await client.query(
-            'UPDATE products SET stock_quantity = stock_quantity + $1 WHERE id = $2',
-            [item.quantity, item.product_id]
-          );
-        }
       }
-  
-      // Delete from order_items
+
       await client.query('DELETE FROM order_items WHERE order_id = $1', [order_id]);
-  
-      // Delete the order/transaction
+      await client.query('DELETE FROM transactions WHERE order_id = $1', [order_id]);
       await client.query('DELETE FROM orders WHERE id = $1', [order_id]);
-  
+
       await client.query('COMMIT');
       res.status(204).json({ message: 'Order deleted successfully' });
-  
+
     } catch (error) {
       await client.query('ROLLBACK');
       console.error('Error deleting order:', error);
@@ -483,9 +763,10 @@ const deleteOrder = async (req, res) => {
 
   const updateOrder = async (req, res) => {
     const orderId = parseInt(req.params.id);
-    const { payment_method, products } = req.body;
+    const { payment_method, payment_mode, products } = req.body;
   
-    const client = await pool.connect();
+    const requestPool = getRequestPool(req);
+    const client = await requestPool.connect();
   
     try {
       await client.query('BEGIN');
@@ -555,7 +836,7 @@ const deleteOrder = async (req, res) => {
         `UPDATE transactions
          SET total_price = $1, profit = $2, payment_mode = $3
          WHERE order_id = $4`,
-        [newTotalPrice, newProfit, payment_method, orderId]
+        [newTotalPrice, newProfit, payment_mode || payment_method || null, orderId]
       );
   
       // 6. Update orders table
@@ -585,14 +866,29 @@ const deleteOrder = async (req, res) => {
   
 
 const markOrderAsPaid = async (req, res) => {
-    const client = await pool.connect();
+    const requestPool = getRequestPool(req);
+    const client = await requestPool.connect();
     try {
         await client.query("BEGIN");
-        const { order_id, type } = req.body;
-        // Update order status
-        await client.query(
-            "UPDATE orders SET order_status = 'completed' WHERE id = $1;",
+        const { order_id, payment_mode } = req.body;
+        const resolvedPaymentMode = normalizePaymentModeValue(payment_mode || 'cash') || 'cash';
+        const orderRes = await client.query(
+            "SELECT total_price FROM orders WHERE id = $1 FOR UPDATE",
             [order_id]
+        );
+        if (orderRes.rowCount === 0) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({ error: "Order not found" });
+        }
+        const { profit, total_price } = await getProfitByOrderId(order_id, client);
+        const totalPrice = Number(total_price || orderRes.rows[0].total_price || 0);
+        await client.query(
+            "INSERT INTO transactions (order_id, total_price, profit, payment_mode) VALUES ($1, $2, $3, $4);",
+            [order_id, totalPrice, profit || 0, resolvedPaymentMode]
+        );
+        await client.query(
+            "UPDATE orders SET order_status = 'completed', payment_mode = $2 WHERE id = $1;",
+            [order_id, resolvedPaymentMode]
         );
         
         await client.query("COMMIT");
@@ -608,18 +904,14 @@ const markOrderAsPaid = async (req, res) => {
 
  const getCategories = async(req, res) => {
     try {
+      const requestPool = getRequestPool(req);
       // Update order status
-      const categoryRes = await pool.query("select distinct category from products");
+      const categoryRes = await requestPool.query("select distinct category from products");
       res.status(200).json({ data: categoryRes.rows});
     } catch (error) {
       res.status(500).json({ error: "Internal Server Error at getCategories" });
     }
  }
-
-const isValidUuidV4 = (value) => {
-  if (typeof value !== 'string') return false;
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
-};
 
 const normalizePaymentMode = (order) => {
   return order.payment_mode || order.payment_method || null;
@@ -627,8 +919,6 @@ const normalizePaymentMode = (order) => {
 
 const validateOfflineOrder = (order) => {
   if (!order || typeof order !== 'object') return 'Order is required.';
-  if (!order.client_order_id || !isValidUuidV4(order.client_order_id)) return 'client_order_id must be a UUID v4.';
-  if (!order.user_id) return 'user_id is required.';
   if (!order.transaction_type) return 'transaction_type is required.';
 
   const type = order.transaction_type;
@@ -668,6 +958,7 @@ const syncOfflineOrders = async (req, res) => {
     return res.status(400).json({ error: 'orders must be a non-empty array.' });
   }
 
+  const requestPool = getRequestPool(req);
   const results = [];
   const seen = new Set();
 
@@ -694,33 +985,13 @@ const syncOfflineOrders = async (req, res) => {
       continue;
     }
 
-    const client = await pool.connect();
+    const client = await requestPool.connect();
     try {
       await client.query('BEGIN');
 
-      const existing = await client.query(
-        `SELECT o.id, o.order_status, t.transaction_type, t.payment_mode
-         FROM orders o
-         LEFT JOIN transactions t ON t.order_id = o.id
-         WHERE o.client_order_id = $1`,
-        [clientOrderId]
-      );
-
-      if (existing.rows.length > 0) {
-        await client.query('ROLLBACK');
-        results.push({
-          client_order_id: clientOrderId,
-          status: 'duplicate',
-          order_id: existing.rows[0].id,
-          order_status: existing.rows[0].order_status,
-          transaction_type: existing.rows[0].transaction_type || null,
-          payment_mode: existing.rows[0].payment_mode || null
-        });
-        continue;
-      }
-
       const type = order.transaction_type;
-      const paymentMode = normalizePaymentMode(order);
+      const paymentMode = normalizePaymentModeValue(normalizePaymentMode(order));
+      const resolvedLocation = resolveOrderLocation(order);
       let orderId = null;
       let orderStatus = 'pending';
 
@@ -751,8 +1022,8 @@ const syncOfflineOrders = async (req, res) => {
 
         const orderDate = order.client_created_at ? new Date(order.client_created_at) : new Date();
         const orderResult = await client.query(
-          'INSERT INTO orders (user_id, total_price, order_status, order_date, client_order_id) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-          [order.user_id, totalPrice, 'pending', orderDate, clientOrderId]
+          'INSERT INTO orders (total_price, order_status, payment_mode, created_at, location, transaction_type) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+          [totalPrice, 'pending', paymentMode || null, orderDate, resolvedLocation, 'sale']
         );
 
         orderId = orderResult.rows[0].id;
@@ -774,19 +1045,15 @@ const syncOfflineOrders = async (req, res) => {
           );
         }
 
-        await client.query(
-          'INSERT INTO transactions (order_id, total_price, transaction_type, profit, payment_mode, transaction_date) VALUES ($1, $2, $3, $4, $5, now())',
-          [orderId, totalPrice, 'sale', totalProfit, paymentMode]
-        );
-
+        // Payment should be recorded only when payment is actually made (mark paid).
         orderStatus = 'pending';
       } else if (type === 'purchase') {
         const items = order.products;
         const totalAmount = order.total_amount;
         const orderDate = order.client_created_at ? new Date(order.client_created_at) : new Date();
         const orderResult = await client.query(
-          'INSERT INTO orders (user_id, total_price, order_status, order_date, client_order_id) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-          [order.user_id, totalAmount, 'completed', orderDate, clientOrderId]
+          'INSERT INTO orders (total_price, order_status, payment_mode, created_at, location, transaction_type) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+          [totalAmount, 'pending', paymentMode || null, orderDate, resolvedLocation, 'purchase']
         );
 
         orderId = orderResult.rows[0].id;
@@ -814,39 +1081,30 @@ const syncOfflineOrders = async (req, res) => {
           }
         }
 
-        await client.query(
-          'INSERT INTO transactions (order_id, transaction_type, total_price, profit, payment_mode, transaction_date) VALUES ($1, $2, $3, $4, $5, now())',
-          [orderId, 'purchase', totalAmount, 0, paymentMode]
-        );
-
-        orderStatus = 'completed';
+        // Payment should be recorded only when payment is actually made (mark paid).
+        orderStatus = 'pending';
       } else if (type === 'personal') {
         const totalAmount = order.total_amount;
         const orderDate = order.client_created_at ? new Date(order.client_created_at) : new Date();
         const orderResult = await client.query(
-          'INSERT INTO orders (user_id, total_price, order_status, order_date, client_order_id) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-          [order.user_id, totalAmount, 'completed', orderDate, clientOrderId]
+          'INSERT INTO orders (total_price, order_status, payment_mode, created_at, location, transaction_type) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+          [totalAmount, 'pending', paymentMode || null, orderDate, resolvedLocation, 'personal']
         );
 
         orderId = orderResult.rows[0].id;
 
-        await client.query(
-          'INSERT INTO transactions (order_id, transaction_type, total_price, profit, payment_mode, transaction_date) VALUES ($1, $2, $3, $4, $5, now())',
-          [orderId, 'personal', totalAmount, 0, paymentMode]
-        );
-
-        orderStatus = 'completed';
+        // Payment should be recorded only when payment is actually made (mark paid).
+        orderStatus = 'pending';
       }
 
       await client.query('COMMIT');
 
       results.push({
-        client_order_id: clientOrderId,
+        client_order_id: clientOrderId || null,
         status: 'created',
         order_id: orderId,
         order_status: orderStatus,
-        transaction_type: type,
-        payment_mode: paymentMode
+        payment_mode: paymentMode || null
       });
     } catch (error) {
       await client.query('ROLLBACK');

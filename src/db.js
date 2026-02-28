@@ -1,17 +1,23 @@
 require("dotenv").config();
 const { Pool } = require('pg');
+const { normalizePassword } = require('./db/poolUtils');
 
 // Determine pool configuration - support both URL and individual details
-const poolConfig = process.env.DATABASE_URL 
+const primaryDatabaseUrl =
+    process.env.DATABASE_URL ||
+    process.env.MASTER_DATABASE_URL ||
+    process.env.ADMIN_DATABASE_URL;
+
+const poolConfig = primaryDatabaseUrl
     ? {
-        connectionString: process.env.DATABASE_URL,
+        connectionString: primaryDatabaseUrl,
         ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
       }
     : {
         user: process.env.DB_USER,
         host: process.env.DB_HOST,
         database: process.env.DB_NAME,
-        password: process.env.DB_PASSWORD,
+        password: normalizePassword(process.env.DB_PASSWORD, 'DB_PASSWORD'),
         port: process.env.DB_PORT || 5432,
         ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
     };
@@ -21,7 +27,7 @@ const RETRY_DELAY = 2000; // ms
 const pool = new Pool(poolConfig);
 
 async function connectWithRetry(retries = MAX_RETRIES, delay = RETRY_DELAY) {
-    console.log('DB_PASSWORD type:', typeof process.env.DB_PASSWORD);
+    // console.log('DB_PASSWORD type:', typeof process.env.DB_PASSWORD);
     for (let i = 0; i < retries; i++) {
         try {
             await pool.query('SELECT 1'); // Simple test query

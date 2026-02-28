@@ -1,6 +1,7 @@
 const axios = require('axios');
 const crypto = require('crypto');
 const { getProfitByOrderId } = require('./orderController');
+const pool = require('../db');
 
 const MERCHANT_ID = process.env.PHONEPE_MERCHANT_ID;
 const SALT_KEY = process.env.PHONEPE_SALT_KEY;
@@ -47,7 +48,7 @@ const updateTransactionStatus = async (transactionId, status) => {
     try {
       const {profit, total_price} = await getProfitByOrderId(transactionId);
       await pool.query(
-        `INSERT INTO transactions (order_id, total_price, profit, payment_method, transaction_type) VALUES($1, $2, $3, 'online', 'sale')`,
+        `INSERT INTO transactions (order_id, total_price, profit, payment_mode) VALUES($1, $2, $3, 'online')`,
         [transactionId, total_price, profit]
       );
   
@@ -55,7 +56,7 @@ const updateTransactionStatus = async (transactionId, status) => {
       if (status === "SUCCESS") {
         await pool.query(
           `UPDATE orders 
-           SET order_status = 'completed' 
+           SET order_status = 'completed', payment_mode = 'online'
            WHERE id = $1`,
           [transactionId]
         );

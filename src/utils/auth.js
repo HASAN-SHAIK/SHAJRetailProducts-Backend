@@ -1,22 +1,20 @@
-const jwt = require('jsonwebtoken');
-
-const getTokenFromRequest = (req) => {
-  const cookieToken = req.cookies?.token;
-  const headerToken = req.headers.authorization
-    ? req.headers.authorization.replace(/^Bearer\s+/i, '')
-    : null;
-  return cookieToken || headerToken || null;
-};
+const {
+  DEFAULT_TENANT_COOKIE,
+  getTokenFromRequest,
+  verifyTenantToken
+} = require('./jwt');
 
 const getAuthUser = (req) => {
   if (req?.user) return req.user;
-  const token = getTokenFromRequest(req);
+  const token = getTokenFromRequest(req, DEFAULT_TENANT_COOKIE);
   if (!token) return null;
   try {
-    return jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = verifyTenantToken(token);
+    if (decoded?.type !== 'tenant') return null;
+    return decoded;
   } catch (err) {
     return null;
   }
 };
 
-module.exports = { getAuthUser };
+module.exports = { getAuthUser, getTokenFromRequest };

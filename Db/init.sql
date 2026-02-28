@@ -48,10 +48,15 @@ CREATE TABLE products (
 CREATE TABLE orders (
     id SERIAL PRIMARY KEY,
     user_id INT REFERENCES users(id) ON DELETE SET NULL,
-    total_price DECIMAL(10,2) NOT NULL CHECK (total_price >= 0),
+      total_price DECIMAL(10,2) NOT NULL CHECK (total_price >= 0),
+      location VARCHAR(255),
     client_order_id UUID,
     order_status VARCHAR(20) DEFAULT 'pending' CHECK (order_status IN ('pending', 'completed', 'canceled')),
-    order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    transaction_type VARCHAR(10) DEFAULT 'sale' CHECK (transaction_type IN ('sale', 'purchase', 'personal')),
+    payment_mode VARCHAR(10) CHECK (payment_mode IN ('cash', 'online')),
+    order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    payment_mode VARCHAR(10) CHECK (payment_mode IN ('cash', 'online'))
+
 );
 
 
@@ -99,6 +104,7 @@ CREATE INDEX idx_products_category ON products(category);
 -- Orders Indexes
 CREATE INDEX idx_orders_user_id ON orders(user_id);
 CREATE INDEX idx_orders_status ON orders(order_status);
+CREATE INDEX idx_orders_order_date ON orders(order_date);
 CREATE UNIQUE INDEX IF NOT EXISTS orders_client_order_id_uniq
 ON orders (client_order_id);
 

@@ -1,133 +1,121 @@
 const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const pool = require('../db');  // Using Pool for DB connection
-const { error } = require('winston');
+const { getTenantByDomain } = require('../services/tenantService');
+const { getTenantPool } = require('../db/tenantPool');
+const { jsonError, jsonOk } = require('../utils/responses');
+const {
+  DEFAULT_TENANT_COOKIE,
+  signTenantToken,
+  setAuthCookie,
+  clearAuthCookie
+} = require('../utils/jwt');
 require('dotenv').config();
 
-// Register a New User
-exports.register = async (req, res) => {
-    try {
-        const { name, email, password, role } = req.body;
-
-        // Check if user exists
-        const userCheck = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-        if (userCheck.rows.length > 0) {
-            return res.status(400).json({ message: "User already exists" });
-        }
-
-        // Hash password
-        const hashedPassword = await bcrypt.hash(password, 10);
-
-        // Insert new user
-        const newUser = await pool.query(
-            'INSERT INTO users (name, email, password, role) VALUES ($1, $2, $3, $4) RETURNING id, name, email, role',
-            [name, email, hashedPassword, role]
-        );
-
-        res.status(201).json({ message: "User registered", user: newUser.rows[0] });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
+const resolveTenantFromRequest = async ({ email }) => {
+  if (email && email.includes('@')) {
+    const domain = email.split('@')[1].trim().toLowerCase();
+    const cleanDomain = domain.replace(/\.com$/, ''); // Remove .com suffix if present
+    if (cleanDomain) {
+      console.log(`Resolving tenant for domain: ${cleanDomain}`);
+      return getTenantByDomain(cleanDomain);
     }
+  }
+  return null;
 };
 
-exports.getLogin = async (req, res) => {
-  const cookieToken = req.cookies?.token;
-  const headerToken = req.headers.authorization
-    ? req.headers.authorization.replace(/^Bearer\s+/i, "")
-    : null;
-  const token = cookieToken || headerToken;
-  if (!token) {
-    return res.status(401).json({ message: 'Not authenticated' });
+const register = async (req, res) => {
+  try {
+    const { name, email, password, role } = req.body;
+    if (!name || !email || !password) {
+      return jsonError(res, 400, 'VALIDATION_ERROR', 'Missing required fields');
+    }
+
+    const tenant = await resolveTenantFromRequest({ email });
+    if (!tenant) return jsonError(res, 404, 'TENANT_NOT_FOUND', 'Tenant not found');
+
+    const tenantPool = getTenantPool(tenant.database_name);
+    const userCheck = await tenantPool.query('SELECT id FROM users WHERE email = $1', [email]);
+    if (userCheck.rowCount > 0) {
+      return jsonError(res, 409, 'USER_EXISTS', 'User already exists');
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const safeRole = role === 'admin' || role === 'staff' ? role : 'staff';
+    const newUser = await tenantPool.query(
+      'INSERT INTO users (name, email, password, role) VALUES ($1, $2, $3, $4) RETURNING id, name, email, role',
+      [name, email, hashedPassword, safeRole]
+    );
+
+    return jsonOk(res, newUser.rows[0], 'User registered');
+  } catch (error) {
+    return jsonError(res, 500, 'REGISTER_FAILED', error.message);
   }
+};
+
+const login = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return jsonError(res, 400, 'VALIDATION_ERROR', 'Missing required fields');
+    }
+
+    const tenant = await resolveTenantFromRequest({ email });
+    if (!tenant) return jsonError(res, 404, 'TENANT_NOT_FOUND', 'Tenant not found');
+
+    const tenantPool = getTenantPool(tenant.database_name);
+    const userResult = await tenantPool.query('SELECT * FROM users WHERE email = $1', [email]);
+    if (userResult.rowCount === 0) {
+      return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid email or password');
+    }
+
+    const user = userResult.rows[0];
+    const validPassword = await bcrypt.compare(password, user.password);
+    if (!validPassword) {
+      return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid email or password');
+    }
+
+    const token = signTenantToken({
+      type: 'tenant',
+      user_id: user.id,
+      tenant_id: tenant.id,
+      role: user.role,
+      user_name: user.name
+    });
+
+    setAuthCookie(
+      res,
+      token,
+      DEFAULT_TENANT_COOKIE,
+      Number(process.env.TOKEN_COOKIE_MAX_AGE_MS || 8 * 60 * 60 * 1000)
+    );
+
+    return res.status(200).json({
+      success: true,
+      token,
+      user: { id: user.id, name: user.name, email: user.email, role: user.role },
+      tenant: { id: tenant.id, name: tenant.shop_name, plan: tenant.plan_type }
+    });
+  } catch (error) {
+    return jsonError(res, 500, 'LOGIN_FAILED', error.message);
+  }
+};
+
+const getLogin = async (req, res) => {
+  if (!req.user) return jsonError(res, 401, 'UNAUTHORIZED', 'Not authenticated');
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    return res.status(200).json({ user: decoded });
+    return res.status(200).json({ success: true, user: req.user });
   } catch (error) {
-    return res.status(403).json({ message: 'Invalid token' });
+    return jsonError(res, 403, 'UNAUTHORIZED', 'Invalid token');
   }
 };
 
-// Login User
-exports.login = async (req, res) => {
-    try {
-        const { email, password, device_id } = req.body;
-
-        // Find user
-        const userResult = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-        if (userResult.rows.length === 0) {
-            return res.status(401).json({ message: "Invalid email or password" });
-        }
-
-        const user = userResult.rows[0];
-
-        // Compare password
-        const validPassword = await bcrypt.compare(password, user.password);
-        if (!validPassword) {
-            return res.status(401).json({ message: "Invalid email or password" });
-        }
-          // 🔐 FIRST LOGIN → bind device
-        if (!user.device_id) {
-            await pool.query(
-            'UPDATE users SET device_id = $1 WHERE id = $2',
-            [device_id, user.id]
-            );
-        }
-        // ❌ DIFFERENT DEVICE
-        else if (user.device_id !== device_id) {
-            return res.status(403).json({
-            message: 'This account is already registered on another computer\nPlease contact admin for access.',
-            });
-        }
-
-        // Generate JWT Token
-        const token = jwt.sign({ id: user.id, role: user.role, user_name: user.name }, process.env.JWT_SECRET, {
-            expiresIn: process.env.TOKEN_EXPIRY * 1000,
-        });
-        const isProduction = process.env.NODE_ENV === 'production';
-        res.cookie("token", token, {
-            httpOnly: true,
-            secure: isProduction,
-            sameSite: isProduction ? 'None' : 'Lax',
-            maxAge: process.env.TOKEN_EXPIRY * 1000,
-        });
-        res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+const logout = async (req, res) => {
+  try {
+    clearAuthCookie(res, DEFAULT_TENANT_COOKIE);
+    return res.status(200).json({ success: true, message: 'Logged out' });
+  } catch (error) {
+    return jsonError(res, 500, 'LOGOUT_FAILED', error.message);
+  }
 };
 
-exports.deleteUser = async (req, res) => {
-    try {
-        const { email } = req.body;
-
-        // Find user
-        const userResult = await pool.query('select * FROM users WHERE email = $1', [email]);
-        if (userResult.rows.length === 0) {
-            return res.status(401).json({ message: "Invalid email or password" });
-        }
-
-        const user = userResult.rows[0];
-        const deletedUserRes = await pool.query('delete from users where email = $1', [email]);
-        return res.status(204).json({ message: "User Deleted" });
-        
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-};
-
-exports.logout = async (req, res) => {
-    try {
-      const isProduction = process.env.NODE_ENV === 'production';
-      res.clearCookie("token", {
-        httpOnly: true,
-        secure: isProduction,
-        sameSite: isProduction ? "None" : "Lax",
-      });
-      res.json({message:"Logout Successful"});
-
-    } catch (error) {
-      console.error('Logout error:', error);
-      res.status(500).json({ error: 'Internal Server Error' });
-    }
-  };
+module.exports = { register, login, getLogin, logout };
