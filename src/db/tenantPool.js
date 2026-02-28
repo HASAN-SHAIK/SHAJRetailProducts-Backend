@@ -1,6 +1,6 @@
 require('dotenv').config();
 const { Pool } = require('pg');
-const { getEnvPassword } = require('./poolUtils');
+const { getEnvPassword, attachQueryTimer } = require('./poolUtils');
 
 const pools = new Map();
 
@@ -31,7 +31,7 @@ const getTenantPool = (database) => {
     return pools.get(database);
   }
   console.log(`Creating new pool for tenant database: ${database}`);
-  const pool = new Pool(buildTenantPoolConfig(database));
+  const pool = attachQueryTimer(new Pool(buildTenantPoolConfig(database)), `tenant:${database}`);
   pool.on('error', (err) => {
     console.error(`Tenant DB pool error (${database}):`, err);
   });

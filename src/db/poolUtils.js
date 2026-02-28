@@ -13,4 +13,34 @@ const getEnvPassword = (primary, fallback, label) => {
   return normalizePassword(value, label);
 };
 
-module.exports = { normalizePassword, getEnvPassword };
+const attachQueryTimer = (pool, label = 'db') => {
+  if (!pool || pool.__timed) return pool;
+
+  const enabled =
+    process.env.DB_LOG_TIMING === 'true' ||
+    (process.env.NODE_ENV !== 'production' && process.env.DB_LOG_TIMING !== 'false');
+
+  if (!enabled) {
+    return pool;
+  }
+
+  const thresholdMs = Number(process.env.DB_LOG_TIMING_THRESHOLD_MS || 0);
+  const originalQuery = pool.query.bind(pool);
+
+  pool.query = async (...args) => {
+    const start = process.hrtime.bigint();
+    try {
+      return await originalQuery(...args);
+    } finally {
+      const durationMs = Number(process.hrtime.bigint() - start) / 1e6;
+      if (durationMs >= thresholdMs) {
+        console.log(`[DB] ${label} query took ${durationMs.toFixed(1)}ms`);
+      }
+    }
+  };
+
+  pool.__timed = true;
+  return pool;
+};
+
+module.exports = { normalizePassword, getEnvPassword, attachQueryTimer };
