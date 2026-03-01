@@ -27,6 +27,22 @@ const attachQueryTimer = (pool, label = 'db') => {
   const thresholdMs = Number(process.env.DB_LOG_TIMING_THRESHOLD_MS || 0);
   const originalQuery = pool.query.bind(pool);
 
+  const formatQueryText = (args) => {
+    const first = args?.[0];
+    let text = '';
+    if (typeof first === 'string') {
+      text = first;
+    } else if (first && typeof first === 'object' && typeof first.text === 'string') {
+      text = first.text;
+    }
+
+    if (!text) return '';
+    const singleLine = text.replace(/\s+/g, ' ').trim();
+    const maxLen = Number(process.env.DB_LOG_TIMING_QUERY_MAX_LEN || 200);
+    if (singleLine.length <= maxLen) return singleLine;
+    return `${singleLine.slice(0, maxLen)}…`;
+  };
+
   pool.query = async (...args) => {
     const start = process.hrtime.bigint();
     try {
@@ -34,7 +50,9 @@ const attachQueryTimer = (pool, label = 'db') => {
     } finally {
       const durationMs = Number(process.hrtime.bigint() - start) / 1e6;
       if (durationMs >= thresholdMs) {
-        console.log(`[DB] ${label} query took ${durationMs.toFixed(1)}ms`);
+        const queryText = formatQueryText(args);
+        const suffix = queryText ? ` | ${queryText}` : '';
+        console.log(`[DB] ${label} query took ${durationMs.toFixed(1)}ms${suffix}`);
       }
     }
   };
