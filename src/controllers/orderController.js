@@ -933,15 +933,16 @@ const markOrderAsPaid = async (req, res) => {
              ins AS (
                INSERT INTO transactions (order_id, total_price, profit, payment_mode)
                SELECT order_row.id,
-                      COALESCE(NULLIF(calc.items_total, 0), order_row.total_price, 0),
+                      COALESCE(NULLIF(calc.items_total, 0), order_row.total_price, 0) AS paid_amount,
                       calc.profit,
                       $2
                FROM order_row, calc
-               RETURNING order_id
+               RETURNING order_id, total_price
              )
              UPDATE orders
              SET order_status = 'completed',
-                 payment_mode = $2
+                 payment_mode = $2,
+                 total_paid = COALESCE(ins.total_price, 0)
              WHERE id = $1
              RETURNING id;`,
             [order_id, resolvedPaymentMode]
