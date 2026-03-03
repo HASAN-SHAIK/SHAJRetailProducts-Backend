@@ -78,7 +78,15 @@ const login = async (req, res) => {
       user_id: user.id,
       tenant_id: tenant.id,
       role: user.role,
-      user_name: user.name
+      user_name: user.name,
+      tenant_db: tenant.database_name,
+      tenant_name: tenant.shop_name,
+      tenant_owner: tenant.owner_name,
+      tenant_email: tenant.email,
+      tenant_mobile: tenant.mobile,
+      tenant_plan: tenant.plan_type,
+      tenant_active: tenant.is_active,
+      tenant_addons: tenant.addons || {}
     });
 
     setAuthCookie(

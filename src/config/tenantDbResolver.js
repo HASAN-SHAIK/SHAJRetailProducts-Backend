@@ -1,9 +1,9 @@
 const masterPool = require('./masterDb');
 const { getTenantPool } = require('../db/tenantPool');
-const { getPlanFeatures } = require('../utils/planFeatures');
+const { resolveFeatures } = require('../utils/resolveFeatures');
 
 const tenantCache = new Map();
-const cacheTtlMs = 60 * 1000;
+const cacheTtlMs = 5 * 60 * 1000;
 
 const getCached = (key) => {
   const entry = tenantCache.get(key);
@@ -24,7 +24,7 @@ const loadTenant = async (tenantId) => {
   if (cached) return cached;
 
   const tenantRes = await masterPool.query(
-    `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.plan_type, t.is_active
+    `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.plan_type, t.is_active, t.addons
      FROM tenants t
      WHERE t.id = $1`,
     [tenantId]
@@ -35,21 +35,27 @@ const loadTenant = async (tenantId) => {
   return tenant;
 };
 
-const loadPlanFeaturesForTenant = async (tenantId) => {
-  const key = `plan:active:${tenantId}`;
-  const cached = getCached(key);
-  if (cached) return cached;
+const resolveTenantContextFromToken = (payload) => {
+  if (!payload || payload.type !== 'tenant') return null;
+  const tenantId = payload.tenant_id;
+  const databaseName = payload.tenant_db;
+  if (!tenantId || !databaseName) return null;
 
-  const tenantRes = await masterPool.query(
-    `SELECT plan_type
-     FROM tenants
-     WHERE id = $1`,
-    [tenantId]
-  );
-  const planType = tenantRes.rowCount > 0 ? tenantRes.rows[0].plan_type : null;
-  const features = getPlanFeatures(planType);
-  setCached(key, features);
-  return features;
+  const tenant = {
+    id: tenantId,
+    shop_name: payload.tenant_name || null,
+    owner_name: payload.tenant_owner || null,
+    email: payload.tenant_email || null,
+    mobile: payload.tenant_mobile || null,
+    plan_type: payload.tenant_plan || null,
+    is_active: payload.tenant_active !== undefined ? payload.tenant_active : null,
+    addons: payload.tenant_addons || {}
+  };
+
+  const tenantPool = getTenantPool(databaseName);
+  const planFeatures = resolveFeatures(tenant);
+
+  return { tenant, tenantPool, planFeatures };
 };
 
 const resolveTenantContext = async (tenantId) => {
@@ -64,9 +70,9 @@ const resolveTenantContext = async (tenantId) => {
 
   const databaseName = tenantDbRes.rows[0].database_name;
   const tenantPool = getTenantPool(databaseName);
-  const planFeatures = await loadPlanFeaturesForTenant(tenantId);
+  const planFeatures = resolveFeatures(tenant);
 
   return { tenant, tenantPool, planFeatures };
 };
 
-module.exports = { resolveTenantContext };
+module.exports = { resolveTenantContext, resolveTenantContextFromToken };

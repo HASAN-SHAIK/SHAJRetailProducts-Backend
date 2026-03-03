@@ -9,7 +9,9 @@ const normalizePaymentModeValue = (value) => {
 
 const resolveOrderLocation = (payload) => {
   if (!payload || typeof payload !== 'object') return null;
-  return payload.location || payload.customer_location || null;
+  const raw = payload.location || payload.customer_location || 'Other';
+  const cleaned = typeof raw === 'string' ? raw.trim() : raw;
+  return cleaned ? cleaned : 'Other';
 };
 
 const isInteger = (value) => Number.isInteger(Number(value));

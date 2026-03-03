@@ -7,7 +7,7 @@ const isAdmin = require('../middleware/isAdmin');
 router.get('/', getProducts);
 router.get('/search', searchProducts);
 router.get('/barcode', getProductByBarcode);
-router.get('/barcode/:code', getProductByBarcode);
+router.get('/barcode/:barcode', getProductByBarcode);
 router.post('/', isAdmin, addProduct);
 router.put('/:id',isAdmin, updateProduct);
 router.delete('/:id', isAdmin, deleteProduct);

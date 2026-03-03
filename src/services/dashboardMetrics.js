@@ -19,30 +19,16 @@ const getRevenueOverview = async (tenantPool, range, startDateRaw, endDateRaw, l
   const { start, end, range: resolvedRange } = getDateRange(range, startDateRaw, endDateRaw);
   const location = normalizeLocation(locationRaw);
 
-  const result = location
-    ? await tenantPool.query(
-        `SELECT
-           COALESCE(SUM(t.total_price), 0)::numeric AS total_revenue,
-           COALESCE(SUM(t.profit), 0)::numeric AS total_profit,
-           COUNT(DISTINCT o.id)::int AS total_orders
-         FROM transactions t
-         JOIN orders o ON o.id = t.order_id
-         WHERE t.created_at BETWEEN $1 AND $2
-           AND o.transaction_type = 'sale'
-           AND o.location = $3`,
-        [start, end, location]
-      )
-    : await tenantPool.query(
-        `SELECT
-           COALESCE(SUM(t.total_price), 0)::numeric AS total_revenue,
-           COALESCE(SUM(t.profit), 0)::numeric AS total_profit,
-           COUNT(DISTINCT o.id)::int AS total_orders
-         FROM transactions t
-         JOIN orders o ON o.id = t.order_id
-         WHERE t.created_at BETWEEN $1 AND $2
-           AND o.transaction_type = 'sale'`,
-        [start, end]
-      );
+  const result = await tenantPool.query(
+    `SELECT
+       COALESCE(SUM(total_revenue), 0)::numeric AS total_revenue,
+       COALESCE(SUM(total_profit), 0)::numeric AS total_profit,
+       COALESCE(SUM(total_orders), 0)::int AS total_orders
+     FROM tenant_dashboard_metrics
+     WHERE day BETWEEN $1 AND $2
+       AND ($3::text IS NULL OR location = $3)`,
+    [start, end, location]
+  );
 
   const row = result.rows[0] || {};
   const totalRevenue = Number(row.total_revenue || 0);
@@ -81,21 +67,19 @@ const getGrowthComparison = async (
   if (groupBy === 'location') {
     const result = await tenantPool.query(
       `SELECT
-         o.location AS location,
-         COALESCE(SUM(CASE WHEN t.created_at BETWEEN $1 AND $2 THEN t.total_price END), 0)::numeric AS current_revenue,
-         COALESCE(SUM(CASE WHEN t.created_at BETWEEN $1 AND $2 THEN t.profit END), 0)::numeric AS current_profit,
-         COALESCE(SUM(CASE WHEN t.created_at BETWEEN $3 AND $4 THEN t.total_price END), 0)::numeric AS previous_revenue,
-         COALESCE(SUM(CASE WHEN t.created_at BETWEEN $3 AND $4 THEN t.profit END), 0)::numeric AS previous_profit,
-         COUNT(CASE WHEN t.created_at BETWEEN $1 AND $2 THEN 1 END)::int AS current_orders,
-         COUNT(CASE WHEN t.created_at BETWEEN $3 AND $4 THEN 1 END)::int AS previous_orders
-       FROM transactions t
-       JOIN orders o ON o.id = t.order_id
-       WHERE t.created_at BETWEEN $3 AND $2
-         AND o.location IS NOT NULL
-         AND o.transaction_type = 'sale'
-         AND ($5::text IS NULL OR o.location = $5)
-       GROUP BY o.location
-       ORDER BY o.location ASC`,
+         location,
+         COALESCE(SUM(CASE WHEN day BETWEEN $1 AND $2 THEN total_revenue END), 0)::numeric AS current_revenue,
+         COALESCE(SUM(CASE WHEN day BETWEEN $1 AND $2 THEN total_profit END), 0)::numeric AS current_profit,
+         COALESCE(SUM(CASE WHEN day BETWEEN $1 AND $2 THEN total_orders END), 0)::int AS current_orders,
+         COALESCE(SUM(CASE WHEN day BETWEEN $3 AND $4 THEN total_revenue END), 0)::numeric AS previous_revenue,
+         COALESCE(SUM(CASE WHEN day BETWEEN $3 AND $4 THEN total_profit END), 0)::numeric AS previous_profit,
+         COALESCE(SUM(CASE WHEN day BETWEEN $3 AND $4 THEN total_orders END), 0)::int AS previous_orders
+       FROM tenant_dashboard_metrics
+       WHERE day BETWEEN $3 AND $2
+         AND location IS NOT NULL
+         AND ($5::text IS NULL OR location = $5)
+       GROUP BY location
+       ORDER BY location ASC`,
       [start, end, previousStart, previousEnd, location]
     );
 
@@ -134,36 +118,19 @@ const getGrowthComparison = async (
     return { grouped };
   }
 
-  const result = location
-    ? await tenantPool.query(
-        `SELECT
-           COALESCE(SUM(CASE WHEN t.created_at BETWEEN $1 AND $2 THEN t.total_price END), 0)::numeric AS current_revenue,
-           COALESCE(SUM(CASE WHEN t.created_at BETWEEN $1 AND $2 THEN t.profit END), 0)::numeric AS current_profit,
-           COALESCE(SUM(CASE WHEN t.created_at BETWEEN $3 AND $4 THEN t.total_price END), 0)::numeric AS previous_revenue,
-           COALESCE(SUM(CASE WHEN t.created_at BETWEEN $3 AND $4 THEN t.profit END), 0)::numeric AS previous_profit,
-           COUNT(CASE WHEN t.created_at BETWEEN $1 AND $2 THEN 1 END)::int AS current_orders,
-           COUNT(CASE WHEN t.created_at BETWEEN $3 AND $4 THEN 1 END)::int AS previous_orders
-         FROM transactions t
-         JOIN orders o ON o.id = t.order_id
-         WHERE t.created_at BETWEEN $3 AND $2
-           AND o.transaction_type = 'sale'
-           AND o.location = $5`,
-        [start, end, previousStart, previousEnd, location]
-      )
-    : await tenantPool.query(
-        `SELECT
-           COALESCE(SUM(CASE WHEN t.created_at BETWEEN $1 AND $2 THEN t.total_price END), 0)::numeric AS current_revenue,
-           COALESCE(SUM(CASE WHEN t.created_at BETWEEN $1 AND $2 THEN t.profit END), 0)::numeric AS current_profit,
-           COALESCE(SUM(CASE WHEN t.created_at BETWEEN $3 AND $4 THEN t.total_price END), 0)::numeric AS previous_revenue,
-           COALESCE(SUM(CASE WHEN t.created_at BETWEEN $3 AND $4 THEN t.profit END), 0)::numeric AS previous_profit,
-           COUNT(CASE WHEN t.created_at BETWEEN $1 AND $2 THEN 1 END)::int AS current_orders,
-           COUNT(CASE WHEN t.created_at BETWEEN $3 AND $4 THEN 1 END)::int AS previous_orders
-         FROM transactions t
-         JOIN orders o ON o.id = t.order_id
-         WHERE t.created_at BETWEEN $3 AND $2
-           AND o.transaction_type = 'sale'`,
-        [start, end, previousStart, previousEnd]
-      );
+  const result = await tenantPool.query(
+    `SELECT
+       COALESCE(SUM(CASE WHEN day BETWEEN $1 AND $2 THEN total_revenue END), 0)::numeric AS current_revenue,
+       COALESCE(SUM(CASE WHEN day BETWEEN $1 AND $2 THEN total_profit END), 0)::numeric AS current_profit,
+       COALESCE(SUM(CASE WHEN day BETWEEN $1 AND $2 THEN total_orders END), 0)::int AS current_orders,
+       COALESCE(SUM(CASE WHEN day BETWEEN $3 AND $4 THEN total_revenue END), 0)::numeric AS previous_revenue,
+       COALESCE(SUM(CASE WHEN day BETWEEN $3 AND $4 THEN total_profit END), 0)::numeric AS previous_profit,
+       COALESCE(SUM(CASE WHEN day BETWEEN $3 AND $4 THEN total_orders END), 0)::int AS previous_orders
+     FROM tenant_dashboard_metrics
+     WHERE day BETWEEN $3 AND $2
+       AND ($5::text IS NULL OR location = $5)`,
+    [start, end, previousStart, previousEnd, location]
+  );
 
   const row = result.rows[0] || {};
   const currentRevenue = Number(row.current_revenue || 0);
@@ -620,19 +587,17 @@ const getLocationSummary = async (tenantPool, range, startDateRaw, endDateRaw, l
 
   const result = await tenantPool.query(
     `SELECT
-       o.location AS location,
-       COALESCE(SUM(CASE WHEN t.created_at BETWEEN $1 AND $2 THEN t.total_price END), 0)::numeric AS total_revenue,
-       COALESCE(SUM(CASE WHEN t.created_at BETWEEN $1 AND $2 THEN t.profit END), 0)::numeric AS total_profit,
-       COUNT(CASE WHEN t.created_at BETWEEN $1 AND $2 THEN 1 END)::int AS total_orders,
-       COALESCE(SUM(CASE WHEN t.created_at BETWEEN $3 AND $4 THEN t.total_price END), 0)::numeric AS previous_revenue
-     FROM transactions t
-     JOIN orders o ON o.id = t.order_id
-     WHERE t.created_at BETWEEN $3 AND $2
-       AND o.location IS NOT NULL
-       AND o.transaction_type = 'sale'
-       AND ($5::text IS NULL OR o.location = $5)
-     GROUP BY o.location
-     ORDER BY o.location ASC`,
+       location,
+       COALESCE(SUM(CASE WHEN day BETWEEN $1 AND $2 THEN total_revenue END), 0)::numeric AS total_revenue,
+       COALESCE(SUM(CASE WHEN day BETWEEN $1 AND $2 THEN total_profit END), 0)::numeric AS total_profit,
+       COALESCE(SUM(CASE WHEN day BETWEEN $1 AND $2 THEN total_orders END), 0)::int AS total_orders,
+       COALESCE(SUM(CASE WHEN day BETWEEN $3 AND $4 THEN total_revenue END), 0)::numeric AS previous_revenue
+     FROM tenant_dashboard_metrics
+     WHERE day BETWEEN $3 AND $2
+       AND location IS NOT NULL
+       AND ($5::text IS NULL OR location = $5)
+     GROUP BY location
+     ORDER BY location ASC`,
     [start, end, previousStart, previousEnd, location]
   );
 

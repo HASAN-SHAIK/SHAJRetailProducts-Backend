@@ -13,7 +13,9 @@ const normalizePaymentModeValue = (value) => {
 
 const resolveOrderLocation = (payload) => {
   if (!payload || typeof payload !== 'object') return null;
-  return payload.location || payload.customer_location || null;
+  const raw = payload.location || payload.customer_location || 'Other';
+  const cleaned = typeof raw === 'string' ? raw.trim() : raw;
+  return cleaned ? cleaned : 'Other';
 };
 
 const buildCustomerPayload = (req) => {
@@ -582,50 +584,50 @@ const getAllOrders = async (req, res) => {
 
         const searchValue = typeof search === 'string' && search.trim() ? `%${search.trim()}%` : null;
         const ordersRes = await requestPool.query(
-            `SELECT o.id,
-                    o.total_price AS total_amount,
-                    o.created_at,
-                    o.order_status,
-                    o.payment_mode,
-                    c.name AS customer_name,
-                    COALESCE(oi.item_count, 0)::int AS product_count,
-                    COALESCE(oi.product_names, '') AS product_names,
-                    COALESCE(t.total_paid, 0)::numeric AS total_paid
-             FROM orders o
-             LEFT JOIN customers c ON c.id = o.customer_id
-             LEFT JOIN (
-               SELECT oi.order_id,
-                      COUNT(*) AS item_count,
-                      STRING_AGG(DISTINCT p.name, ', ' ORDER BY p.name) AS product_names
-               FROM order_items oi
-               JOIN products p ON p.id = oi.product_id
-               GROUP BY oi.order_id
-             ) oi ON oi.order_id = o.id
-             LEFT JOIN (
-               SELECT order_id, COALESCE(SUM(total_price), 0)::numeric AS total_paid
-               FROM transactions
-               GROUP BY order_id
-             ) t ON t.order_id = o.id
-             WHERE o.created_at BETWEEN $1 AND $2
-               AND (
-                 $5::text IS NULL
-                 OR o.id::text ILIKE $5
-                 OR c.name ILIKE $5
-                 OR EXISTS (
-                   SELECT 1
-                   FROM order_items oi2
-                   JOIN products p2 ON p2.id = oi2.product_id
-                   WHERE oi2.order_id = o.id
-                     AND p2.name ILIKE $5
+            `WITH base AS (
+               SELECT o.id,
+                      o.total_price AS total_amount,
+                      o.created_at,
+                      o.order_status,
+                      o.payment_mode,
+                      o.customer_id,
+                      COALESCE(o.product_count, 0)::int AS product_count,
+                      COALESCE(o.product_summary, '') AS product_names,
+                      COALESCE(o.total_paid, 0)::numeric AS total_paid
+               FROM orders o
+               LEFT JOIN customers c ON c.id = o.customer_id
+               WHERE o.created_at BETWEEN $1 AND $2
+                 AND (
+                   $5::text IS NULL
+                   OR o.id::text ILIKE $5
+                   OR c.name ILIKE $5
+                   OR o.product_summary ILIKE $5
                  )
-               )
+               ORDER BY
+                 CASE WHEN $6 = 'created_at' THEN o.created_at END ${sortOrder},
+                 CASE WHEN $6 = 'total_amount' THEN o.total_price END ${sortOrder},
+                 CASE WHEN $6 = 'total_paid' THEN COALESCE(o.total_paid, 0)::numeric END ${sortOrder},
+                 CASE WHEN $6 = 'balance' THEN (o.total_price - COALESCE(o.total_paid, 0)::numeric) END ${sortOrder},
+                 o.created_at DESC
+               LIMIT $3 OFFSET $4
+             )
+             SELECT b.id,
+                    b.total_amount,
+                    b.created_at,
+                    b.order_status,
+                    b.payment_mode,
+                    c.name AS customer_name,
+                    b.product_count,
+                    b.product_names,
+                    b.total_paid
+             FROM base b
+             LEFT JOIN customers c ON c.id = b.customer_id
              ORDER BY
-               CASE WHEN $6 = 'created_at' THEN o.created_at END ${sortOrder},
-               CASE WHEN $6 = 'total_amount' THEN o.total_price END ${sortOrder},
-                 CASE WHEN $6 = 'total_paid' THEN COALESCE(t.total_paid, 0)::numeric END ${sortOrder},
-                 CASE WHEN $6 = 'balance' THEN (o.total_price - COALESCE(t.total_paid, 0)::numeric) END ${sortOrder},
-               o.created_at DESC
-             LIMIT $3 OFFSET $4`,
+               CASE WHEN $6 = 'created_at' THEN b.created_at END ${sortOrder},
+               CASE WHEN $6 = 'total_amount' THEN b.total_amount END ${sortOrder},
+               CASE WHEN $6 = 'total_paid' THEN COALESCE(b.total_paid, 0)::numeric END ${sortOrder},
+               CASE WHEN $6 = 'balance' THEN (b.total_amount - COALESCE(b.total_paid, 0)::numeric) END ${sortOrder},
+               b.created_at DESC`,
             [start, end, resolvedLimit, offset, searchValue, resolvedSort]
         );
 
@@ -675,25 +677,25 @@ const getAllOrders = async (req, res) => {
                 created_at: order.created_at
             };
         });
-        const totalCountRes = await requestPool.query(
-            `SELECT COUNT(*)::int AS total_records
-             FROM orders o
-             LEFT JOIN customers c ON c.id = o.customer_id
-             WHERE o.created_at BETWEEN $1 AND $2
-               AND (
-                 $3::text IS NULL
-                 OR o.id::text ILIKE $3
-                 OR c.name ILIKE $3
-                 OR EXISTS (
-                   SELECT 1
-                   FROM order_items oi2
-                   JOIN products p2 ON p2.id = oi2.product_id
-                   WHERE oi2.order_id = o.id
-                     AND p2.name ILIKE $3
-                 )
-               )`,
-            [start, end, searchValue]
-        );
+          const totalCountRes = searchValue
+            ? await requestPool.query(
+                `SELECT COUNT(*)::int AS total_records
+                 FROM orders o
+                 LEFT JOIN customers c ON c.id = o.customer_id
+                 WHERE o.created_at BETWEEN $1 AND $2
+                   AND (
+                     o.id::text ILIKE $3
+                     OR c.name ILIKE $3
+                     OR o.product_summary ILIKE $3
+                   )`,
+                [start, end, searchValue]
+              )
+            : await requestPool.query(
+                `SELECT COUNT(*)::int AS total_records
+                 FROM orders o
+                 WHERE o.created_at BETWEEN $1 AND $2`,
+                [start, end]
+              );
         const totalRecords = Number(totalCountRes.rows[0]?.total_records || 0);
         const totalPages = totalRecords === 0 ? 0 : Math.ceil(totalRecords / resolvedLimit);
 

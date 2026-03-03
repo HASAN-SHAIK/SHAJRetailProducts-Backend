@@ -1,6 +1,6 @@
 require('dotenv').config();
 const { Pool } = require('pg');
-const { getEnvPassword, attachQueryTimer } = require('./poolUtils');
+const { getEnvPassword, getPoolTuning, attachQueryTimer } = require('./poolUtils');
 
 const poolConfig = process.env.MASTER_DATABASE_URL
   ? {
@@ -16,10 +16,19 @@ const poolConfig = process.env.MASTER_DATABASE_URL
       ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false
     };
 
-const masterPool = attachQueryTimer(new Pool(poolConfig), 'master');
+const tunedConfig = { ...poolConfig, ...getPoolTuning('MASTER_DB') };
+let masterPool;
 
-masterPool.on('error', (err) => {
-  console.error('Master DB pool error:', err);
-});
+const getMasterPool = () => {
+  if (masterPool) return masterPool;
+  masterPool = attachQueryTimer(new Pool(tunedConfig), 'master');
+  masterPool.on('error', (err) => {
+    console.error('Master DB pool error:', err);
+  });
+  console.log('Master Pool Created');
+  return masterPool;
+};
 
-module.exports = masterPool;
+const exportedPool = getMasterPool();
+module.exports = exportedPool;
+module.exports.getMasterPool = getMasterPool;

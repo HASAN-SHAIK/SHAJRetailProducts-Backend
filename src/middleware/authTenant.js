@@ -4,7 +4,7 @@ const {
   getTokenFromRequest,
   verifyTenantToken
 } = require('../utils/jwt');
-const { resolveTenantContext } = require('../config/tenantDbResolver');
+const { resolveTenantContext, resolveTenantContextFromToken } = require('../config/tenantDbResolver');
 
 const authTenantMiddleware = async (req, res, next) => {
   const token = getTokenFromRequest(req, DEFAULT_TENANT_COOKIE);
@@ -22,9 +22,15 @@ const authTenantMiddleware = async (req, res, next) => {
     req.user = verified;
     req.tenant_id = verified.tenant_id;
 
-    const context = await resolveTenantContext(verified.tenant_id);
-    if (!context || context.tenant?.is_active === false) {
+    let context = resolveTenantContextFromToken(verified);
+    if (context?.tenant?.is_active === false) {
       return jsonError(res, 403, 'TENANT_DISABLED', 'Tenant is disabled');
+    }
+    if (!context) {
+      context = await resolveTenantContext(verified.tenant_id);
+      if (!context || context.tenant?.is_active === false) {
+        return jsonError(res, 403, 'TENANT_DISABLED', 'Tenant is disabled');
+      }
     }
 
     req.tenant = context.tenant;

@@ -1,183 +1,18 @@
-CREATE TABLE IF NOT EXISTS users (
-  id SERIAL PRIMARY KEY,
-  name VARCHAR(255) NOT NULL,
-  email VARCHAR(255) UNIQUE NOT NULL,
-  password TEXT NOT NULL,
-  role VARCHAR(50) CHECK (role IN ('admin', 'staff')),
-  created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC')
-);
+-- Denormalized analytics helpers to reduce runtime JOINs
 
-CREATE TABLE IF NOT EXISTS shop_details (
-  id SERIAL PRIMARY KEY,
-  shop_name VARCHAR(255) NOT NULL,
-  owner_name VARCHAR(255),
-  mobile_number VARCHAR(15),
-  gst_number VARCHAR(20),
-  address_line TEXT,
-  city VARCHAR(100),
-  state VARCHAR(100),
-  pincode VARCHAR(10),
-  created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC')
-);
+-- 1) Orders snapshot columns for customer data
+ALTER TABLE orders
+  ADD COLUMN IF NOT EXISTS customer_name_snapshot TEXT,
+  ADD COLUMN IF NOT EXISTS customer_mobile_snapshot TEXT;
 
-CREATE TABLE IF NOT EXISTS customers (
-  id SERIAL PRIMARY KEY,
-  name VARCHAR(255),
-  mobile VARCHAR(15),
-  location VARCHAR(100),
-  address TEXT,
-  created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC')
-);
+UPDATE orders o
+SET customer_name_snapshot = c.name,
+    customer_mobile_snapshot = c.mobile
+FROM customers c
+WHERE o.customer_id = c.id
+  AND (o.customer_name_snapshot IS NULL OR o.customer_mobile_snapshot IS NULL);
 
-CREATE TABLE IF NOT EXISTS products (
-  id SERIAL PRIMARY KEY,
-  name VARCHAR(255) NOT NULL,
-  category VARCHAR(255),
-  is_weight_based BOOLEAN DEFAULT FALSE,
-  selling_price DECIMAL(10,2) NOT NULL,
-  actual_price DECIMAL(10,2),
-  stock_quantity DECIMAL(10,2) NOT NULL,
-  company VARCHAR(255),
-  time_for_delivery INT,
-  is_deleted BOOLEAN DEFAULT FALSE,
-  created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC')
-);
-
-CREATE TABLE IF NOT EXISTS orders (
-  id SERIAL PRIMARY KEY,
-  user_id INT NULL,
-  customer_id INT NULL,
-  total_price DECIMAL(12,2),
-  total_paid DECIMAL(12,2) DEFAULT 0,
-  order_status VARCHAR(50) DEFAULT 'pending',
-  transaction_type VARCHAR(10) DEFAULT 'sale' CHECK (transaction_type IN ('sale', 'purchase', 'personal')),
-  location VARCHAR(255),
-  product_summary TEXT,
-  product_count INT DEFAULT 0,
-  customer_name_snapshot TEXT,
-  customer_mobile_snapshot TEXT,
-  created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC'),
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
-  FOREIGN KEY (customer_id) REFERENCES customers(id),
-  payment_mode VARCHAR(10) CHECK (payment_mode IN ('cash', 'online'))
-
-);
-
-CREATE TABLE IF NOT EXISTS order_items (
-  id SERIAL PRIMARY KEY,
-  order_id INT,
-  product_id INT,
-  quantity DECIMAL(10,2) NOT NULL,
-  selling_price DECIMAL(10,2),
-  FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
-  FOREIGN KEY (product_id) REFERENCES products(id)
-);
-
-CREATE TABLE IF NOT EXISTS transactions (
-  id SERIAL PRIMARY KEY,
-  order_id INT,
-  total_price DECIMAL(12,2),
-  profit DECIMAL(12,2),
-  payment_mode VARCHAR(50),
-  created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC'),
-  FOREIGN KEY (order_id) REFERENCES orders(id)
-);
-
-CREATE OR REPLACE FUNCTION refresh_order_summary(p_order_id INT) RETURNS VOID AS $$
-DECLARE
-  v_names TEXT;
-  v_count INT;
-BEGIN
-  SELECT
-    STRING_AGG(DISTINCT p.name, ', ' ORDER BY p.name),
-    COUNT(*)::int
-  INTO v_names, v_count
-  FROM order_items oi
-  JOIN products p ON p.id = oi.product_id
-  WHERE oi.order_id = p_order_id;
-
-  UPDATE orders
-  SET product_summary = COALESCE(v_names, ''),
-      product_count = COALESCE(v_count, 0)
-  WHERE id = p_order_id;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE OR REPLACE FUNCTION refresh_order_total_paid(p_order_id INT) RETURNS VOID AS $$
-DECLARE
-  v_paid NUMERIC;
-BEGIN
-  SELECT COALESCE(SUM(total_price), 0)::numeric
-  INTO v_paid
-  FROM transactions
-  WHERE order_id = p_order_id;
-
-  UPDATE orders
-  SET total_paid = COALESCE(v_paid, 0)
-  WHERE id = p_order_id;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE OR REPLACE FUNCTION trg_order_items_refresh_summary() RETURNS TRIGGER AS $$
-BEGIN
-  IF TG_OP = 'INSERT' THEN
-    PERFORM refresh_order_summary(NEW.order_id);
-  ELSIF TG_OP = 'DELETE' THEN
-    PERFORM refresh_order_summary(OLD.order_id);
-  ELSE
-    IF NEW.order_id IS DISTINCT FROM OLD.order_id THEN
-      PERFORM refresh_order_summary(OLD.order_id);
-    END IF;
-    PERFORM refresh_order_summary(NEW.order_id);
-  END IF;
-  RETURN NULL;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS order_items_refresh_summary ON order_items;
-CREATE TRIGGER order_items_refresh_summary
-AFTER INSERT OR UPDATE OR DELETE ON order_items
-FOR EACH ROW EXECUTE FUNCTION trg_order_items_refresh_summary();
-
-CREATE OR REPLACE FUNCTION trg_transactions_refresh_total_paid() RETURNS TRIGGER AS $$
-BEGIN
-  IF TG_OP = 'INSERT' THEN
-    PERFORM refresh_order_total_paid(NEW.order_id);
-  ELSIF TG_OP = 'DELETE' THEN
-    PERFORM refresh_order_total_paid(OLD.order_id);
-  ELSE
-    IF NEW.order_id IS DISTINCT FROM OLD.order_id THEN
-      PERFORM refresh_order_total_paid(OLD.order_id);
-    END IF;
-    PERFORM refresh_order_total_paid(NEW.order_id);
-  END IF;
-  RETURN NULL;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS transactions_refresh_total_paid ON transactions;
-CREATE TRIGGER transactions_refresh_total_paid
-AFTER INSERT OR UPDATE OR DELETE ON transactions
-FOR EACH ROW EXECUTE FUNCTION trg_transactions_refresh_total_paid();
-
-CREATE TABLE IF NOT EXISTS tenant_dashboard_metrics (
-  day DATE NOT NULL,
-  location TEXT,
-  total_revenue NUMERIC(12,2) NOT NULL DEFAULT 0,
-  total_profit NUMERIC(12,2) NOT NULL DEFAULT 0,
-  total_orders INT NOT NULL DEFAULT 0,
-  credit_outstanding NUMERIC(12,2) NOT NULL DEFAULT 0,
-  updated_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC'),
-  PRIMARY KEY (day, location)
-);
-
-CREATE TABLE IF NOT EXISTS tenant_order_daily (
-  day DATE NOT NULL,
-  location TEXT,
-  order_id INT NOT NULL,
-  PRIMARY KEY (day, location, order_id)
-);
-
+-- 2) Daily product metrics (sales)
 CREATE TABLE IF NOT EXISTS tenant_product_daily (
   day DATE NOT NULL,
   location TEXT,
@@ -189,6 +24,7 @@ CREATE TABLE IF NOT EXISTS tenant_product_daily (
   PRIMARY KEY (day, location, product_id)
 );
 
+-- 3) Daily customer metrics (sales + credit)
 CREATE TABLE IF NOT EXISTS tenant_customer_daily (
   day DATE NOT NULL,
   location TEXT,
@@ -209,6 +45,7 @@ CREATE TABLE IF NOT EXISTS tenant_customer_order_daily (
   PRIMARY KEY (day, location, customer_id, order_id)
 );
 
+-- 4) Snapshot customer info on orders
 CREATE OR REPLACE FUNCTION set_order_customer_snapshot() RETURNS TRIGGER AS $$
 BEGIN
   IF NEW.customer_id IS NULL THEN
@@ -231,6 +68,7 @@ CREATE TRIGGER orders_customer_snapshot_biu
 BEFORE INSERT OR UPDATE OF customer_id ON orders
 FOR EACH ROW EXECUTE FUNCTION set_order_customer_snapshot();
 
+-- 5) Apply product metrics per order item
 CREATE OR REPLACE FUNCTION apply_order_item_metrics(
   p_order_id INT,
   p_product_id INT,
@@ -306,6 +144,7 @@ CREATE TRIGGER order_items_metrics_aiud
 AFTER INSERT OR UPDATE OR DELETE ON order_items
 FOR EACH ROW EXECUTE FUNCTION trg_order_items_metrics();
 
+-- 6) Extend transaction metrics to update customer daily metrics
 CREATE OR REPLACE FUNCTION apply_txn_metrics(
   p_order_id INT,
   p_created_at TIMESTAMP,
@@ -435,45 +274,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION trg_transactions_metrics() RETURNS TRIGGER AS $$
-BEGIN
-  IF TG_OP = 'INSERT' THEN
-    PERFORM apply_txn_metrics(NEW.order_id, NEW.created_at, NEW.total_price, NEW.profit, NEW.payment_mode, 1);
-  ELSIF TG_OP = 'DELETE' THEN
-    PERFORM apply_txn_metrics(OLD.order_id, OLD.created_at, OLD.total_price, OLD.profit, OLD.payment_mode, -1);
-  ELSE
-    PERFORM apply_txn_metrics(OLD.order_id, OLD.created_at, OLD.total_price, OLD.profit, OLD.payment_mode, -1);
-    PERFORM apply_txn_metrics(NEW.order_id, NEW.created_at, NEW.total_price, NEW.profit, NEW.payment_mode, 1);
-  END IF;
-  RETURN NULL;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS transactions_metrics_aiud ON transactions;
-CREATE TRIGGER transactions_metrics_aiud
-AFTER INSERT OR UPDATE OR DELETE ON transactions
-FOR EACH ROW EXECUTE FUNCTION trg_transactions_metrics();
-
-CREATE OR REPLACE FUNCTION trg_orders_metrics_relocate() RETURNS TRIGGER AS $$
-DECLARE
-  t RECORD;
-BEGIN
-  IF (OLD.location IS DISTINCT FROM NEW.location)
-     OR (OLD.transaction_type IS DISTINCT FROM NEW.transaction_type) THEN
-    FOR t IN SELECT * FROM transactions WHERE order_id = NEW.id LOOP
-      PERFORM apply_txn_metrics(t.order_id, t.created_at, t.total_price, t.profit, t.payment_mode, -1, OLD.location, OLD.transaction_type);
-      PERFORM apply_txn_metrics(t.order_id, t.created_at, t.total_price, t.profit, t.payment_mode, 1, NEW.location, NEW.transaction_type);
-    END LOOP;
-  END IF;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS orders_metrics_relocate ON orders;
-CREATE TRIGGER orders_metrics_relocate
-AFTER UPDATE OF location, transaction_type ON orders
-FOR EACH ROW EXECUTE FUNCTION trg_orders_metrics_relocate();
-
+-- 7) Relocate product metrics if order location/type changes
 CREATE OR REPLACE FUNCTION trg_orders_relocate_product_metrics() RETURNS TRIGGER AS $$
 DECLARE
   i RECORD;
@@ -494,38 +295,57 @@ CREATE TRIGGER orders_relocate_product_metrics
 AFTER UPDATE OF location, transaction_type ON orders
 FOR EACH ROW EXECUTE FUNCTION trg_orders_relocate_product_metrics();
 
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
+-- 8) Backfill daily product metrics
+INSERT INTO tenant_product_daily (day, location, product_id, product_name, qty_sold, revenue)
+SELECT
+  DATE(o.created_at) AS day,
+  COALESCE(NULLIF(BTRIM(o.location), ''), 'Unknown') AS location,
+  p.id AS product_id,
+  p.name AS product_name,
+  COALESCE(SUM(oi.quantity), 0)::numeric AS qty_sold,
+  COALESCE(SUM(oi.quantity * oi.selling_price), 0)::numeric AS revenue
+FROM orders o
+JOIN order_items oi ON oi.order_id = o.id
+JOIN products p ON p.id = oi.product_id
+WHERE o.transaction_type = 'sale'
+GROUP BY DATE(o.created_at), COALESCE(NULLIF(BTRIM(o.location), ''), 'Unknown'), p.id, p.name
+ON CONFLICT (day, location, product_id) DO UPDATE
+SET qty_sold = EXCLUDED.qty_sold,
+    revenue = EXCLUDED.revenue,
+    product_name = EXCLUDED.product_name,
+    updated_at = (NOW() AT TIME ZONE 'UTC');
 
-CREATE INDEX IF NOT EXISTS idx_orders_type_loc_created
-  ON orders (transaction_type, location, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_orders_status_created
-  ON orders (order_status, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_orders_customer_created
-  ON orders (customer_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_orders_location
-  ON orders (location)
-  WHERE location IS NOT NULL;
+-- 9) Backfill customer daily + order daily
+INSERT INTO tenant_customer_order_daily (day, location, customer_id, order_id)
+SELECT DISTINCT
+  DATE(t.created_at) AS day,
+  COALESCE(NULLIF(BTRIM(o.location), ''), 'Unknown') AS location,
+  o.customer_id,
+  o.id AS order_id
+FROM transactions t
+JOIN orders o ON o.id = t.order_id
+WHERE o.transaction_type = 'sale'
+  AND o.customer_id IS NOT NULL
+ON CONFLICT DO NOTHING;
 
-CREATE INDEX IF NOT EXISTS idx_transactions_order_created
-  ON transactions (order_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_transactions_payment_created
-  ON transactions (payment_mode, created_at DESC)
-  WHERE payment_mode = 'credit';
-
-CREATE INDEX IF NOT EXISTS idx_order_items_order
-  ON order_items (order_id);
-CREATE INDEX IF NOT EXISTS idx_order_items_product
-  ON order_items (product_id);
-
-CREATE INDEX IF NOT EXISTS idx_products_category
-  ON products (category);
-CREATE INDEX IF NOT EXISTS idx_products_name_trgm
-  ON products USING gin (name gin_trgm_ops);
-CREATE INDEX IF NOT EXISTS idx_products_low_stock
-  ON products (stock_quantity)
-  WHERE is_deleted = false;
-
-CREATE INDEX IF NOT EXISTS idx_customers_created
-  ON customers (created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_customers_name_trgm
-  ON customers USING gin (name gin_trgm_ops);
+INSERT INTO tenant_customer_daily (day, location, customer_id, customer_name, total_revenue, total_orders, credit_outstanding)
+SELECT
+  DATE(t.created_at) AS day,
+  COALESCE(NULLIF(BTRIM(o.location), ''), 'Unknown') AS location,
+  o.customer_id,
+  COALESCE(o.customer_name_snapshot, c.name) AS customer_name,
+  COALESCE(SUM(t.total_price), 0)::numeric AS total_revenue,
+  COUNT(DISTINCT o.id)::int AS total_orders,
+  COALESCE(SUM(CASE WHEN t.payment_mode = 'credit' THEN t.total_price END), 0)::numeric AS credit_outstanding
+FROM transactions t
+JOIN orders o ON o.id = t.order_id
+LEFT JOIN customers c ON c.id = o.customer_id
+WHERE o.transaction_type = 'sale'
+  AND o.customer_id IS NOT NULL
+GROUP BY DATE(t.created_at), COALESCE(NULLIF(BTRIM(o.location), ''), 'Unknown'), o.customer_id, COALESCE(o.customer_name_snapshot, c.name)
+ON CONFLICT (day, location, customer_id) DO UPDATE
+SET total_revenue = EXCLUDED.total_revenue,
+    total_orders = EXCLUDED.total_orders,
+    credit_outstanding = EXCLUDED.credit_outstanding,
+    customer_name = EXCLUDED.customer_name,
+    updated_at = (NOW() AT TIME ZONE 'UTC');

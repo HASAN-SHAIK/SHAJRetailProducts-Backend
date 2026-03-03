@@ -41,6 +41,7 @@ const getProducts = async (req, res) => {
                     selling_price,
                     actual_price,
                     stock_quantity,
+                    barcode,
                     NULL::int AS min_stock_level,
                     created_at
              FROM products
@@ -90,6 +91,12 @@ const getProducts = async (req, res) => {
         res.status(500).json({ error: 'Database error' });
     }
 };
+const normalizeBarcode = (value) => {
+    if (value === undefined || value === null) return null;
+    const trimmed = value.toString().trim();
+    return trimmed ? trimmed : null;
+};
+
 // ✅ Add new product
 const addProduct = async (req, res) => {
   const {
@@ -102,9 +109,21 @@ const addProduct = async (req, res) => {
     time_for_delivery,
     is_weight_based
   } = req.body;
+  const barcodeProvided = Object.prototype.hasOwnProperty.call(req.body || {}, 'barcode');
+  const barcode = normalizeBarcode(req.body?.barcode);
 
   try {
     const requestPool = getRequestPool(req);
+    const barcodeEnabled = req.features?.enable_barcode === true;
+    if (barcodeEnabled && barcodeProvided && barcode) {
+      const dupRes = await requestPool.query(
+        'SELECT id FROM products WHERE barcode = $1 AND is_deleted = FALSE LIMIT 1',
+        [barcode]
+      );
+      if (dupRes.rows.length > 0) {
+        return res.status(400).json({ message: 'Barcode already exists.' });
+      }
+    }
     // 1. Check if product already exists with same name and company
     const existing = await requestPool.query(
       'SELECT * FROM products WHERE name = $1 AND company = $2',
@@ -114,20 +133,24 @@ const addProduct = async (req, res) => {
     if (existing.rows.length > 0) {
       // 2. Product exists: update stock and prices
       const existingProduct = existing.rows[0];
+      const resolvedBarcode =
+        barcodeEnabled && barcodeProvided ? barcode : existingProduct.barcode ?? null;
 
       const updated = await requestPool.query(
         `UPDATE products
          SET stock_quantity = stock_quantity + $1,
              actual_price = $2,
              selling_price = $3,
-             is_weight_based = $4
-         WHERE id = $5
+             is_weight_based = $4,
+             barcode = $5
+         WHERE id = $6
          RETURNING *`,
         [
           stock_quantity,
           actual_price,
           selling_price,
           is_weight_based ?? existingProduct.is_weight_based ?? 0,
+          resolvedBarcode,
           existingProduct.id
         ]
       );
@@ -138,20 +161,36 @@ const addProduct = async (req, res) => {
       });
     } else {
       // 3. Product doesn't exist: insert new
+      const columns = [
+        'name',
+        'category',
+        'selling_price',
+        'stock_quantity',
+        'actual_price',
+        'company',
+        'time_for_delivery',
+        'is_weight_based'
+      ];
+      const values = [
+        product_name,
+        category,
+        selling_price,
+        stock_quantity,
+        actual_price,
+        company,
+        time_for_delivery,
+        is_weight_based ?? 0
+      ];
+      if (barcodeEnabled && barcodeProvided) {
+        columns.push('barcode');
+        values.push(barcode);
+      }
+      const placeholders = values.map((_, idx) => `$${idx + 1}`).join(', ');
       const result = await requestPool.query(
-        `INSERT INTO products (name, category, selling_price, stock_quantity, actual_price, company, time_for_delivery, is_weight_based)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `INSERT INTO products (${columns.join(', ')})
+         VALUES (${placeholders})
          RETURNING *`,
-        [
-          product_name,
-          category,
-          selling_price,
-          stock_quantity,
-          actual_price,
-          company,
-          time_for_delivery,
-          is_weight_based ?? 0
-        ]
+        values
       );
 
       return res.status(201).json({
@@ -170,8 +209,20 @@ const addProduct = async (req, res) => {
 const updateProduct = async (req, res) => {
     const { id } = req.params;
     const {selling_price, actual_price, stock_quantity,name,company, is_weight_based } = req.body;
+    const barcodeProvided = Object.prototype.hasOwnProperty.call(req.body || {}, 'barcode');
+    const barcode = normalizeBarcode(req.body?.barcode);
     try {
         const requestPool = getRequestPool(req);
+        const barcodeEnabled = req.features?.enable_barcode === true;
+        if (barcodeEnabled && barcodeProvided && barcode) {
+            const dupRes = await requestPool.query(
+                'SELECT id FROM products WHERE barcode = $1 AND id <> $2 AND is_deleted = FALSE LIMIT 1',
+                [barcode, id]
+            );
+            if (dupRes.rows.length > 0) {
+                return res.status(400).json({ message: 'Barcode already exists.' });
+            }
+        }
         const productRes = await requestPool.query('select * from products where id = $1', [id]);
         const product = productRes.rows[0];
         // console.log(product)
@@ -179,17 +230,30 @@ const updateProduct = async (req, res) => {
         //     'UPDATE products SET name = $1, category = $2, selling_price = $3, stock_quantity = $4, actual_price = $5, company = $6 WHERE id = $7 RETURNING *',
         //     [product_name|| product.name, category || product.category, selling_price || product.selling_price, stock_quantity || product.stock_quantity,actual_price || product.actual_price, company || product.company, id]
         // );
+        const updateFields = [
+            'name = $1',
+            'company = $2',
+            'selling_price = $3',
+            'actual_price = $4',
+            'stock_quantity = $5',
+            'is_weight_based = $6'
+        ];
+        const updateValues = [
+            name || product.name,
+            company || product.company,
+            selling_price ?? product.selling_price,
+            actual_price ?? product.actual_price,
+            stock_quantity ?? product.stock_quantity,
+            is_weight_based ?? product.is_weight_based ?? 0
+        ];
+        if (barcodeEnabled && barcodeProvided) {
+            updateFields.push(`barcode = $${updateValues.length + 1}`);
+            updateValues.push(barcode);
+        }
+        updateValues.push(id);
         const result = await requestPool.query(
-            'UPDATE products SET name = $1, company = $2, selling_price = $3, actual_price = $4, stock_quantity = $5, is_weight_based = $6 WHERE id = $7 RETURNING *',
-            [
-              name || product.name,
-              company || product.company,
-              selling_price ?? product.selling_price,
-              actual_price ?? product.actual_price,
-              stock_quantity ?? product.stock_quantity,
-              is_weight_based ?? product.is_weight_based ?? 0,
-              id
-            ]
+            `UPDATE products SET ${updateFields.join(', ')} WHERE id = $${updateValues.length} RETURNING *`,
+            updateValues
         );
         res.json(result.rows[0]);
     } catch (error) {
@@ -235,29 +299,23 @@ const searchProducts = async (req, res) => {
 const getProductByBarcode = async (req, res) => {
     try {
         const requestPool = getRequestPool(req);
-        const code = (req.params.code || req.query.code || req.query.barcode || '').toString().trim();
+        if (req.features?.enable_barcode !== true) {
+            return res.status(403).json({ error: "Barcode feature is disabled." });
+        }
+        const code = (req.params.barcode || req.params.code || req.query.barcode || req.query.code || '').toString().trim();
         if (!code) {
             return res.status(400).json({ error: "Barcode is required." });
         }
 
-        let rows = [];
-        if (/^\d+$/.test(code)) {
-            const result = await requestPool.query(
-                'SELECT * FROM products WHERE id = $1 AND is_deleted = FALSE',
-                [Number(code)]
-            );
-            rows = result.rows;
-        } else {
-            const result = await requestPool.query(
-                `SELECT * FROM products
-                 WHERE is_deleted = FALSE
-                   AND (LOWER(name) LIKE LOWER($1) OR LOWER(company) LIKE LOWER($1))`,
-                [`%${code}%`]
-            );
-            rows = result.rows;
-        }
-
-        return res.status(200).json({ product: rows[0] || null, products: rows });
+        const result = await requestPool.query(
+            `SELECT id, name, selling_price, stock_quantity
+             FROM products
+             WHERE barcode = $1
+               AND is_deleted = FALSE
+             LIMIT 1`,
+            [code]
+        );
+        return res.status(200).json({ product: result.rows[0] || null });
     } catch (error) {
         console.error("Error searching product by barcode:", error);
         return res.status(500).json({ error: "Internal Server Error" });

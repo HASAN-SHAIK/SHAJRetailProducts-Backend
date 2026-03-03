@@ -13,6 +13,8 @@ const {
 const { resolveTenantContext } = require('../config/tenantDbResolver');
 const { jsonError, jsonOk } = require('../utils/responses');
 const { getPlanFeatures } = require('../utils/planFeatures');
+const { resolveFeatures } = require('../utils/resolveFeatures');
+const { sanitizeAddons } = require('../utils/addons');
 
 const logAdminAction = async (adminId, action, entityType, entityId, metadata) => {
   if (!adminId) return;
@@ -268,6 +270,7 @@ const getTenants = async (req, res) => {
 
     const result = await masterPool.query(
       `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.domain, t.plan_type, t.is_active, t.created_at,
+              t.addons,
               s.end_date AS subscription_end_date,
               s.payment_status AS subscription_payment_status,
               s.plan_id AS subscription_plan_id,
@@ -300,9 +303,10 @@ const getTenants = async (req, res) => {
         end_date: row.subscription_end_date
       };
       const planName = row.subscription_plan_name || row.plan_type;
-      const planFeatures = isSubscriptionActive(subscription)
-        ? getPlanFeatures(planName)
-        : getPlanFeatures(planName);
+      const planFeatures = resolveFeatures({
+        plan_type: planName,
+        addons: row.addons || {}
+      });
       return {
         id: row.id,
         shop_name: row.shop_name,
@@ -332,7 +336,7 @@ const getTenantById = async (req, res) => {
       return jsonError(res, 404, 'TENANT_NOT_FOUND', 'Tenant not found');
     }
 
-    const contextPlanFeatures = getPlanFeatures(context.tenant?.plan_type);
+    const contextPlanFeatures = resolveFeatures(context.tenant || {});
     const maxUsers = Number(contextPlanFeatures.max_users || 0);
     if (maxUsers > 0) {
       const countRes = await context.tenantPool.query(
@@ -345,7 +349,7 @@ const getTenantById = async (req, res) => {
     }
 
     const tenantRes = await masterPool.query(
-      `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.domain, t.plan_type, t.is_active, t.created_at
+      `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.domain, t.plan_type, t.is_active, t.created_at, t.addons
        FROM tenants t
        WHERE t.id = $1`,
       [tenantId]
@@ -365,7 +369,11 @@ const getTenantById = async (req, res) => {
     );
     const subscription = subRes.rowCount > 0 ? subRes.rows[0] : null;
     const resolvedPlanType = subscription?.plan_name || tenantRes.rows[0].plan_type;
-    const planFeatures = getPlanFeatures(resolvedPlanType);
+    const planFeatures = resolveFeatures({
+      ...tenantRes.rows[0],
+      plan_type: resolvedPlanType,
+      addons: tenantRes.rows[0].addons || {}
+    });
     const planLookupRes = subscription?.plan_id
       ? await masterPool.query(
           `SELECT id, name, price, duration_days
@@ -840,6 +848,46 @@ const updateTenantPlanAndFlags = async (req, res) => {
   } finally {
     client.release();
   }
+  };
+
+const updateTenantAddons = async (req, res) => {
+  try {
+    const tenantId = Number(req.params.tenant_id);
+    if (!tenantId) {
+      return jsonError(res, 400, 'VALIDATION_ERROR', 'Invalid tenant id');
+    }
+
+    const { addons } = req.body || {};
+    const parsed = sanitizeAddons(addons, { strict: true });
+    if (!parsed.valid) {
+      return jsonError(
+        res,
+        400,
+        'VALIDATION_ERROR',
+        'addons must only contain allowed keys with boolean values'
+      );
+    }
+
+    const result = await masterPool.query(
+      `UPDATE tenants
+       SET addons = $1
+       WHERE id = $2
+       RETURNING id, shop_name, plan_type, addons, is_active`,
+      [parsed.addons, tenantId]
+    );
+
+    if (result.rowCount === 0) {
+      return jsonError(res, 404, 'TENANT_NOT_FOUND', 'Tenant not found');
+    }
+
+    await logAdminAction(req.admin?.admin_id, 'TENANT_ADDONS_UPDATED', 'tenant', tenantId, {
+      addons: parsed.addons
+    });
+
+    return jsonOk(res, { tenant: result.rows[0] }, 'Tenant addons updated');
+  } catch (error) {
+    return jsonError(res, 500, 'TENANT_ADDONS_UPDATE_FAILED', error.message);
+  }
 };
 
 const upgradeTenantPlan = async (req, res) => {
@@ -985,12 +1033,12 @@ const upgradeTenantPlan = async (req, res) => {
         extra_amount: extraAmount
       });
 
-      const tenantRes = await client.query(
-        `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.domain, t.plan_type, t.is_active, t.created_at
-         FROM tenants t
-         WHERE t.id = $1`,
-        [tenantId]
-      );
+        const tenantRes = await client.query(
+          `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.domain, t.plan_type, t.is_active, t.created_at, t.addons
+           FROM tenants t
+           WHERE t.id = $1`,
+          [tenantId]
+        );
       const subscriptionRes = await client.query(
         `SELECT s.payment_status, s.end_date, s.amount, s.plan_id, p.name AS plan_name
          FROM subscriptions s
@@ -1003,7 +1051,13 @@ const upgradeTenantPlan = async (req, res) => {
       const resolvedPlanType = subscriptionRes.rowCount > 0
         ? subscriptionRes.rows[0].plan_name
         : nextPlan.name;
-      const planFeatures = getPlanFeatures(resolvedPlanType);
+        const planFeatures = tenantRes.rowCount > 0
+          ? resolveFeatures({
+              ...tenantRes.rows[0],
+              plan_type: resolvedPlanType,
+              addons: tenantRes.rows[0].addons || {}
+            })
+          : {};
 
       const tenant = tenantRes.rowCount > 0
         ? {
@@ -1767,6 +1821,7 @@ module.exports = {
   getPlatformConfig,
   importProductsFromGoogleSheet,
   updateTenantPlanAndFlags,
+  updateTenantAddons,
   createTenantUser,
   getTenantUsers,
   updateTenantUserRole,

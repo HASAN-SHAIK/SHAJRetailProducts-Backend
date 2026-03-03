@@ -1,14 +1,20 @@
 const { jsonError } = require('../utils/responses');
-const { resolveTenantContext } = require('../config/tenantDbResolver');
+const { resolveTenantContext, resolveTenantContextFromToken } = require('../config/tenantDbResolver');
 
 const tenantResolver = async (req, res, next) => {
   try {
     const tenantId = req.user?.tenant_id;
     if (!tenantId) return jsonError(res, 401, 'UNAUTHORIZED', 'Missing tenant_id');
 
-    const context = await resolveTenantContext(tenantId);
-    if (!context || context.tenant?.is_active === false) {
+    let context = resolveTenantContextFromToken(req.user);
+    if (context?.tenant?.is_active === false) {
       return jsonError(res, 403, 'TENANT_DISABLED', 'Tenant is disabled');
+    }
+    if (!context) {
+      context = await resolveTenantContext(tenantId);
+      if (!context || context.tenant?.is_active === false) {
+        return jsonError(res, 403, 'TENANT_DISABLED', 'Tenant is disabled');
+      }
     }
 
     req.tenant = context.tenant;

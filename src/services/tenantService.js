@@ -4,7 +4,7 @@ const { provisionTenant } = require('./tenantProvisionService');
 const getTenantById = async (tenantId) => {
   const result = await masterPool.query(
     `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.domain, t.database_name, t.plan_type,
-            t.is_active
+            t.is_active, t.addons
      FROM tenants t
      WHERE t.id = $1`,
     [tenantId]
@@ -16,7 +16,7 @@ const getTenantById = async (tenantId) => {
 const getTenantByDomain = async (domain) => {
   const result = await masterPool.query(
     `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.domain, t.database_name, t.plan_type,
-            t.is_active
+            t.is_active, t.addons
      FROM tenants t
      WHERE t.domain = LOWER($1)`,
     [domain]

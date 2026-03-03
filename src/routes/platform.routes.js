@@ -17,6 +17,7 @@ const {
   getSubscriptionsSummary,
   importProductsFromGoogleSheet,
   updateTenantPlanAndFlags,
+  updateTenantAddons,
   createTenantUser,
   getTenantUsers,
   updateTenantUserRole,
@@ -40,6 +41,7 @@ router.get('/tenant/:id', getTenantById);
 router.post('/create-tenant', createTenantHandler);
 router.patch('/update-tenant', updateTenant);
 router.patch('/update-tenant/:tenant_id', updateTenantPlanAndFlags);
+router.patch('/tenants/:tenant_id/addons', updateTenantAddons);
 router.patch('/update-plan/:tenant_id', updatePlan);
 router.get('/subscription-payments', getSubscriptionPayments);
 router.get('/subscriptions', getSubscriptions);

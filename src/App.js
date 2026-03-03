@@ -13,6 +13,7 @@ const { mergeFeatureFlags } = require('./middleware/featureFlags');
 const { errorHandler } = require('./middleware/errorHandler');
 const { getTenantMe, getPlatformBanner } = require('./controllers/tenantController');
 const { bootstrapMasterDatabase } = require('./services/masterBootstrap');
+const { startPoolWarmup } = require('./services/poolWarmup');
 require('dotenv').config();
 
 app.set('trust proxy', 1);
@@ -36,6 +37,14 @@ app.use(
   })
 );
 app.use(express.json());
+
+app.get('/api/health', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
+});
 
 // Public routes
 app.use('/platform/auth', platformAuthRoutes);
@@ -64,6 +73,8 @@ const startServer = async () => {
   app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
+
+  startPoolWarmup();
 };
 
 startServer().catch((error) => {

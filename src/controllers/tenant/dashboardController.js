@@ -1,6 +1,33 @@
 const { jsonError, jsonOk } = require('../../utils/responses');
 const { getDateRange } = require('../../utils/dateRange');
 
+const DASHBOARD_CACHE_TTL_MS = Number(process.env.DASHBOARD_CACHE_TTL_MS || 5000);
+const dashboardCache = new Map();
+
+const getCacheKey = (prefix, tenantId, start, end, location, role) =>
+  [
+    prefix,
+    tenantId || 'na',
+    start?.toISOString?.() || '',
+    end?.toISOString?.() || '',
+    location || '',
+    role || ''
+  ].join('|');
+
+const getCached = (key) => {
+  const entry = dashboardCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > DASHBOARD_CACHE_TTL_MS) {
+    dashboardCache.delete(key);
+    return null;
+  }
+  return entry.data;
+};
+
+const setCached = (key, data) => {
+  dashboardCache.set(key, { ts: Date.now(), data });
+};
+
 const diffDays = (start, end) => {
   const ms = end.getTime() - start.getTime();
   return Math.max(1, Math.ceil(ms / (24 * 60 * 60 * 1000)));
@@ -27,54 +54,53 @@ const getBasicDashboard = async (req, res) => {
       return jsonError(res, 400, 'VALIDATION_ERROR', 'Invalid date range');
     }
 
-    const [
-      productsRes,
-      lowStockRes,
-      ordersRes,
-      revenueRes
-    ] = await Promise.all([
-      tenantPool.query('SELECT COUNT(*)::int AS total FROM products WHERE is_deleted = FALSE'),
-      tenantPool.query('SELECT COUNT(*)::int AS total FROM products WHERE is_deleted = FALSE AND stock_quantity <= 5'),
-      tenantPool.query(
-        `SELECT
-           COUNT(*)::int AS total_orders,
-           COUNT(*) FILTER (WHERE order_status = 'pending')::int AS pending_orders,
-           COUNT(*) FILTER (WHERE order_status = 'completed')::int AS completed_orders
-         FROM orders
-         WHERE created_at BETWEEN $1 AND $2
-           AND transaction_type = 'sale'
-           AND ($3::text IS NULL OR location = $3)`,
-        [start, end, location]
-      ),
-      tenantPool.query(
-        `SELECT COALESCE(SUM(total_price), 0)::numeric AS total_revenue
-         FROM orders
-         WHERE created_at BETWEEN $1 AND $2
-           AND transaction_type = 'sale'
-           AND ($3::text IS NULL OR location = $3)`,
-        [start, end, location]
-      )
-    ]);
+    const cacheKey = getCacheKey('basic', tenantId, start, end, location, req.user?.role);
+    const cached = getCached(cacheKey);
+    if (cached) {
+      return jsonOk(res, cached);
+    }
 
-    return jsonOk(res, {
+    const summaryRes = await tenantPool.query(
+      `WITH orders_filtered AS (
+         SELECT order_status, total_price
+         FROM orders
+         WHERE created_at BETWEEN $1 AND $2
+           AND transaction_type = 'sale'
+           AND ($3::text IS NULL OR location = $3)
+       )
+       SELECT
+         (SELECT COUNT(*)::int FROM products WHERE is_deleted = FALSE) AS total_products,
+         (SELECT COUNT(*)::int FROM products WHERE is_deleted = FALSE AND stock_quantity <= 5) AS low_stock,
+         (SELECT COUNT(*)::int FROM orders_filtered) AS total_orders,
+         (SELECT COUNT(*) FILTER (WHERE order_status = 'pending')::int FROM orders_filtered) AS pending_orders,
+         (SELECT COUNT(*) FILTER (WHERE order_status = 'completed')::int FROM orders_filtered) AS completed_orders,
+         (SELECT COALESCE(SUM(total_price), 0)::numeric FROM orders_filtered) AS total_revenue`,
+      [start, end, location]
+    );
+
+    const row = summaryRes.rows[0] || {};
+    const payload = {
       range: resolvedRange,
       date_range: {
         start_date: start.toISOString(),
         end_date: end.toISOString()
       },
       products: {
-        total: Number(productsRes.rows[0]?.total || 0),
-        low_stock: Number(lowStockRes.rows[0]?.total || 0)
+        total: Number(row.total_products || 0),
+        low_stock: Number(row.low_stock || 0)
       },
       orders: {
-        total: Number(ordersRes.rows[0]?.total_orders || 0),
-        pending: Number(ordersRes.rows[0]?.pending_orders || 0),
-        completed: Number(ordersRes.rows[0]?.completed_orders || 0)
+        total: Number(row.total_orders || 0),
+        pending: Number(row.pending_orders || 0),
+        completed: Number(row.completed_orders || 0)
       },
       revenue: {
-        total: Number(revenueRes.rows[0]?.total_revenue || 0)
+        total: Number(row.total_revenue || 0)
       }
-    });
+    };
+
+    setCached(cacheKey, payload);
+    return jsonOk(res, payload);
   } catch (error) {
     if (error.message === 'INVALID_DATE_RANGE') {
       return jsonError(res, 400, 'VALIDATION_ERROR', 'Invalid date range');
@@ -94,46 +120,46 @@ const getDashboardOverview = async (req, res) => {
       return jsonError(res, 400, 'VALIDATION_ERROR', 'Invalid date range');
     }
 
+    const cacheKey = getCacheKey('overview', req.user?.tenant_id, start, end, location, req.user?.role);
+    const cached = getCached(cacheKey);
+    if (cached) {
+      return jsonOk(res, cached);
+    }
+
     const windowDays = diffDays(start, end);
     const prevEnd = new Date(start.getTime() - 1);
     const prevStart = new Date(start.getTime() - windowDays * 24 * 60 * 60 * 1000);
 
     const revenueOverviewQuery = tenantPool.query(
       `SELECT
-         COALESCE(SUM(t.total_price), 0)::numeric AS total_revenue,
-         COALESCE(SUM(t.profit), 0)::numeric AS total_profit,
-         COUNT(DISTINCT o.id)::int AS total_orders
-       FROM transactions t
-       LEFT JOIN orders o ON o.id = t.order_id
-       WHERE t.created_at BETWEEN $1 AND $2
-         AND o.transaction_type = 'sale'
-         AND ($3::text IS NULL OR o.location = $3)`,
+         COALESCE(SUM(total_revenue), 0)::numeric AS total_revenue,
+         COALESCE(SUM(total_profit), 0)::numeric AS total_profit,
+         COALESCE(SUM(total_orders), 0)::int AS total_orders
+       FROM tenant_dashboard_metrics
+       WHERE day BETWEEN $1 AND $2
+         AND ($3::text IS NULL OR location = $3)`,
       [start, end, location]
     );
 
     const revenueOverviewPrevQuery = tenantPool.query(
       `SELECT
-         COALESCE(SUM(t.total_price), 0)::numeric AS total_revenue,
-         COALESCE(SUM(t.profit), 0)::numeric AS total_profit,
-         COUNT(DISTINCT o.id)::int AS total_orders
-       FROM transactions t
-       LEFT JOIN orders o ON o.id = t.order_id
-       WHERE t.created_at BETWEEN $1 AND $2
-         AND o.transaction_type = 'sale'
-         AND ($3::text IS NULL OR o.location = $3)`,
+         COALESCE(SUM(total_revenue), 0)::numeric AS total_revenue,
+         COALESCE(SUM(total_profit), 0)::numeric AS total_profit,
+         COALESCE(SUM(total_orders), 0)::int AS total_orders
+       FROM tenant_dashboard_metrics
+       WHERE day BETWEEN $1 AND $2
+         AND ($3::text IS NULL OR location = $3)`,
       [prevStart, prevEnd, location]
     );
 
     const trendQuery = tenantPool.query(
-      `SELECT DATE(t.created_at) AS date,
-              COALESCE(SUM(t.total_price), 0)::numeric AS revenue
-       FROM transactions t
-       JOIN orders o ON o.id = t.order_id
-       WHERE t.created_at BETWEEN $1 AND $2
-         AND o.transaction_type = 'sale'
-         AND ($3::text IS NULL OR o.location = $3)
-       GROUP BY DATE(t.created_at)
-       ORDER BY DATE(t.created_at) ASC`,
+      `SELECT day AS date,
+              COALESCE(SUM(total_revenue), 0)::numeric AS revenue
+       FROM tenant_dashboard_metrics
+       WHERE day BETWEEN $1 AND $2
+         AND ($3::text IS NULL OR location = $3)
+       GROUP BY day
+       ORDER BY day ASC`,
       [start, end, location]
     );
 
@@ -350,6 +376,7 @@ const getDashboardOverview = async (req, res) => {
       delete response.revenue_overview.avg_order_value;
     }
 
+    setCached(cacheKey, response);
     return jsonOk(res, response);
   } catch (error) {
     if (error.message === 'INVALID_DATE_RANGE') {

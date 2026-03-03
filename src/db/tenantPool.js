@@ -1,8 +1,15 @@
 require('dotenv').config();
 const { Pool } = require('pg');
-const { getEnvPassword, attachQueryTimer } = require('./poolUtils');
+const { getEnvPassword, getPoolTuning, attachQueryTimer } = require('./poolUtils');
 
 const pools = new Map();
+let cleanupTimer = null;
+
+const getIdleSettings = () => {
+  const ttlMs = Number(process.env.TENANT_POOL_IDLE_EVICT_MS || 15 * 60 * 1000);
+  const sweepMs = Number(process.env.TENANT_POOL_IDLE_SWEEP_MS || 5 * 60 * 1000);
+  return { ttlMs, sweepMs };
+};
 
 const buildTenantPoolConfig = (database) => {
   if (process.env.TENANT_DATABASE_URL_TEMPLATE) {
@@ -23,29 +30,76 @@ const buildTenantPoolConfig = (database) => {
   };
 };
 
+const touch = (database) => {
+  const entry = pools.get(database);
+  if (entry) {
+    entry.lastUsed = Date.now();
+  }
+};
+
 const getTenantPool = (database) => {
   if (!database) {
     throw new Error('Tenant database name is required');
   }
   if (pools.has(database)) {
-    return pools.get(database);
+    touch(database);
+    return pools.get(database).pool;
   }
   console.log(`Creating new pool for tenant database: ${database}`);
-  const pool = attachQueryTimer(new Pool(buildTenantPoolConfig(database)), `tenant:${database}`);
+  const tunedConfig = { ...buildTenantPoolConfig(database), ...getPoolTuning('TENANT_DB') };
+  const pool = attachQueryTimer(new Pool(tunedConfig), `tenant:${database}`);
   pool.on('error', (err) => {
     console.error(`Tenant DB pool error (${database}):`, err);
   });
-  pools.set(database, pool);
+  pools.set(database, { pool, lastUsed: Date.now() });
+  startIdleCleanup();
   return pool;
+};
+
+const getAllTenantPools = () => Array.from(pools.values()).map((entry) => entry.pool);
+
+const closeIdleTenantPools = async () => {
+  const now = Date.now();
+  const { ttlMs } = getIdleSettings();
+  const closing = [];
+  for (const [database, entry] of pools.entries()) {
+    if (now - entry.lastUsed > ttlMs) {
+      closing.push(entry.pool.end());
+      pools.delete(database);
+    }
+  }
+  if (closing.length > 0) {
+    await Promise.allSettled(closing);
+  }
+};
+
+const startIdleCleanup = () => {
+  if (cleanupTimer) return;
+  const { sweepMs } = getIdleSettings();
+  cleanupTimer = setInterval(() => {
+    closeIdleTenantPools().catch((error) => {
+      console.error('Failed to close idle tenant pools:', error);
+    });
+  }, Math.max(30_000, sweepMs));
+  cleanupTimer.unref?.();
 };
 
 const closeAllTenantPools = async () => {
   const closing = [];
-  for (const pool of pools.values()) {
-    closing.push(pool.end());
+  for (const entry of pools.values()) {
+    closing.push(entry.pool.end());
   }
   await Promise.allSettled(closing);
   pools.clear();
+  if (cleanupTimer) {
+    clearInterval(cleanupTimer);
+    cleanupTimer = null;
+  }
 };
 
-module.exports = { getTenantPool, closeAllTenantPools };
+module.exports = {
+  getTenantPool,
+  getAllTenantPools,
+  closeAllTenantPools,
+  closeIdleTenantPools
+};

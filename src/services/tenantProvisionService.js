@@ -11,12 +11,12 @@ const quoteIdentifier = (value) => {
 
 const runSqlFile = async (pool, filePath) => {
   const sql = fs.readFileSync(filePath, 'utf8');
-  const statements = sql
-    .split(/;\s*$/m)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  for (const statement of statements) {
-    await pool.query(statement);
+  const client = await pool.connect();
+  try {
+    await client.query('SET search_path TO public');
+    await client.query(sql);
+  } finally {
+    client.release();
   }
 };
 

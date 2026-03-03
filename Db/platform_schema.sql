@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS tenants (
   mobile VARCHAR(15),
   domain VARCHAR(255) UNIQUE NOT NULL,
   database_name VARCHAR(255) UNIQUE NOT NULL,
-  plan_type VARCHAR(50),
+  plan_type VARCHAR(20) NOT NULL DEFAULT 'basic',
+  addons JSONB DEFAULT '{}'::jsonb,
   is_active BOOLEAN DEFAULT TRUE,
   shop_type_id INT REFERENCES shop_types(id) ON DELETE SET NULL,
   created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC')
@@ -59,6 +60,9 @@ CREATE TABLE IF NOT EXISTS plans (
   is_active BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC')
 );
+
+CREATE INDEX IF NOT EXISTS idx_tenants_addons_gin
+ON tenants USING GIN (addons);
 
 CREATE TABLE IF NOT EXISTS subscription_payments (
   id SERIAL PRIMARY KEY,
