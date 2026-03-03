@@ -283,11 +283,20 @@ const searchProducts = async (req, res) => {
         }
 
         const query = `
-            SELECT * FROM products
+            SELECT
+                id,
+                name,
+                company,
+                selling_price,
+                stock_quantity,
+                barcode
+            FROM products
             WHERE is_deleted = FALSE
-              AND (LOWER(name) LIKE LOWER($1) OR LOWER(company) LIKE LOWER($1))
+              AND (name ILIKE $1 OR company ILIKE $1)
+            ORDER BY name ASC
+            LIMIT 20
         `;
-        const values = [`%${term}%`]; // Using LIKE for partial match
+        const values = [`%${term}%`];
         const { rows } = await requestPool.query(query, values);
         return res.status(200).json({ products: rows });
     } catch (error) {
