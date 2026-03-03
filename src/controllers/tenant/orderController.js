@@ -87,20 +87,30 @@ const createOrder = async (req, res) => {
     let totalPrice = 0;
     const preparedItems = [];
 
+    const productIds = [...new Set(items.map((item) => item.product_id))];
+    if (productIds.some((id) => !id)) {
+      throw new Error('product_id and quantity are required');
+    }
+
+    const productRes = await client.query(
+      'SELECT id, selling_price, stock_quantity, is_weight_based FROM products WHERE id = ANY($1) AND is_deleted = FALSE FOR UPDATE',
+      [productIds]
+    );
+    if (productRes.rowCount !== productIds.length) {
+      const foundIds = new Set(productRes.rows.map((row) => row.id));
+      const missingId = productIds.find((id) => !foundIds.has(id));
+      throw new Error(`Product ${missingId} not found`);
+    }
+
+    const productById = new Map(productRes.rows.map((row) => [row.id, row]));
+    const requestedQtyByProduct = new Map();
+
     for (const item of items) {
       const { product_id, quantity } = item;
-      if (!product_id || quantity === undefined || quantity === null) {
+      if (quantity === undefined || quantity === null) {
         throw new Error('product_id and quantity are required');
       }
-
-      const productRes = await client.query(
-        'SELECT id, selling_price, stock_quantity, is_weight_based FROM products WHERE id = $1 AND is_deleted = FALSE FOR UPDATE',
-        [product_id]
-      );
-      if (productRes.rowCount === 0) {
-        throw new Error(`Product ${product_id} not found`);
-      }
-      const product = productRes.rows[0];
+      const product = productById.get(product_id);
       const qty = Number(quantity);
 
       if (!planFeatures.enable_weight_based && !isInteger(qty)) {
@@ -109,13 +119,20 @@ const createOrder = async (req, res) => {
       if (!product.is_weight_based && !isInteger(qty)) {
         throw new Error('Decimal quantity is not allowed for this product');
       }
-      if (Number(product.stock_quantity) < qty) {
-        throw new Error(`Insufficient stock for product ${product_id}`);
-      }
 
       const sellingPrice = Number(item.selling_price ?? product.selling_price);
       totalPrice += sellingPrice * qty;
       preparedItems.push({ product_id, qty, sellingPrice });
+
+      const prevQty = requestedQtyByProduct.get(product_id) || 0;
+      requestedQtyByProduct.set(product_id, prevQty + qty);
+    }
+
+    for (const [productId, totalQty] of requestedQtyByProduct.entries()) {
+      const product = productById.get(productId);
+      if (Number(product.stock_quantity) < totalQty) {
+        throw new Error(`Insufficient stock for product ${productId}`);
+      }
     }
 
     const resolvedPaymentMode = normalizePaymentModeValue(payment_mode);
@@ -128,16 +145,32 @@ const createOrder = async (req, res) => {
       [resolvedCustomerId, totalPrice, orderStatus, resolvedPaymentMode || null, order_date || new Date(), resolvedLocation, 'sale']
     );
     const orderId = orderRes.rows[0].id;
-    for (const item of preparedItems) {
-      await client.query(
-        'INSERT INTO order_items (order_id, product_id, quantity, selling_price) VALUES ($1, $2, $3, $4)',
-        [orderId, item.product_id, item.qty, item.sellingPrice]
-      );
-      await client.query(
-        'UPDATE products SET stock_quantity = stock_quantity - $1 WHERE id = $2',
-        [item.qty, item.product_id]
-      );
+    const orderItemProductIds = preparedItems.map((item) => item.product_id);
+    const orderItemQuantities = preparedItems.map((item) => item.qty);
+    const orderItemPrices = preparedItems.map((item) => item.sellingPrice);
+
+    await client.query(
+      `INSERT INTO order_items (order_id, product_id, quantity, selling_price)
+       SELECT $1, unnest($2::int[]), unnest($3::numeric[]), unnest($4::numeric[])`,
+      [orderId, orderItemProductIds, orderItemQuantities, orderItemPrices]
+    );
+
+    const stockProductIds = [];
+    const stockQuantities = [];
+    for (const [productId, totalQty] of requestedQtyByProduct.entries()) {
+      stockProductIds.push(productId);
+      stockQuantities.push(totalQty);
     }
+
+    await client.query(
+      `UPDATE products p
+       SET stock_quantity = p.stock_quantity - u.qty
+       FROM (
+         SELECT unnest($1::int[]) AS product_id, unnest($2::numeric[]) AS qty
+       ) AS u
+       WHERE p.id = u.product_id`,
+      [stockProductIds, stockQuantities]
+    );
 
     if (!isOnline) {
       await client.query(
