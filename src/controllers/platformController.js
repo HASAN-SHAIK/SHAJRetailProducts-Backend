@@ -1567,6 +1567,16 @@ const importProductsFromGoogleSheet = async (req, res) => {
       return -1;
     };
 
+    const barcodeColumnRes = await context.tenantPool.query(
+      `SELECT 1
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'products'
+         AND column_name = 'barcode'
+       LIMIT 1`
+    );
+    const hasBarcodeColumn = barcodeColumnRes.rowCount > 0;
+
     for (const sheetName of sheetNames) {
       const csvUrl = buildCsvUrl(sheetId, sheetName);
       const response = await axios.get(csvUrl);
@@ -1631,21 +1641,36 @@ const importProductsFromGoogleSheet = async (req, res) => {
         }
 
         try {
+          const insertColumns = [
+            'name',
+            'category',
+            'selling_price',
+            'stock_quantity',
+            'actual_price',
+            'company',
+            'time_for_delivery',
+            'is_weight_based'
+          ];
+          const insertValues = [
+            name,
+            category,
+            sellingPrice,
+            stockQuantity,
+            actualPrice,
+            company || null,
+            timeForDelivery !== null ? Math.round(timeForDelivery) : null,
+            isWeightBased
+          ];
+          if (hasBarcodeColumn) {
+            insertColumns.push('barcode');
+            insertValues.push(barcode);
+          }
+          const placeholders = insertValues.map((_, idx) => `$${idx + 1}`).join(', ');
+
           await context.tenantPool.query(
-            `INSERT INTO products
-              (name, category, selling_price, stock_quantity, actual_price, company, time_for_delivery, is_weight_based, barcode)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-            [
-              name,
-              category,
-              sellingPrice,
-              stockQuantity,
-              actualPrice,
-              company || null,
-              timeForDelivery !== null ? Math.round(timeForDelivery) : null,
-              isWeightBased,
-              barcode
-            ]
+            `INSERT INTO products (${insertColumns.join(', ')})
+             VALUES (${placeholders})`,
+            insertValues
           );
           insertedCount += 1;
         } catch (error) {
