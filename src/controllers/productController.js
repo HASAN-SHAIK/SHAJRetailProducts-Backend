@@ -310,7 +310,8 @@ const searchProductsForSale = async (req, res) => {
                 name,
                 company,
                 selling_price,
-                stock_quantity
+                stock_quantity,
+                is_weight_based
             FROM products
             WHERE is_deleted = FALSE
               AND (name ILIKE $1 OR company ILIKE $1)
@@ -343,7 +344,7 @@ const searchProductsForPurchase = async (req, res) => {
                 actual_price,
                 company,
                 stock_quantity,
-                is_weight_based AS type,
+                is_weight_based,
                 time_for_delivery,
                 category
             FROM products
