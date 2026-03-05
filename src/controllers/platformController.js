@@ -18,6 +18,9 @@ const { sanitizeAddons } = require('../utils/addons');
 
 const logAdminAction = async (adminId, action, entityType, entityId, metadata) => {
   if (!adminId) return;
+  if (!(await hasMasterTable('platform_activity_logs'))) {
+    return;
+  }
   await masterPool.query(
     `INSERT INTO platform_activity_logs (admin_id, action, entity_type, entity_id, metadata)
      VALUES ($1, $2, $3, $4, $5)`,
@@ -56,6 +59,24 @@ const resolveRenewalWindow = async (lastEndDate, durationDays) => {
     end_date: result.rows[0]?.end_date || null,
     duration_days: normalizedDuration
   };
+};
+
+const masterTableExistsCache = new Map();
+const hasMasterTable = async (tableName) => {
+  if (masterTableExistsCache.has(tableName)) {
+    return masterTableExistsCache.get(tableName);
+  }
+  const res = await masterPool.query(
+    `SELECT 1
+     FROM information_schema.tables
+     WHERE table_schema = 'public'
+       AND table_name = $1
+     LIMIT 1`,
+    [tableName]
+  );
+  const exists = res.rowCount > 0;
+  masterTableExistsCache.set(tableName, exists);
+  return exists;
 };
 
 const createTenantHandler = async (req, res) => {
@@ -414,14 +435,16 @@ const getTenantById = async (req, res) => {
       [tenantId]
     );
 
-    const paymentHistoryRes = await masterPool.query(
-      `SELECT sp.id, sp.amount, sp.status, sp.payment_method, sp.paid_at, p.name AS plan_name
-       FROM subscription_payments sp
-       LEFT JOIN plans p ON p.id = sp.plan_id
-       WHERE sp.tenant_id = $1
-       ORDER BY sp.paid_at DESC NULLS LAST, sp.id DESC`,
-      [tenantId]
-    );
+    const paymentHistoryRes = (await hasMasterTable('subscription_payments'))
+      ? await masterPool.query(
+          `SELECT sp.id, sp.amount, sp.status, sp.payment_method, sp.paid_at, p.name AS plan_name
+           FROM subscription_payments sp
+           LEFT JOIN plans p ON p.id = sp.plan_id
+           WHERE sp.tenant_id = $1
+           ORDER BY sp.paid_at DESC NULLS LAST, sp.id DESC`,
+          [tenantId]
+        )
+      : { rows: [] };
 
       const tenant = {
         ...tenantRes.rows[0],
@@ -1218,6 +1241,17 @@ const getSubscriptionPayments = async (req, res) => {
     }
 
     const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+    if (!(await hasMasterTable('subscription_payments'))) {
+      await logAdminAction(req.admin?.admin_id, 'SUBSCRIPTION_PAYMENTS_VIEWED', 'payment', null, {
+        limit,
+        offset,
+        from: from || null,
+        to: to || null,
+        plan: plan || null
+      });
+      return jsonOk(res, { payments: [], limit, offset });
+    }
 
     const result = await masterPool.query(
       `SELECT sp.id, sp.tenant_id, sp.amount, sp.status, sp.payment_method, sp.paid_at,
