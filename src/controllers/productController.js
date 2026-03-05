@@ -273,7 +273,7 @@ const deleteProduct = async (req, res) => {
     }
 };
 
-const searchProducts = async (req, res) => {
+const searchProductsForSale = async (req, res) => {
     try {
         const requestPool = getRequestPool(req);
         const { name, barcode } = req.query;
@@ -287,9 +287,7 @@ const searchProducts = async (req, res) => {
                 id,
                 name,
                 company,
-                selling_price,
-                stock_quantity,
-                barcode
+                selling_price
             FROM products
             WHERE is_deleted = FALSE
               AND (name ILIKE $1 OR company ILIKE $1)
@@ -305,7 +303,41 @@ const searchProducts = async (req, res) => {
     }
  }
 
-const getProductByBarcode = async (req, res) => {
+const searchProductsForPurchase = async (req, res) => {
+    try {
+        const requestPool = getRequestPool(req);
+        const { name, barcode } = req.query;
+        const term = (name || barcode || '').toString().trim();
+        if (!term) {
+            return res.status(400).json({ error: "Product name is required for search." });
+        }
+
+        const query = `
+            SELECT
+                id,
+                name,
+                selling_price,
+                actual_price,
+                company,
+                is_weight_based AS type,
+                time_for_delivery,
+                category
+            FROM products
+            WHERE is_deleted = FALSE
+              AND (name ILIKE $1 OR company ILIKE $1)
+            ORDER BY name ASC
+            LIMIT 20
+        `;
+        const values = [`%${term}%`];
+        const { rows } = await requestPool.query(query, values);
+        return res.status(200).json({ products: rows });
+    } catch (error) {
+        console.error("Error searching products for purchase:", error);
+        return res.status(500).json({ error: "Internal Server Error" });
+    }
+}
+
+const getProductByBarcodeForSale = async (req, res) => {
     try {
         const requestPool = getRequestPool(req);
         if (req.features?.enable_barcode !== true) {
@@ -317,7 +349,7 @@ const getProductByBarcode = async (req, res) => {
         }
 
         const result = await requestPool.query(
-            `SELECT id, name, selling_price, stock_quantity
+            `SELECT id, name, company, selling_price
              FROM products
              WHERE barcode = $1
                AND is_deleted = FALSE
@@ -331,4 +363,47 @@ const getProductByBarcode = async (req, res) => {
     }
 };
 
-module.exports = { getProducts, addProduct, updateProduct, deleteProduct, searchProducts, getProductByBarcode };
+const getProductByBarcodeForPurchase = async (req, res) => {
+    try {
+        const requestPool = getRequestPool(req);
+        if (req.features?.enable_barcode !== true) {
+            return res.status(403).json({ error: "Barcode feature is disabled." });
+        }
+        const code = (req.params.barcode || req.params.code || req.query.barcode || req.query.code || '').toString().trim();
+        if (!code) {
+            return res.status(400).json({ error: "Barcode is required." });
+        }
+
+        const result = await requestPool.query(
+            `SELECT
+                id,
+                name,
+                selling_price,
+                actual_price,
+                company,
+                is_weight_based AS type,
+                time_for_delivery,
+                category
+             FROM products
+             WHERE barcode = $1
+               AND is_deleted = FALSE
+             LIMIT 1`,
+            [code]
+        );
+        return res.status(200).json({ product: result.rows[0] || null });
+    } catch (error) {
+        console.error("Error searching product by barcode for purchase:", error);
+        return res.status(500).json({ error: "Internal Server Error" });
+    }
+};
+
+module.exports = {
+    getProducts,
+    addProduct,
+    updateProduct,
+    deleteProduct,
+    searchProductsForSale,
+    searchProductsForPurchase,
+    getProductByBarcodeForSale,
+    getProductByBarcodeForPurchase
+};

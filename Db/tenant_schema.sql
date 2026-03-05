@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS products (
   actual_price DECIMAL(10,2),
   stock_quantity DECIMAL(10,2) NOT NULL,
   company VARCHAR(255),
-  time_for_delivery INT,
+  time_for_delivery INT DEFAULT 0,
   is_deleted BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC')
 );

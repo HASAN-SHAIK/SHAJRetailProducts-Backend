@@ -285,6 +285,9 @@ const createPurchaseOrder = async (req, res) => {
     const requestPool = getRequestPool(req);
     const client = await requestPool.connect();
     try {
+        if (req.user?.role !== 'admin') {
+            return res.status(403).json({ message: "Admin access required" });
+        }
         await client.query("BEGIN"); // Start transaction
         const { products, total_amount, payment_mode } = req.body;
         const resolvedLocation = resolveOrderLocation(req.body);
@@ -301,32 +304,45 @@ const createPurchaseOrder = async (req, res) => {
         const orderResult = await client.query(orderQuery, [total_amount, orderStatus, resolvedPaymentMode || null, resolvedLocation, 'purchase']);
         const orderId = orderResult.rows[0].id;
         // Step 2: Process each item in the purchase order
+        const touchedProductIds = new Set();
         for (let item of products) {
             const { product_name, company, quantity, actual_price, selling_price, category, time_for_delivery, is_weight_based } = item;
             // Check if the product already exists
             const productQuery = `SELECT * FROM products WHERE name ilike $1 AND company ilike $2;`;
             const productResult = await client.query(productQuery, [product_name, company]);
             if (productResult.rows.length > 0) {
-                // Product exists, update the stock and actual selling_price (weighted average)
+                // Product exists: only update quantity + prices
                 const existingProduct = productResult.rows[0];
-                const newQuantity = normalizeNumber(existingProduct.stock_quantity) + normalizeNumber(quantity);
-                // Calculate weighted average for actual selling_price
-                const totalActualPrice = normalizeNumber(existingProduct.actual_price) * normalizeNumber(existingProduct.stock_quantity) + normalizeNumber(actual_price) * normalizeNumber(quantity);
-                const newActualPrice = normalizeNumber(totalActualPrice) / normalizeNumber(newQuantity);
+                const existingQty = normalizeNumber(existingProduct.stock_quantity);
+                const incomingQty = normalizeNumber(quantity);
+                const newQuantity = existingQty + incomingQty;
+
+                const existingActual = normalizeNumber(existingProduct.actual_price);
+                const incomingActual = normalizeNumber(actual_price);
+                const newActualPrice = Number.isFinite(incomingActual)
+                  ? (existingActual * existingQty + incomingActual * incomingQty) / newQuantity
+                  : existingActual;
+
+                const resolvedSellingPrice = selling_price ?? existingProduct.selling_price;
+
                 const updateProductQuery = `
                     UPDATE products
-                    SET stock_quantity = $1, actual_price = $2, selling_price = $3, time_for_delivery = $4, is_weight_based = $5
-                    WHERE id = $6;
+                    SET stock_quantity = $1, actual_price = $2, selling_price = $3
+                    WHERE id = $4;
                 `;
-                const resolvedWeight = is_weight_based ?? existingProduct.is_weight_based ?? 0;
-                await client.query(updateProductQuery, [newQuantity, newActualPrice, selling_price, time_for_delivery, resolvedWeight, existingProduct.id ]);
+                await client.query(updateProductQuery, [newQuantity, newActualPrice, resolvedSellingPrice, existingProduct.id]);
+                touchedProductIds.add(existingProduct.id);
             } else {
                 // Product does not exist, insert as a new product
                 const insertProductQuery = `
                     INSERT INTO products (name, company, stock_quantity, actual_price, selling_price, category, time_for_delivery, is_weight_based)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    RETURNING id;
                 `;
-                await client.query(insertProductQuery, [product_name, company, quantity, actual_price, selling_price, category, time_for_delivery, is_weight_based ?? 0]);
+                const inserted = await client.query(insertProductQuery, [product_name, company, quantity, actual_price, selling_price, category, time_for_delivery, is_weight_based ?? 0]);
+                if (inserted.rowCount > 0) {
+                    touchedProductIds.add(inserted.rows[0].id);
+                }
             }
             // Step 3: Insert into order_items
             // const insertOrderItemQuery = `
@@ -337,8 +353,18 @@ const createPurchaseOrder = async (req, res) => {
         }
         // Step 4: Insert into transactions as a purchase
         // Payment should be recorded only when payment is actually made (mark paid).
+        const productIds = Array.from(touchedProductIds);
+        const productsRes = productIds.length
+            ? await client.query(
+                `SELECT id, name, company, stock_quantity, actual_price, selling_price, category, time_for_delivery, is_weight_based
+                 FROM products
+                 WHERE id = ANY($1::int[])`,
+                [productIds]
+              )
+            : { rows: [] };
+
         await client.query("COMMIT"); // Commit transaction
-        res.status(201).json({ message: "Purchase order created successfully", orderId });
+        res.status(201).json({ message: "Purchase order created successfully", orderId, products: productsRes.rows });
     } catch (error) {
         await client.query("ROLLBACK"); // Rollback transaction on error
         console.error("Error creating purchase order:", error);
@@ -943,7 +969,8 @@ const markOrderAsPaid = async (req, res) => {
              SET order_status = 'completed',
                  payment_mode = $2,
                  total_paid = COALESCE(ins.total_price, 0)
-             WHERE id = $1
+             FROM ins
+             WHERE orders.id = ins.order_id
              RETURNING id;`,
             [order_id, resolvedPaymentMode]
         );
