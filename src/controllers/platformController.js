@@ -336,18 +336,6 @@ const getTenantById = async (req, res) => {
       return jsonError(res, 404, 'TENANT_NOT_FOUND', 'Tenant not found');
     }
 
-    const contextPlanFeatures = resolveFeatures(context.tenant || {});
-    const maxUsers = Number(contextPlanFeatures.max_users || 0);
-    if (maxUsers > 0) {
-      const countRes = await context.tenantPool.query(
-        'SELECT COUNT(*)::int AS total FROM users'
-      );
-      const totalUsers = Number(countRes.rows[0]?.total || 0);
-      if (totalUsers >= maxUsers) {
-        return jsonError(res, 403, 'USER_LIMIT_REACHED', 'User limit reached for this plan');
-      }
-    }
-
     const tenantRes = await masterPool.query(
       `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.domain, t.plan_type, t.is_active, t.created_at, t.addons
        FROM tenants t
@@ -1561,12 +1549,14 @@ const importProductsFromGoogleSheet = async (req, res) => {
 
     const headerAliases = {
       name: ['name', 'productname', 'product'],
+      category: ['category', 'productcategory', 'group'],
       selling_price: ['sellingprice', 'selling_price', 'price', 'selling'],
       stock_quantity: ['stockquantity', 'stock', 'quantity', 'qty'],
       actual_price: ['actualprice', 'actual_price', 'cost', 'costprice'],
       company: ['company', 'brand', 'seller', 'vendor'],
       time_for_delivery: ['timefordelivery', 'deliverytime', 'leadtime'],
-      is_weight_based: ['isweightbased', 'weightbased', 'is_weight_based', 'weightbased?']
+      is_weight_based: ['isweightbased', 'weightbased', 'is_weight_based', 'weightbased?'],
+      barcode: ['barcode', 'bar_code', 'code', 'ean', 'upc']
     };
 
     const resolveHeaderIndex = (headers, aliases) => {
@@ -1585,12 +1575,14 @@ const importProductsFromGoogleSheet = async (req, res) => {
 
       const headers = rows[0].map((h) => normalizeHeader(h));
       const nameIdx = resolveHeaderIndex(headers, headerAliases.name);
+      const categoryIdx = resolveHeaderIndex(headers, headerAliases.category);
       const sellingIdx = resolveHeaderIndex(headers, headerAliases.selling_price);
       const stockIdx = resolveHeaderIndex(headers, headerAliases.stock_quantity);
       const actualIdx = resolveHeaderIndex(headers, headerAliases.actual_price);
       const companyIdx = resolveHeaderIndex(headers, headerAliases.company);
       const deliveryIdx = resolveHeaderIndex(headers, headerAliases.time_for_delivery);
       const weightIdx = resolveHeaderIndex(headers, headerAliases.is_weight_based);
+      const barcodeIdx = resolveHeaderIndex(headers, headerAliases.barcode);
 
       const missingColumns = [];
       if (nameIdx < 0) missingColumns.push('name');
@@ -1615,6 +1607,8 @@ const importProductsFromGoogleSheet = async (req, res) => {
         }
 
         const name = row[nameIdx]?.toString().trim();
+        const categoryRaw = categoryIdx >= 0 ? row[categoryIdx]?.toString().trim() : '';
+        const category = categoryRaw ? categoryRaw : sheetName;
         const sellingPrice = parseNumber(row[sellingIdx]);
         const stockQuantity = parseNumber(row[stockIdx]);
         const actualPrice = actualIdx >= 0 ? parseNumber(row[actualIdx]) : null;
@@ -1622,6 +1616,9 @@ const importProductsFromGoogleSheet = async (req, res) => {
         const timeForDelivery = deliveryIdx >= 0 ? parseNumber(row[deliveryIdx]) : null;
         const isWeightBased =
           weightIdx >= 0 ? parseBoolean(row[weightIdx]) ?? false : false;
+        const barcodeValue =
+          barcodeIdx >= 0 ? row[barcodeIdx]?.toString().trim() : null;
+        const barcode = barcodeValue ? barcodeValue : null;
 
         const rowErrors = [];
         if (!name) rowErrors.push('name is required');
@@ -1636,17 +1633,18 @@ const importProductsFromGoogleSheet = async (req, res) => {
         try {
           await context.tenantPool.query(
             `INSERT INTO products
-              (name, category, selling_price, stock_quantity, actual_price, company, time_for_delivery, is_weight_based)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+              (name, category, selling_price, stock_quantity, actual_price, company, time_for_delivery, is_weight_based, barcode)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
             [
               name,
-              sheetName,
+              category,
               sellingPrice,
               stockQuantity,
               actualPrice,
               company || null,
               timeForDelivery !== null ? Math.round(timeForDelivery) : null,
-              isWeightBased
+              isWeightBased,
+              barcode
             ]
           );
           insertedCount += 1;
@@ -1698,6 +1696,18 @@ const createTenantUser = async (req, res) => {
     const context = await resolveTenantContext(tenantId);
     if (!context) {
       return jsonError(res, 404, 'TENANT_NOT_FOUND', 'Tenant not found');
+    }
+
+    const contextPlanFeatures = resolveFeatures(context.tenant || {});
+    const maxUsers = Number(contextPlanFeatures.max_users || 0);
+    if (maxUsers > 0) {
+      const countRes = await context.tenantPool.query(
+        'SELECT COUNT(*)::int AS total FROM users'
+      );
+      const totalUsers = Number(countRes.rows[0]?.total || 0);
+      if (totalUsers >= maxUsers) {
+        return jsonError(res, 403, 'USER_LIMIT_REACHED', 'User limit reached for this plan');
+      }
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);

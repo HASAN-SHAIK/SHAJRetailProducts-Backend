@@ -33,6 +33,16 @@ const getProducts = async (req, res) => {
             return res.status(401).json({ message: "Access Denied" });
         }
 
+        const barcodeColumnRes = await requestPool.query(
+            `SELECT 1
+             FROM information_schema.columns
+             WHERE table_schema = 'public'
+               AND table_name = 'products'
+               AND column_name = 'barcode'
+             LIMIT 1`
+        );
+        const barcodeSelect = barcodeColumnRes.rowCount > 0 ? 'barcode' : 'NULL::text AS barcode';
+
         const productsRes = await requestPool.query(
             `SELECT id,
                     name,
@@ -41,7 +51,7 @@ const getProducts = async (req, res) => {
                     selling_price,
                     actual_price,
                     stock_quantity,
-                    barcode,
+                    ${barcodeSelect},
                     NULL::int AS min_stock_level,
                     created_at
              FROM products

@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS products (
   actual_price DECIMAL(10,2),
   stock_quantity DECIMAL(10,2) NOT NULL,
   company VARCHAR(255),
+  barcode VARCHAR(50),
   time_for_delivery INT DEFAULT 0,
   is_deleted BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC')
@@ -521,6 +522,9 @@ CREATE INDEX IF NOT EXISTS idx_products_category
   ON products (category);
 CREATE INDEX IF NOT EXISTS idx_products_name_trgm
   ON products USING gin (name gin_trgm_ops);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_products_barcode_active
+  ON products (barcode)
+  WHERE is_deleted = false AND barcode IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_products_low_stock
   ON products (stock_quantity)
   WHERE is_deleted = false;
