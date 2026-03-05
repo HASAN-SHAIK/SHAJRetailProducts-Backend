@@ -353,6 +353,17 @@ const getProductByBarcodeForSale = async (req, res) => {
         if (req.features?.enable_barcode !== true) {
             return res.status(403).json({ error: "Barcode feature is disabled." });
         }
+        const barcodeColumnRes = await requestPool.query(
+            `SELECT 1
+             FROM information_schema.columns
+             WHERE table_schema = 'public'
+               AND table_name = 'products'
+               AND column_name = 'barcode'
+             LIMIT 1`
+        );
+        if (barcodeColumnRes.rowCount === 0) {
+            return res.status(503).json({ error: "Barcode is not supported on this tenant yet." });
+        }
         const code = (req.params.barcode || req.params.code || req.query.barcode || req.query.code || '').toString().trim();
         if (!code) {
             return res.status(400).json({ error: "Barcode is required." });
@@ -378,6 +389,17 @@ const getProductByBarcodeForPurchase = async (req, res) => {
         const requestPool = getRequestPool(req);
         if (req.features?.enable_barcode !== true) {
             return res.status(403).json({ error: "Barcode feature is disabled." });
+        }
+        const barcodeColumnRes = await requestPool.query(
+            `SELECT 1
+             FROM information_schema.columns
+             WHERE table_schema = 'public'
+               AND table_name = 'products'
+               AND column_name = 'barcode'
+             LIMIT 1`
+        );
+        if (barcodeColumnRes.rowCount === 0) {
+            return res.status(503).json({ error: "Barcode is not supported on this tenant yet." });
         }
         const code = (req.params.barcode || req.params.code || req.query.barcode || req.query.code || '').toString().trim();
         if (!code) {
