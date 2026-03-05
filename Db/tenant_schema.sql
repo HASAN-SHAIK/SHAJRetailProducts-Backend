@@ -520,8 +520,16 @@ CREATE INDEX IF NOT EXISTS idx_order_items_product
 
 CREATE INDEX IF NOT EXISTS idx_products_category
   ON products (category);
+CREATE INDEX IF NOT EXISTS idx_products_active_created_at
+  ON products (created_at DESC)
+  WHERE is_deleted = false;
+CREATE INDEX IF NOT EXISTS idx_products_active_category_created
+  ON products (category, created_at DESC)
+  WHERE is_deleted = false;
 CREATE INDEX IF NOT EXISTS idx_products_name_trgm
   ON products USING gin (name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_products_company_trgm
+  ON products USING gin (company gin_trgm_ops);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_products_barcode_active
   ON products (barcode)
   WHERE is_deleted = false AND barcode IS NOT NULL;

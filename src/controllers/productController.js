@@ -2,6 +2,24 @@ const pool = require('../db');
 const getRequestPool = (req) => req.tenantPool || pool;
 const { getAuthUser } = require('../utils/auth');
 
+const barcodeColumnCache = new WeakMap();
+const hasBarcodeColumn = async (requestPool) => {
+    if (barcodeColumnCache.has(requestPool)) {
+        return barcodeColumnCache.get(requestPool);
+    }
+    const res = await requestPool.query(
+        `SELECT 1
+         FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'products'
+           AND column_name = 'barcode'
+         LIMIT 1`
+    );
+    const supported = res.rowCount > 0;
+    barcodeColumnCache.set(requestPool, supported);
+    return supported;
+};
+
 // ✅ Get all products (search, filter, sort, pagination)
 const getProducts = async (req, res) => {
     const {
@@ -19,8 +37,13 @@ const getProducts = async (req, res) => {
 
     const sortKey = (sortByRaw || 'created_at').toLowerCase();
     const sortOrder = (sortOrderRaw || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
-    const allowedSorts = new Set(['name', 'selling_price', 'stock_quantity', 'created_at']);
-    const resolvedSort = allowedSorts.has(sortKey) ? sortKey : 'created_at';
+    const allowedSorts = {
+        name: 'name',
+        selling_price: 'selling_price',
+        stock_quantity: 'stock_quantity',
+        created_at: 'created_at'
+    };
+    const resolvedSort = allowedSorts[sortKey] || 'created_at';
 
     const searchValue = typeof search === 'string' && search.trim() ? `%${search.trim()}%` : null;
     const categoryValue =
@@ -33,15 +56,9 @@ const getProducts = async (req, res) => {
             return res.status(401).json({ message: "Access Denied" });
         }
 
-        const barcodeColumnRes = await requestPool.query(
-            `SELECT 1
-             FROM information_schema.columns
-             WHERE table_schema = 'public'
-               AND table_name = 'products'
-               AND column_name = 'barcode'
-             LIMIT 1`
-        );
-        const barcodeSelect = barcodeColumnRes.rowCount > 0 ? 'barcode' : 'NULL::text AS barcode';
+        const barcodeSelect = (await hasBarcodeColumn(requestPool))
+            ? 'barcode'
+            : 'NULL::text AS barcode';
 
         const productsRes = await requestPool.query(
             `SELECT id,
@@ -62,14 +79,9 @@ const getProducts = async (req, res) => {
                  OR name ILIKE $2
                  OR company ILIKE $2
                )
-             ORDER BY
-               CASE WHEN $3 = 'name' THEN name END ${sortOrder},
-               CASE WHEN $3 = 'selling_price' THEN selling_price END ${sortOrder},
-               CASE WHEN $3 = 'stock_quantity' THEN stock_quantity END ${sortOrder},
-               CASE WHEN $3 = 'created_at' THEN created_at END ${sortOrder},
-               created_at DESC
-             LIMIT $4 OFFSET $5`,
-            [categoryValue, searchValue, resolvedSort, resolvedLimit, offset]
+             ORDER BY ${resolvedSort} ${sortOrder}, created_at DESC
+             LIMIT $3 OFFSET $4`,
+            [categoryValue, searchValue, resolvedLimit, offset]
         );
 
         const totalCountRes = await requestPool.query(
@@ -353,15 +365,7 @@ const getProductByBarcodeForSale = async (req, res) => {
         if (req.features?.enable_barcode !== true) {
             return res.status(403).json({ error: "Barcode feature is disabled." });
         }
-        const barcodeColumnRes = await requestPool.query(
-            `SELECT 1
-             FROM information_schema.columns
-             WHERE table_schema = 'public'
-               AND table_name = 'products'
-               AND column_name = 'barcode'
-             LIMIT 1`
-        );
-        if (barcodeColumnRes.rowCount === 0) {
+        if (!(await hasBarcodeColumn(requestPool))) {
             return res.status(503).json({ error: "Barcode is not supported on this tenant yet." });
         }
         const code = (req.params.barcode || req.params.code || req.query.barcode || req.query.code || '').toString().trim();
@@ -390,15 +394,7 @@ const getProductByBarcodeForPurchase = async (req, res) => {
         if (req.features?.enable_barcode !== true) {
             return res.status(403).json({ error: "Barcode feature is disabled." });
         }
-        const barcodeColumnRes = await requestPool.query(
-            `SELECT 1
-             FROM information_schema.columns
-             WHERE table_schema = 'public'
-               AND table_name = 'products'
-               AND column_name = 'barcode'
-             LIMIT 1`
-        );
-        if (barcodeColumnRes.rowCount === 0) {
+        if (!(await hasBarcodeColumn(requestPool))) {
             return res.status(503).json({ error: "Barcode is not supported on this tenant yet." });
         }
         const code = (req.params.barcode || req.params.code || req.query.barcode || req.query.code || '').toString().trim();
