@@ -1,6 +1,8 @@
 const pool = require('../db');
 const getRequestPool = (req) => req.tenantPool || pool;
 const { getAuthUser } = require('../utils/auth');
+const { resolveMaxProducts, fetchActiveProductCount } = require('../utils/productLimits');
+const { getGlobalProductByBarcode, upsertGlobalProduct } = require('../services/globalBarcodeService');
 
 const barcodeColumnCache = new WeakMap();
 const hasBarcodeColumn = async (requestPool) => {
@@ -122,7 +124,8 @@ const normalizeBarcode = (value) => {
 // ✅ Add new product
 const addProduct = async (req, res) => {
   const {
-    product_name,
+    product_name: productNameInput,
+    name: nameInput,
     category,
     selling_price,
     stock_quantity,
@@ -131,10 +134,20 @@ const addProduct = async (req, res) => {
     time_for_delivery,
     is_weight_based
   } = req.body;
+  const product_name = productNameInput ?? nameInput;
   const barcodeProvided = Object.prototype.hasOwnProperty.call(req.body || {}, 'barcode');
   const barcode = normalizeBarcode(req.body?.barcode);
 
   try {
+    if (!product_name) {
+      return res.status(400).json({ message: 'Product name is required.' });
+    }
+    if (selling_price === undefined) {
+      return res.status(400).json({ message: 'Selling price is required.' });
+    }
+    if (stock_quantity === undefined) {
+      return res.status(400).json({ message: 'Stock quantity is required.' });
+    }
     const requestPool = getRequestPool(req);
     const barcodeEnabled = req.features?.enable_barcode === true;
     if (barcodeEnabled && barcodeProvided && barcode) {
@@ -176,12 +189,33 @@ const addProduct = async (req, res) => {
           existingProduct.id
         ]
       );
+      if (barcodeEnabled && barcodeProvided && resolvedBarcode) {
+        try {
+          await upsertGlobalProduct({
+            barcode: resolvedBarcode,
+            name: updated.rows[0]?.name,
+            company: updated.rows[0]?.company,
+            category: updated.rows[0]?.category
+          });
+        } catch (error) {
+          console.error('Global barcode upsert failed:', error.message || error);
+        }
+      }
 
       return res.status(200).json({
         message: 'Product already exists. Stock and prices updated.',
         product: updated.rows[0]
       });
     } else {
+      const maxProducts = resolveMaxProducts(req.features);
+      if (maxProducts !== null) {
+        const totalProducts = await fetchActiveProductCount(requestPool);
+        if (totalProducts >= maxProducts) {
+          return res.status(403).json({
+            message: `Product limit reached (${maxProducts}). Upgrade plan to add more products.`
+          });
+        }
+      }
       // 3. Product doesn't exist: insert new
       const columns = [
         'name',
@@ -214,6 +248,18 @@ const addProduct = async (req, res) => {
          RETURNING *`,
         values
       );
+      if (barcodeEnabled && barcodeProvided && barcode) {
+        try {
+          await upsertGlobalProduct({
+            barcode,
+            name: result.rows[0]?.name,
+            company: result.rows[0]?.company,
+            category: result.rows[0]?.category
+          });
+        } catch (error) {
+          console.error('Global barcode upsert failed:', error.message || error);
+        }
+      }
 
       return res.status(201).json({
         message: 'New product added.',
@@ -277,6 +323,18 @@ const updateProduct = async (req, res) => {
             `UPDATE products SET ${updateFields.join(', ')} WHERE id = $${updateValues.length} RETURNING *`,
             updateValues
         );
+        if (barcodeEnabled && barcodeProvided && barcode) {
+            try {
+                await upsertGlobalProduct({
+                    barcode,
+                    name: result.rows[0]?.name,
+                    company: result.rows[0]?.company,
+                    category: result.rows[0]?.category
+                });
+            } catch (error) {
+                console.error('Global barcode upsert failed:', error.message || error);
+            }
+        }
         res.json(result.rows[0]);
     } catch (error) {
         res.status(500).json({ error, message: 'Database error' });
@@ -303,6 +361,9 @@ const searchProductsForSale = async (req, res) => {
         if (!term) {
             return res.status(400).json({ error: "Product name is required for search." });
         }
+        const barcodeEnabled = req.features?.enable_barcode === true;
+        const barcodeSupported = barcodeEnabled && (await hasBarcodeColumn(requestPool));
+        const barcodeValue = barcodeSupported ? normalizeBarcode(barcode) : null;
 
         const query = `
             SELECT
@@ -314,11 +375,15 @@ const searchProductsForSale = async (req, res) => {
                 is_weight_based
             FROM products
             WHERE is_deleted = FALSE
-              AND (name ILIKE $1 OR company ILIKE $1)
+              AND (
+                name ILIKE $1
+                OR company ILIKE $1
+                ${barcodeSupported ? 'OR ($2::text IS NOT NULL AND barcode = $2)' : ''}
+              )
             ORDER BY name ASC
             LIMIT 20
         `;
-        const values = [`%${term}%`];
+        const values = barcodeSupported ? [`%${term}%`, barcodeValue] : [`%${term}%`];
         const { rows } = await requestPool.query(query, values);
         return res.status(200).json({ products: rows });
     } catch (error) {
@@ -335,6 +400,9 @@ const searchProductsForPurchase = async (req, res) => {
         if (!term) {
             return res.status(400).json({ error: "Product name is required for search." });
         }
+        const barcodeEnabled = req.features?.enable_barcode === true;
+        const barcodeSupported = barcodeEnabled && (await hasBarcodeColumn(requestPool));
+        const barcodeValue = barcodeSupported ? normalizeBarcode(barcode) : null;
 
         const query = `
             SELECT
@@ -349,11 +417,15 @@ const searchProductsForPurchase = async (req, res) => {
                 category
             FROM products
             WHERE is_deleted = FALSE
-              AND (name ILIKE $1 OR company ILIKE $1)
+              AND (
+                name ILIKE $1
+                OR company ILIKE $1
+                ${barcodeSupported ? 'OR ($2::text IS NOT NULL AND barcode = $2)' : ''}
+              )
             ORDER BY name ASC
             LIMIT 20
         `;
-        const values = [`%${term}%`];
+        const values = barcodeSupported ? [`%${term}%`, barcodeValue] : [`%${term}%`];
         const { rows } = await requestPool.query(query, values);
         return res.status(200).json({ products: rows });
     } catch (error) {
@@ -371,20 +443,39 @@ const getProductByBarcodeForSale = async (req, res) => {
         if (!(await hasBarcodeColumn(requestPool))) {
             return res.status(503).json({ error: "Barcode is not supported on this tenant yet." });
         }
-        const code = (req.params.barcode || req.params.code || req.query.barcode || req.query.code || '').toString().trim();
+        const code = normalizeBarcode(req.params.barcode || req.params.code || req.query.barcode || req.query.code);
         if (!code) {
             return res.status(400).json({ error: "Barcode is required." });
         }
 
         const result = await requestPool.query(
-            `SELECT id, name, company, selling_price
+            `SELECT id,
+                    name,
+                    company,
+                    category,
+                    selling_price,
+                    stock_quantity,
+                    is_weight_based,
+                    barcode
              FROM products
              WHERE barcode = $1
                AND is_deleted = FALSE
              LIMIT 1`,
             [code]
         );
-        return res.status(200).json({ product: result.rows[0] || null });
+        const product = result.rows[0] || null;
+        if (product) {
+            return res.status(200).json({ product });
+        }
+        const globalMatch = await getGlobalProductByBarcode(code);
+        if (!globalMatch) {
+            return res.status(404).json({ error: "Product not found." });
+        }
+        return res.status(200).json({
+            product: null,
+            lookup: globalMatch,
+            source: 'global'
+        });
     } catch (error) {
         console.error("Error searching product by barcode:", error);
         return res.status(500).json({ error: "Internal Server Error" });
@@ -400,7 +491,7 @@ const getProductByBarcodeForPurchase = async (req, res) => {
         if (!(await hasBarcodeColumn(requestPool))) {
             return res.status(503).json({ error: "Barcode is not supported on this tenant yet." });
         }
-        const code = (req.params.barcode || req.params.code || req.query.barcode || req.query.code || '').toString().trim();
+        const code = normalizeBarcode(req.params.barcode || req.params.code || req.query.barcode || req.query.code);
         if (!code) {
             return res.status(400).json({ error: "Barcode is required." });
         }
@@ -412,16 +503,31 @@ const getProductByBarcodeForPurchase = async (req, res) => {
                 selling_price,
                 actual_price,
                 company,
+                stock_quantity,
                 is_weight_based AS type,
+                is_weight_based,
                 time_for_delivery,
-                category
+                category,
+                barcode
              FROM products
              WHERE barcode = $1
                AND is_deleted = FALSE
              LIMIT 1`,
             [code]
         );
-        return res.status(200).json({ product: result.rows[0] || null });
+        const product = result.rows[0] || null;
+        if (product) {
+            return res.status(200).json({ product });
+        }
+        const globalMatch = await getGlobalProductByBarcode(code);
+        if (!globalMatch) {
+            return res.status(404).json({ error: "Product not found." });
+        }
+        return res.status(200).json({
+            product: null,
+            lookup: globalMatch,
+            source: 'global'
+        });
     } catch (error) {
         console.error("Error searching product by barcode for purchase:", error);
         return res.status(500).json({ error: "Internal Server Error" });

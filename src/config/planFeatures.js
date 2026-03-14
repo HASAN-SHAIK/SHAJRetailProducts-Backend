@@ -9,7 +9,8 @@ const PLAN_FEATURES = {
     api_access: false,
     multi_branch: false,
     priority_support: false,
-    max_users: 1
+    max_users: 1,
+    max_products: 500
   },
   pro: {
     enable_piece_based: true,
@@ -21,7 +22,8 @@ const PLAN_FEATURES = {
     api_access: false,
     multi_branch: false,
     priority_support: false,
-    max_users: 5
+    max_users: 5,
+    max_products: 5000
   },
   premium: {
     enable_piece_based: true,
@@ -33,7 +35,8 @@ const PLAN_FEATURES = {
     api_access: true,
     multi_branch: true,
     priority_support: true,
-    max_users: 20
+    max_users: 20,
+    max_products: null
   }
 };
 

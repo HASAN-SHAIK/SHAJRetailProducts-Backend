@@ -1,4 +1,5 @@
 const { jsonError, jsonOk } = require('../../utils/responses');
+const { resolveMaxProducts, fetchActiveProductCount } = require('../../utils/productLimits');
 
 const allowedSorts = new Set([
   'id',
@@ -47,6 +48,18 @@ const createProduct = async (req, res) => {
 
     if (!name || !selling_price || stock_quantity === undefined) {
       return jsonError(res, 400, 'VALIDATION_ERROR', 'Missing required fields');
+    }
+    const maxProducts = resolveMaxProducts(req.features);
+    if (maxProducts !== null) {
+      const totalProducts = await fetchActiveProductCount(tenantPool);
+      if (totalProducts >= maxProducts) {
+        return jsonError(
+          res,
+          403,
+          'PRODUCT_LIMIT_REACHED',
+          `Product limit reached (${maxProducts}). Upgrade plan to add more products.`
+        );
+      }
     }
 
     const insertRes = await tenantPool.query(

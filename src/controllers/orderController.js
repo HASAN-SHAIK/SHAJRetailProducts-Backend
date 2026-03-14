@@ -3,6 +3,7 @@ const pool = require('../db'); // PostgreSQL connection pool
 const getRequestPool = (req) => req.tenantPool || pool;
 const { createTransaction } = require('./transactionController');
 const { getDateRange } = require('../utils/dateRange');
+const { resolveMaxProducts, fetchActiveProductCount } = require('../utils/productLimits');
 
 const normalizePaymentModeValue = (value) => {
   const mode = (value || '').toLowerCase();
@@ -294,6 +295,12 @@ const createPurchaseOrder = async (req, res) => {
         if (!products || products.length === 0) {
             return res.status(400).json({ message: "No items provided for purchase" });
         }
+        const maxProducts = resolveMaxProducts(req.features);
+        let currentProductCount = null;
+        let newProductsAdded = 0;
+        if (maxProducts !== null) {
+            currentProductCount = await fetchActiveProductCount(client);
+        }
         // Step 1: Create the order entry
         const resolvedPaymentMode = normalizePaymentModeValue(payment_mode);
         const orderStatus = 'pending';
@@ -333,6 +340,14 @@ const createPurchaseOrder = async (req, res) => {
                 await client.query(updateProductQuery, [newQuantity, newActualPrice, resolvedSellingPrice, existingProduct.id]);
                 touchedProductIds.add(existingProduct.id);
             } else {
+                if (maxProducts !== null) {
+                    const projectedTotal = currentProductCount + newProductsAdded + 1;
+                    if (projectedTotal > maxProducts) {
+                        const err = new Error(`Product limit reached (${maxProducts}). Upgrade plan to add more products.`);
+                        err.status = 403;
+                        throw err;
+                    }
+                }
                 // Product does not exist, insert as a new product
                 const insertProductQuery = `
                     INSERT INTO products (name, company, stock_quantity, actual_price, selling_price, category, time_for_delivery, is_weight_based)
@@ -342,6 +357,7 @@ const createPurchaseOrder = async (req, res) => {
                 const inserted = await client.query(insertProductQuery, [product_name, company, quantity, actual_price, selling_price, category, time_for_delivery, is_weight_based ?? 0]);
                 if (inserted.rowCount > 0) {
                     touchedProductIds.add(inserted.rows[0].id);
+                    newProductsAdded += 1;
                 }
             }
             // Step 3: Insert into order_items
@@ -368,7 +384,8 @@ const createPurchaseOrder = async (req, res) => {
     } catch (error) {
         await client.query("ROLLBACK"); // Rollback transaction on error
         console.error("Error creating purchase order:", error);
-        res.status(500).json({ message: "Internal server error" });
+        const status = error.status || 500;
+        res.status(status).json({ message: error.message || "Internal server error" });
     } finally {
         client.release(); // Release client back to pool
     }
