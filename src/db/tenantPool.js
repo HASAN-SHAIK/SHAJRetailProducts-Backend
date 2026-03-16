@@ -57,6 +57,11 @@ const getTenantPool = (database) => {
 };
 
 const getAllTenantPools = () => Array.from(pools.values()).map((entry) => entry.pool);
+const getAllTenantPoolEntries = () =>
+  Array.from(pools.entries()).map(([database, entry]) => ({
+    tenantId: database,
+    pool: entry.pool
+  }));
 
 const closeIdleTenantPools = async () => {
   const now = Date.now();
@@ -100,6 +105,7 @@ const closeAllTenantPools = async () => {
 module.exports = {
   getTenantPool,
   getAllTenantPools,
+  getAllTenantPoolEntries,
   closeAllTenantPools,
   closeIdleTenantPools
 };

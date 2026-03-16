@@ -1,26 +1,27 @@
 const masterPool = require('../db/masterPool');
-const { getAllTenantPools } = require('../db/tenantPool');
+const { getAllTenantPoolEntries } = require('../db/tenantPool');
 
 const warmPool = async (pool, label) => {
+  if (!pool) return;
   try {
     await pool.query('SELECT 1');
+    console.log(`[WARM] ${label} warmed`);
   } catch (error) {
-    console.error(`Warmup failed for ${label}:`, error.message || error);
+    console.error(`[WARM] ${label} warm failed`);
   }
 };
 
 const startPoolWarmup = () => {
-  const enabled = process.env.DB_WARMUP_ENABLED === 'true';
-  if (!enabled) return null;
-
-  const intervalMs = Number(process.env.DB_WARMUP_INTERVAL_MS || 180_000);
+  if (startPoolWarmup.timer) return startPoolWarmup.timer;
+  const intervalMs = 4 * 60 * 1000;
 
   const tick = async () => {
-    await warmPool(masterPool, 'master');
-    const tenantPools = getAllTenantPools();
-    await Promise.allSettled(
-      tenantPools.map((pool) => warmPool(pool, 'tenant'))
-    );
+    await warmPool(masterPool, 'Master DB');
+    const tenantEntries = getAllTenantPoolEntries();
+    for (const entry of tenantEntries) {
+      if (!entry?.pool) continue;
+      await warmPool(entry.pool, `Tenant ${entry.tenantId}`);
+    }
   };
 
   tick().catch(() => null);
@@ -28,6 +29,7 @@ const startPoolWarmup = () => {
     tick().catch(() => null);
   }, Math.max(30_000, intervalMs));
   timer.unref?.();
+  startPoolWarmup.timer = timer;
   return timer;
 };
 
