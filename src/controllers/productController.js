@@ -356,14 +356,39 @@ const deleteProduct = async (req, res) => {
 const searchProductsForSale = async (req, res) => {
     try {
         const requestPool = getRequestPool(req);
-        const { name, barcode } = req.query;
-        const term = (name || barcode || '').toString().trim();
+        const view = String(req.query?.view || '').toLowerCase();
+        const { name, barcode, q } = req.query;
+        const term = (q || name || barcode || '').toString().trim();
         if (!term) {
             return res.status(400).json({ error: "Product name is required for search." });
         }
         const barcodeEnabled = req.features?.enable_barcode === true;
         const barcodeSupported = barcodeEnabled && (await hasBarcodeColumn(requestPool));
-        const barcodeValue = barcodeSupported ? normalizeBarcode(barcode) : null;
+        const barcodeValue = barcodeSupported ? normalizeBarcode(q || barcode) : null;
+
+        if (view === 'mobile') {
+            const barcodeSelect = barcodeSupported ? 'barcode' : 'NULL::text AS barcode';
+            const query = `
+                SELECT
+                    id,
+                    name,
+                    ${barcodeSelect},
+                    selling_price AS price,
+                    stock_quantity AS stock
+                FROM products
+                WHERE is_deleted = FALSE
+                  AND (
+                    name ILIKE $1
+                    OR company ILIKE $1
+                    ${barcodeSupported ? 'OR ($2::text IS NOT NULL AND barcode = $2)' : ''}
+                  )
+                ORDER BY name ASC
+                LIMIT 20
+            `;
+            const values = barcodeSupported ? [`%${term}%`, barcodeValue] : [`%${term}%`];
+            const { rows } = await requestPool.query(query, values);
+            return res.status(200).json({ products: rows });
+        }
 
         const query = `
             SELECT

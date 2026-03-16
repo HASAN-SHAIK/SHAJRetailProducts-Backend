@@ -520,6 +520,40 @@ const getOrderById = async (req, res) => {
         }
         const requestPool = getRequestPool(req);
         const { id } = req.params;
+        const view = String(req.query?.view || '').toLowerCase();
+        if (view === 'mobile') {
+            const orderRes = await requestPool.query(
+                `SELECT id,
+                        order_status,
+                        total_price AS total
+                 FROM orders
+                 WHERE id = $1`,
+                [id]
+            );
+            if (orderRes.rowCount === 0) {
+                return res.status(404).json({ error: "Order not found" });
+            }
+            const itemsRes = await requestPool.query(
+                `SELECT p.name AS product_name,
+                        oi.quantity,
+                        oi.selling_price AS price
+                 FROM order_items oi
+                 JOIN products p ON p.id = oi.product_id
+                 WHERE oi.order_id = $1`,
+                [id]
+            );
+            const orderRow = orderRes.rows[0];
+            return res.json({
+                id: orderRow.id,
+                status: orderRow.order_status,
+                total: Number(orderRow.total || 0),
+                items: itemsRes.rows.map((row) => ({
+                    product_name: row.product_name,
+                    quantity: Number(row.quantity || 0),
+                    price: Number(row.price || 0)
+                }))
+            });
+        }
         const orderRes = await requestPool.query(
             `SELECT o.id,
                     o.total_price AS total_amount,
@@ -645,6 +679,45 @@ const getAllOrders = async (req, res) => {
             return res.status(401).json({ error: "Missing tenant_id" });
         }
         const requestPool = getRequestPool(req);
+        const view = String(req.query?.view || '').toLowerCase();
+        if (view === 'mobile') {
+            const resolvedPage = Math.max(parseInt(req.query?.page, 10) || 1, 1);
+            const resolvedLimit = Math.min(Math.max(parseInt(req.query?.limit, 10) || 20, 1), 100);
+            const offset = (resolvedPage - 1) * resolvedLimit;
+
+            const ordersRes = await requestPool.query(
+                `SELECT
+                    o.id,
+                    o.total_price AS total,
+                    o.order_status AS status,
+                    o.created_at,
+                    COALESCE(o.product_count, SUM(oi.quantity))::numeric AS items
+                 FROM orders o
+                 LEFT JOIN order_items oi ON oi.order_id = o.id
+                 WHERE o.transaction_type = 'sale'
+                 GROUP BY o.id, o.total_price, o.order_status, o.created_at, o.product_count
+                 ORDER BY o.created_at DESC
+                 LIMIT $1 OFFSET $2`,
+                [resolvedLimit, offset]
+            );
+
+            const totalRes = await requestPool.query(
+                `SELECT COUNT(*)::int AS total
+                 FROM orders
+                 WHERE transaction_type = 'sale'`
+            );
+
+            return res.json({
+                orders: ordersRes.rows.map((row) => ({
+                    id: row.id,
+                    total: Number(row.total || 0),
+                    items: Number(row.items || 0),
+                    status: row.status,
+                    created_at: row.created_at
+                })),
+                total: Number(totalRes.rows[0]?.total || 0)
+            });
+        }
         let {
             range,
             start_date: startDateRaw,
