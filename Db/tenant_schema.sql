@@ -541,3 +541,27 @@ CREATE INDEX IF NOT EXISTS idx_customers_created
   ON customers (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_customers_name_trgm
   ON customers USING gin (name gin_trgm_ops);
+
+-- Performance additions (mobile/pos critical)
+CREATE INDEX IF NOT EXISTS idx_products_barcode_lookup
+  ON products (barcode)
+  INCLUDE (id, name, company, selling_price, stock_quantity)
+  WHERE is_deleted = FALSE AND barcode IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_products_category_active
+  ON products (category)
+  WHERE is_deleted = FALSE;
+
+CREATE INDEX IF NOT EXISTS idx_products_name_trgm_active
+  ON products USING gin (name gin_trgm_ops)
+  WHERE is_deleted = FALSE;
+
+CREATE INDEX IF NOT EXISTS idx_products_company_trgm_active
+  ON products USING gin (company gin_trgm_ops)
+  WHERE is_deleted = FALSE;
+
+CREATE INDEX IF NOT EXISTS idx_orders_created_at
+  ON orders (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_transactions_created
+  ON transactions (created_at DESC);
