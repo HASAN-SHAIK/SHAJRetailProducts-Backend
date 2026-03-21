@@ -30,6 +30,12 @@ const buildTenantPoolConfig = (database) => {
   };
 };
 
+const resolveTenantPoolMax = () => {
+  const raw = process.env.TENANT_DB_POOL_MAX ?? process.env.DB_POOL_MAX;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : 8;
+};
+
 const touch = (database) => {
   const entry = pools.get(database);
   if (entry) {
@@ -46,7 +52,11 @@ const getTenantPool = (database) => {
     return pools.get(database).pool;
   }
   console.log(`Creating new pool for tenant database: ${database}`);
-  const tunedConfig = { ...buildTenantPoolConfig(database), ...getPoolTuning('TENANT_DB') };
+  const tunedConfig = {
+    ...buildTenantPoolConfig(database),
+    max: resolveTenantPoolMax(),
+    ...getPoolTuning('TENANT_DB')
+  };
   const pool = attachQueryTimer(new Pool(tunedConfig), `tenant:${database}`);
   pool.on('error', (err) => {
     console.error(`Tenant DB pool error (${database}):`, err);

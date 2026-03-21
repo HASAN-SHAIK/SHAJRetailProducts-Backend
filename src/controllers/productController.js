@@ -3,24 +3,16 @@ const getRequestPool = (req) => req.tenantPool || pool;
 const { getAuthUser } = require('../utils/auth');
 const { resolveMaxProducts, fetchActiveProductCount } = require('../utils/productLimits');
 const { getGlobalProductByBarcode, upsertGlobalProduct } = require('../services/globalBarcodeService');
+const {
+    ensureTenantProductCache,
+    getProductByBarcodeFromCache,
+    upsertProductInCache,
+    removeProductFromCache,
+    normalizeBarcode,
+    hasBarcodeColumn
+} = require('../services/tenantProductCache');
 
-const barcodeColumnCache = new WeakMap();
-const hasBarcodeColumn = async (requestPool) => {
-    if (barcodeColumnCache.has(requestPool)) {
-        return barcodeColumnCache.get(requestPool);
-    }
-    const res = await requestPool.query(
-        `SELECT 1
-         FROM information_schema.columns
-         WHERE table_schema = 'public'
-           AND table_name = 'products'
-           AND column_name = 'barcode'
-         LIMIT 1`
-    );
-    const supported = res.rowCount > 0;
-    barcodeColumnCache.set(requestPool, supported);
-    return supported;
-};
+const getTenantId = (req) => req.tenant_id || req.tenant?.id || null;
 
 // ✅ Get all products (search, filter, sort, pagination)
 const getProducts = async (req, res) => {
@@ -115,11 +107,6 @@ const getProducts = async (req, res) => {
         res.status(500).json({ error: 'Database error' });
     }
 };
-const normalizeBarcode = (value) => {
-    if (value === undefined || value === null) return null;
-    const trimmed = value.toString().trim();
-    return trimmed ? trimmed : null;
-};
 
 // ✅ Add new product
 const addProduct = async (req, res) => {
@@ -202,6 +189,13 @@ const addProduct = async (req, res) => {
         }
       }
 
+      const tenantId = getTenantId(req);
+      if (tenantId) {
+        upsertProductInCache(tenantId, updated.rows[0], {
+          previousBarcode: existingProduct.barcode
+        });
+      }
+
       return res.status(200).json({
         message: 'Product already exists. Stock and prices updated.',
         product: updated.rows[0]
@@ -259,6 +253,11 @@ const addProduct = async (req, res) => {
         } catch (error) {
           console.error('Global barcode upsert failed:', error.message || error);
         }
+      }
+
+      const tenantId = getTenantId(req);
+      if (tenantId) {
+        upsertProductInCache(tenantId, result.rows[0]);
       }
 
       return res.status(201).json({
@@ -335,6 +334,12 @@ const updateProduct = async (req, res) => {
                 console.error('Global barcode upsert failed:', error.message || error);
             }
         }
+        const tenantId = getTenantId(req);
+        if (tenantId) {
+            upsertProductInCache(tenantId, result.rows[0], {
+                previousBarcode: product?.barcode
+            });
+        }
         res.json(result.rows[0]);
     } catch (error) {
         res.status(500).json({ error, message: 'Database error' });
@@ -346,7 +351,15 @@ const deleteProduct = async (req, res) => {
     const { id } = req.params;
     try {
         const requestPool = getRequestPool(req);
+        const existingRes = await requestPool.query(
+            'SELECT id, barcode FROM products WHERE id = $1',
+            [id]
+        );
         await requestPool.query('UPDATE products SET is_deleted = true WHERE id = $1', [id]);
+        const tenantId = getTenantId(req);
+        if (tenantId && existingRes.rowCount > 0) {
+            removeProductFromCache(tenantId, existingRes.rows[0]);
+        }
         res.json({ message: 'Product deleted' });
     } catch (error) {
         res.status(500).json({ error: 'Database error' });
@@ -473,24 +486,46 @@ const getProductByBarcodeForSale = async (req, res) => {
             return res.status(400).json({ error: "Barcode is required." });
         }
 
-        const result = await requestPool.query(
-            `SELECT id,
-                    name,
-                    company,
-                    category,
-                    selling_price,
-                    stock_quantity,
-                    is_weight_based,
-                    barcode
-             FROM products
-             WHERE barcode = $1
-               AND is_deleted = FALSE
-             LIMIT 1`,
-            [code]
-        );
-        const product = result.rows[0] || null;
-        if (product) {
-            return res.status(200).json({ product });
+        const tenantId = getTenantId(req);
+        if (tenantId) {
+            const start = Date.now();
+            await ensureTenantProductCache(tenantId, requestPool);
+            const cached = getProductByBarcodeFromCache(tenantId, code);
+            if (cached) {
+                console.log(`[Cache HIT] barcode lookup ${Date.now() - start}ms`);
+                const product = {
+                    id: cached.id,
+                    name: cached.name,
+                    company: cached.company,
+                    category: cached.category,
+                    selling_price: cached.selling_price,
+                    stock_quantity: cached.stock_quantity,
+                    is_weight_based: cached.is_weight_based,
+                    barcode: cached.barcode
+                };
+                return res.status(200).json({ product });
+            }
+            console.log(`[Cache MISS] barcode lookup ${Date.now() - start}ms`);
+        } else {
+            const result = await requestPool.query(
+                `SELECT id,
+                        name,
+                        company,
+                        category,
+                        selling_price,
+                        stock_quantity,
+                        is_weight_based,
+                        barcode
+                 FROM products
+                 WHERE barcode = $1
+                   AND is_deleted = FALSE
+                 LIMIT 1`,
+                [code]
+            );
+            const product = result.rows[0] || null;
+            if (product) {
+                return res.status(200).json({ product });
+            }
         }
         const globalMatch = await getGlobalProductByBarcode(code);
         if (!globalMatch) {
@@ -504,6 +539,101 @@ const getProductByBarcodeForSale = async (req, res) => {
     } catch (error) {
         console.error("Error searching product by barcode:", error);
         return res.status(500).json({ error: "Internal Server Error" });
+    }
+};
+
+// ✅ Full product cache for IndexedDB sync
+const getProductsCacheDB = async (req, res) => {
+    try {
+        const requestPool = getRequestPool(req);
+        const tenantId = getTenantId(req);
+
+        if (tenantId) {
+            const cache = await ensureTenantProductCache(tenantId, requestPool);
+            if (cache) {
+                const products = Array.from(cache.productsById.values()).map((product) => ({
+                    id: product.id,
+                    name: product.name,
+                    company: product.company,
+                    barcode: product.barcode,
+                    selling_price: product.selling_price,
+                    stock_quantity: product.stock_quantity,
+                    is_weight_based: product.is_weight_based
+                }));
+                return res.status(200).json({ products });
+            }
+        }
+
+        const barcodeSelect = (await hasBarcodeColumn(requestPool))
+            ? 'barcode'
+            : 'NULL::text AS barcode';
+        const result = await requestPool.query(
+            `SELECT id,
+                    name,
+                    company,
+                    ${barcodeSelect},
+                    selling_price,
+                    stock_quantity,
+                    is_weight_based
+             FROM products
+             WHERE is_deleted = FALSE`
+        );
+        return res.status(200).json({ products: result.rows });
+    } catch (error) {
+        console.error('Error fetching cacheDB products:', error);
+        return res.status(500).json({ error: 'Database error' });
+    }
+};
+
+// ✅ Lightweight cache endpoint for fast billing lookups
+const getProductsCache = async (req, res) => {
+    try {
+        const requestPool = getRequestPool(req);
+        const rawBarcode = req.query?.barcode;
+        const rawSearch = req.query?.search;
+        const barcode = typeof rawBarcode === 'string' ? rawBarcode.trim() : '';
+        const search = typeof rawSearch === 'string' ? rawSearch.trim() : '';
+
+        if (barcode) {
+            const result = await requestPool.query(
+                `SELECT id,
+                        name,
+                        barcode,
+                        selling_price,
+                        actual_price,
+                        stock_quantity,
+                        is_weight_based
+                 FROM products
+                 WHERE barcode = $1
+                   AND is_deleted = FALSE
+                 LIMIT 1`,
+                [barcode]
+            );
+            return res.status(200).json({ products: result.rows });
+        }
+
+        if (search) {
+            const result = await requestPool.query(
+                `SELECT id,
+                        name,
+                        barcode,
+                        selling_price,
+                        actual_price,
+                        stock_quantity,
+                        is_weight_based
+                 FROM products
+                 WHERE name ILIKE $1
+                   AND is_deleted = FALSE
+                 LIMIT 20`,
+                [`%${search}%`]
+            );
+            return res.status(200).json({ products: result.rows });
+        }
+
+        return res.status(400).json({ message: 'barcode or search is required.' });
+    } catch (error) {
+        console.error('Error fetching product cache:', error);
+        return res.status(500).json({ error: 'Database error' });
     }
 };
 
@@ -521,28 +651,53 @@ const getProductByBarcodeForPurchase = async (req, res) => {
             return res.status(400).json({ error: "Barcode is required." });
         }
 
-        const result = await requestPool.query(
-            `SELECT
-                id,
-                name,
-                selling_price,
-                actual_price,
-                company,
-                stock_quantity,
-                is_weight_based AS type,
-                is_weight_based,
-                time_for_delivery,
-                category,
-                barcode
-             FROM products
-             WHERE barcode = $1
-               AND is_deleted = FALSE
-             LIMIT 1`,
-            [code]
-        );
-        const product = result.rows[0] || null;
-        if (product) {
-            return res.status(200).json({ product });
+        const tenantId = getTenantId(req);
+        if (tenantId) {
+            const start = Date.now();
+            await ensureTenantProductCache(tenantId, requestPool);
+            const cached = getProductByBarcodeFromCache(tenantId, code);
+            if (cached) {
+                console.log(`[Cache HIT] barcode lookup ${Date.now() - start}ms`);
+                const product = {
+                    id: cached.id,
+                    name: cached.name,
+                    selling_price: cached.selling_price,
+                    actual_price: cached.actual_price,
+                    company: cached.company,
+                    stock_quantity: cached.stock_quantity,
+                    type: cached.is_weight_based,
+                    is_weight_based: cached.is_weight_based,
+                    time_for_delivery: cached.time_for_delivery,
+                    category: cached.category,
+                    barcode: cached.barcode
+                };
+                return res.status(200).json({ product });
+            }
+            console.log(`[Cache MISS] barcode lookup ${Date.now() - start}ms`);
+        } else {
+            const result = await requestPool.query(
+                `SELECT
+                    id,
+                    name,
+                    selling_price,
+                    actual_price,
+                    company,
+                    stock_quantity,
+                    is_weight_based AS type,
+                    is_weight_based,
+                    time_for_delivery,
+                    category,
+                    barcode
+                 FROM products
+                 WHERE barcode = $1
+                   AND is_deleted = FALSE
+                 LIMIT 1`,
+                [code]
+            );
+            const product = result.rows[0] || null;
+            if (product) {
+                return res.status(200).json({ product });
+            }
         }
         const globalMatch = await getGlobalProductByBarcode(code);
         if (!globalMatch) {
@@ -567,5 +722,7 @@ module.exports = {
     searchProductsForSale,
     searchProductsForPurchase,
     getProductByBarcodeForSale,
-    getProductByBarcodeForPurchase
+    getProductByBarcodeForPurchase,
+    getProductsCache,
+    getProductsCacheDB
 };

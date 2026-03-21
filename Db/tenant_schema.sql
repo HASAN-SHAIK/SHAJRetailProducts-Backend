@@ -520,6 +520,10 @@ CREATE INDEX IF NOT EXISTS idx_order_items_product
 
 CREATE INDEX IF NOT EXISTS idx_products_category
   ON products (category);
+CREATE INDEX IF NOT EXISTS idx_products_barcode
+  ON products (barcode);
+CREATE INDEX IF NOT EXISTS idx_products_name
+  ON products (name);
 CREATE INDEX IF NOT EXISTS idx_products_active_created_at
   ON products (created_at DESC)
   WHERE is_deleted = false;

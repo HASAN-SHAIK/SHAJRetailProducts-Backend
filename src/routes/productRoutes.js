@@ -8,7 +8,9 @@ const {
   searchProductsForSale,
   searchProductsForPurchase,
   getProductByBarcodeForSale,
-  getProductByBarcodeForPurchase
+  getProductByBarcodeForPurchase,
+  getProductsCache,
+  getProductsCacheDB
 } = require('../controllers/productController');
 const {  authMiddleware } = require('../middleware/authMiddleware');
 const isAdmin = require('../middleware/isAdmin');
@@ -17,6 +19,8 @@ router.get('/', getProducts);
 router.get('/search', searchProductsForSale);
 router.get('/search/sale', searchProductsForSale);
 router.get('/search/purchase', searchProductsForPurchase);
+router.get('/cache', getProductsCache);
+router.get('/cache-db', getProductsCacheDB);
 router.get('/barcode', getProductByBarcodeForSale);
 router.get('/barcode/:barcode', getProductByBarcodeForSale);
 router.get('/barcode/sale', getProductByBarcodeForSale);

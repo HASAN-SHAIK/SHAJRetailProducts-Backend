@@ -4,6 +4,31 @@ const getRequestPool = (req) => req.tenantPool || pool;
 const { createTransaction } = require('./transactionController');
 const { getDateRange } = require('../utils/dateRange');
 const { resolveMaxProducts, fetchActiveProductCount } = require('../utils/productLimits');
+const { upsertProductInCache, hasBarcodeColumn } = require('../services/tenantProductCache');
+
+const getTenantId = (req) => req.tenant_id || req.tenant?.id || null;
+
+const refreshCacheForProducts = async (tenantId, requestPool, productIds) => {
+  if (!tenantId || !productIds || productIds.length === 0) return;
+  const barcodeSelect = (await hasBarcodeColumn(requestPool))
+    ? 'barcode'
+    : 'NULL::text AS barcode';
+  const result = await requestPool.query(
+    `SELECT id,
+            name,
+            ${barcodeSelect},
+            selling_price,
+            actual_price,
+            stock_quantity,
+            is_weight_based
+     FROM products
+     WHERE id = ANY($1::int[])`,
+    [productIds]
+  );
+  for (const row of result.rows) {
+    upsertProductInCache(tenantId, row);
+  }
+};
 
 const normalizePaymentModeValue = (value) => {
   const mode = (value || '').toLowerCase();
@@ -272,6 +297,14 @@ const saleOrder = async(req, res) => {
 
         // Payment should be recorded only when payment is actually made (mark paid).
         await client.query("COMMIT");
+
+        const tenantId = getTenantId(req);
+        if (tenantId) {
+          refreshCacheForProducts(tenantId, requestPool, stockProductIds).catch((error) => {
+            console.error('Failed to refresh product cache after sale order:', error);
+          });
+        }
+
         res.status(201).json({ message: "Order created successfully", order_id, payment_mode: resolvedPaymentMode });
     } catch (error) {
         await client.query("ROLLBACK");
@@ -380,6 +413,14 @@ const createPurchaseOrder = async (req, res) => {
             : { rows: [] };
 
         await client.query("COMMIT"); // Commit transaction
+
+        const tenantId = getTenantId(req);
+        if (tenantId && productIds.length > 0) {
+          refreshCacheForProducts(tenantId, requestPool, productIds).catch((error) => {
+            console.error('Failed to refresh product cache after purchase order:', error);
+          });
+        }
+
         res.status(201).json({ message: "Purchase order created successfully", orderId, products: productsRes.rows });
     } catch (error) {
         await client.query("ROLLBACK"); // Rollback transaction on error
@@ -696,7 +737,7 @@ const getAllOrders = async (req, res) => {
                  LEFT JOIN order_items oi ON oi.order_id = o.id
                  WHERE o.transaction_type = 'sale'
                  GROUP BY o.id, o.total_price, o.order_status, o.created_at, o.product_count
-                 ORDER BY o.created_at DESC
+                 ORDER BY o.id DESC
                  LIMIT $1 OFFSET $2`,
                 [resolvedLimit, offset]
             );
@@ -728,9 +769,9 @@ const getAllOrders = async (req, res) => {
             sort_by: sortByRaw,
             sort_order: sortOrderRaw
         } = req.query || {};
-        const sortKey = (sortByRaw || 'created_at').toLowerCase();
+        const sortKey = (sortByRaw || 'id').toLowerCase();
         const sortOrder = (sortOrderRaw || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
-        const allowedSorts = new Set(['created_at', 'total_amount', 'total_paid', 'balance']);
+        const allowedSorts = new Set(['id', 'created_at', 'total_amount', 'total_paid', 'balance']);
         const resolvedSort = allowedSorts.has(sortKey) ? sortKey : 'created_at';
         const resolvedPage = Math.max(parseInt(page, 10) || 1, 1);
         const resolvedLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
@@ -760,11 +801,12 @@ const getAllOrders = async (req, res) => {
                    OR o.product_summary ILIKE $5
                  )
                ORDER BY
+                 CASE WHEN $6 = 'id' THEN o.id END ${sortOrder},
                  CASE WHEN $6 = 'created_at' THEN o.created_at END ${sortOrder},
                  CASE WHEN $6 = 'total_amount' THEN o.total_price END ${sortOrder},
                  CASE WHEN $6 = 'total_paid' THEN COALESCE(o.total_paid, 0)::numeric END ${sortOrder},
                  CASE WHEN $6 = 'balance' THEN (o.total_price - COALESCE(o.total_paid, 0)::numeric) END ${sortOrder},
-                 o.created_at DESC
+                 o.id DESC
                LIMIT $3 OFFSET $4
              )
              SELECT b.id,
@@ -779,11 +821,12 @@ const getAllOrders = async (req, res) => {
              FROM base b
              LEFT JOIN customers c ON c.id = b.customer_id
              ORDER BY
+               CASE WHEN $6 = 'id' THEN b.id END ${sortOrder},
                CASE WHEN $6 = 'created_at' THEN b.created_at END ${sortOrder},
                CASE WHEN $6 = 'total_amount' THEN b.total_amount END ${sortOrder},
                CASE WHEN $6 = 'total_paid' THEN COALESCE(b.total_paid, 0)::numeric END ${sortOrder},
                CASE WHEN $6 = 'balance' THEN (b.total_amount - COALESCE(b.total_paid, 0)::numeric) END ${sortOrder},
-               b.created_at DESC`,
+               b.id DESC`,
             [start, end, resolvedLimit, offset, searchValue, resolvedSort]
         );
 
@@ -1165,6 +1208,7 @@ const syncOfflineOrders = async (req, res) => {
     }
 
     const client = await requestPool.connect();
+    const touchedProductIds = new Set();
     try {
       await client.query('BEGIN');
 
@@ -1197,6 +1241,7 @@ const syncOfflineOrders = async (req, res) => {
 
           totalPrice += sellingPrice * qty;
           totalProfit += (sellingPrice - normalizeNumber(product.actual_price)) * qty;
+          touchedProductIds.add(product_id);
         }
 
         const orderDate = order.client_created_at ? new Date(order.client_created_at) : new Date();
@@ -1222,6 +1267,7 @@ const syncOfflineOrders = async (req, res) => {
             'UPDATE products SET stock_quantity = stock_quantity - $1 WHERE id = $2',
             [qty, product_id]
           );
+          touchedProductIds.add(product_id);
         }
 
         // Payment should be recorded only when payment is actually made (mark paid).
@@ -1252,11 +1298,15 @@ const syncOfflineOrders = async (req, res) => {
               'UPDATE products SET stock_quantity = $1, actual_price = $2, selling_price = $3, time_for_delivery = $4, is_weight_based = $5 WHERE id = $6',
               [newQuantity, newActualPrice, selling_price, time_for_delivery, is_weight_based ?? existingProduct.is_weight_based ?? 0, existingProduct.id]
             );
+            touchedProductIds.add(existingProduct.id);
           } else {
-            await client.query(
-              'INSERT INTO products (name, company, stock_quantity, actual_price, selling_price, category, time_for_delivery, is_weight_based) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+            const insertRes = await client.query(
+              'INSERT INTO products (name, company, stock_quantity, actual_price, selling_price, category, time_for_delivery, is_weight_based) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id',
               [product_name, company, quantity, actual_price, selling_price, category, time_for_delivery, is_weight_based ?? 0]
             );
+            if (insertRes.rowCount > 0) {
+              touchedProductIds.add(insertRes.rows[0].id);
+            }
           }
         }
 
@@ -1277,6 +1327,15 @@ const syncOfflineOrders = async (req, res) => {
       }
 
       await client.query('COMMIT');
+
+      const tenantId = getTenantId(req);
+      if (tenantId && touchedProductIds.size > 0) {
+        refreshCacheForProducts(tenantId, requestPool, Array.from(touchedProductIds)).catch(
+          (error) => {
+            console.error('Failed to refresh product cache after offline sync:', error);
+          }
+        );
+      }
 
       results.push({
         client_order_id: clientOrderId || null,

@@ -1,5 +1,6 @@
 const { jsonError, jsonOk } = require('../../utils/responses');
 const { resolveMaxProducts, fetchActiveProductCount } = require('../../utils/productLimits');
+const { upsertProductInCache } = require('../../services/tenantProductCache');
 
 const allowedSorts = new Set([
   'id',
@@ -77,6 +78,10 @@ const createProduct = async (req, res) => {
         time_for_delivery ?? null
       ]
     );
+
+    if (req.tenant_id) {
+      upsertProductInCache(req.tenant_id, insertRes.rows[0]);
+    }
 
     return jsonOk(res, insertRes.rows[0], 'Product created');
   } catch (error) {
