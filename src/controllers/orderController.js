@@ -9,13 +9,14 @@ const { upsertProductInCache, hasBarcodeColumn } = require('../services/tenantPr
 const getTenantId = (req) => req.tenant_id || req.tenant?.id || null;
 
 const refreshCacheForProducts = async (tenantId, requestPool, productIds) => {
-  if (!tenantId || !productIds || productIds.length === 0) return;
+  if (!tenantId || !productIds || productIds.length === 0) return [];
   const barcodeSelect = (await hasBarcodeColumn(requestPool))
     ? 'barcode'
     : 'NULL::text AS barcode';
   const result = await requestPool.query(
     `SELECT id,
             name,
+            company,
             ${barcodeSelect},
             selling_price,
             actual_price,
@@ -28,6 +29,20 @@ const refreshCacheForProducts = async (tenantId, requestPool, productIds) => {
   for (const row of result.rows) {
     upsertProductInCache(tenantId, row);
   }
+  return result.rows;
+};
+
+const mapProductsForIndexedDb = (rows) => {
+  if (!Array.isArray(rows)) return [];
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    company: row.company ?? null,
+    barcode: row.barcode ?? null,
+    selling_price: row.selling_price,
+    stock_quantity: row.stock_quantity,
+    is_weight_based: row.is_weight_based
+  }));
 };
 
 const normalizePaymentModeValue = (value) => {
@@ -298,14 +313,23 @@ const saleOrder = async(req, res) => {
         // Payment should be recorded only when payment is actually made (mark paid).
         await client.query("COMMIT");
 
+        let updatedProducts = [];
         const tenantId = getTenantId(req);
         if (tenantId) {
-          refreshCacheForProducts(tenantId, requestPool, stockProductIds).catch((error) => {
+          try {
+            const refreshed = await refreshCacheForProducts(tenantId, requestPool, stockProductIds);
+            updatedProducts = mapProductsForIndexedDb(refreshed);
+          } catch (error) {
             console.error('Failed to refresh product cache after sale order:', error);
-          });
+          }
         }
 
-        res.status(201).json({ message: "Order created successfully", order_id, payment_mode: resolvedPaymentMode });
+        res.status(201).json({
+          message: "Order created successfully",
+          order_id,
+          payment_mode: resolvedPaymentMode,
+          updated_products: updatedProducts
+        });
     } catch (error) {
         await client.query("ROLLBACK");
         const status = error.status || 400;
@@ -414,14 +438,23 @@ const createPurchaseOrder = async (req, res) => {
 
         await client.query("COMMIT"); // Commit transaction
 
+        let updatedProducts = [];
         const tenantId = getTenantId(req);
         if (tenantId && productIds.length > 0) {
-          refreshCacheForProducts(tenantId, requestPool, productIds).catch((error) => {
+          try {
+            const refreshed = await refreshCacheForProducts(tenantId, requestPool, productIds);
+            updatedProducts = mapProductsForIndexedDb(refreshed);
+          } catch (error) {
             console.error('Failed to refresh product cache after purchase order:', error);
-          });
+          }
         }
 
-        res.status(201).json({ message: "Purchase order created successfully", orderId, products: productsRes.rows });
+        res.status(201).json({
+          message: "Purchase order created successfully",
+          orderId,
+          products: productsRes.rows,
+          updated_products: updatedProducts
+        });
     } catch (error) {
         await client.query("ROLLBACK"); // Rollback transaction on error
         console.error("Error creating purchase order:", error);
