@@ -21,7 +21,8 @@ const refreshCacheForProducts = async (tenantId, requestPool, productIds) => {
             selling_price,
             actual_price,
             stock_quantity,
-            is_weight_based
+            is_weight_based,
+            expiry_date
      FROM products
      WHERE id = ANY($1::int[])`,
     [productIds]
@@ -41,7 +42,8 @@ const mapProductsForIndexedDb = (rows) => {
     barcode: row.barcode ?? null,
     selling_price: row.selling_price,
     stock_quantity: row.stock_quantity,
-    is_weight_based: row.is_weight_based
+    is_weight_based: row.is_weight_based,
+    expiry_date: row.expiry_date ?? null
   }));
 };
 

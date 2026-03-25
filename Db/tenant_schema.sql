@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS products (
   barcode VARCHAR(50),
   time_for_delivery INT DEFAULT 0,
   is_deleted BOOLEAN DEFAULT FALSE,
-  created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC')
+  created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC'),
+  expiry_date DATE
 );
 
 CREATE TABLE IF NOT EXISTS orders (

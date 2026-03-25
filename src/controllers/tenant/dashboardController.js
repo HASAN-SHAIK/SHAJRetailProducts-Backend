@@ -71,6 +71,9 @@ const getBasicDashboard = async (req, res) => {
        SELECT
          (SELECT COUNT(*)::int FROM products WHERE is_deleted = FALSE) AS total_products,
          (SELECT COUNT(*)::int FROM products WHERE is_deleted = FALSE AND stock_quantity <= 5) AS low_stock,
+         (SELECT COUNT(*)::int FROM products WHERE is_deleted = FALSE AND expiry_date IS NOT NULL AND expiry_date < CURRENT_DATE) AS expired_products,
+         (SELECT COUNT(*)::int FROM products WHERE is_deleted = FALSE AND expiry_date IS NOT NULL AND expiry_date >= CURRENT_DATE AND expiry_date <= CURRENT_DATE + INTERVAL '7 days') AS expiring_7_days,
+         (SELECT COUNT(*)::int FROM products WHERE is_deleted = FALSE AND expiry_date IS NOT NULL AND expiry_date > CURRENT_DATE + INTERVAL '7 days' AND expiry_date <= CURRENT_DATE + INTERVAL '30 days') AS expiring_30_days,
          (SELECT COUNT(*)::int FROM orders_filtered) AS total_orders,
          (SELECT COUNT(*) FILTER (WHERE order_status = 'pending')::int FROM orders_filtered) AS pending_orders,
          (SELECT COUNT(*) FILTER (WHERE order_status = 'completed')::int FROM orders_filtered) AS completed_orders,
@@ -87,7 +90,10 @@ const getBasicDashboard = async (req, res) => {
       },
       products: {
         total: Number(row.total_products || 0),
-        low_stock: Number(row.low_stock || 0)
+        low_stock: Number(row.low_stock || 0),
+        expiring_30_days: Number(row.expiring_30_days || 0),
+        expiring_7_days: Number(row.expiring_7_days || 0),
+        expired: Number(row.expired_products || 0)
       },
       orders: {
         total: Number(row.total_orders || 0),

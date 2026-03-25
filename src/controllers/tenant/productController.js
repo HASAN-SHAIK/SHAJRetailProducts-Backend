@@ -21,7 +21,7 @@ const getProducts = async (req, res) => {
     sort = allowedSorts.has(normalized) ? normalized : 'name';
 
     const result = await tenantPool.query(
-      `SELECT id, name, company, category, selling_price, stock_quantity, is_weight_based
+      `SELECT id, name, company, category, selling_price, stock_quantity, is_weight_based, expiry_date
        FROM products
        WHERE is_deleted = FALSE
        ORDER BY ${sort}`
@@ -44,8 +44,10 @@ const createProduct = async (req, res) => {
       stock_quantity,
       actual_price,
       is_weight_based,
-      time_for_delivery
+      time_for_delivery,
+      expiry_date
     } = req.body;
+    const normalizedExpiryDate = expiry_date === '' ? null : expiry_date;
 
     if (!name || !selling_price || stock_quantity === undefined) {
       return jsonError(res, 400, 'VALIDATION_ERROR', 'Missing required fields');
@@ -64,9 +66,9 @@ const createProduct = async (req, res) => {
     }
 
     const insertRes = await tenantPool.query(
-      `INSERT INTO products (name, company, category, selling_price, stock_quantity, actual_price, is_weight_based, time_for_delivery)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING id, name, company, category, selling_price, stock_quantity, is_weight_based, time_for_delivery`,
+      `INSERT INTO products (name, company, category, selling_price, stock_quantity, actual_price, is_weight_based, time_for_delivery, expiry_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING id, name, company, category, selling_price, stock_quantity, is_weight_based, time_for_delivery, expiry_date`,
       [
         name,
         company || null,
@@ -75,7 +77,8 @@ const createProduct = async (req, res) => {
         stock_quantity,
         actual_price || null,
         !!is_weight_based,
-        time_for_delivery ?? null
+        time_for_delivery ?? null,
+        normalizedExpiryDate ?? null
       ]
     );
 

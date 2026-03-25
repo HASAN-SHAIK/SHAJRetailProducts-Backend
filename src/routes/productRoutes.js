@@ -9,8 +9,10 @@ const {
   searchProductsForPurchase,
   getProductByBarcodeForSale,
   getProductByBarcodeForPurchase,
+  getProductById,
   getProductsCache,
-  getProductsCacheDB
+  getProductsCacheDB,
+  getProductsExtraDetails
 } = require('../controllers/productController');
 const {  authMiddleware } = require('../middleware/authMiddleware');
 const isAdmin = require('../middleware/isAdmin');
@@ -21,12 +23,14 @@ router.get('/search/sale', searchProductsForSale);
 router.get('/search/purchase', searchProductsForPurchase);
 router.get('/cache', getProductsCache);
 router.get('/cache-db', getProductsCacheDB);
+router.get('/extra-details', getProductsExtraDetails);
 router.get('/barcode', getProductByBarcodeForSale);
 router.get('/barcode/:barcode', getProductByBarcodeForSale);
 router.get('/barcode/sale', getProductByBarcodeForSale);
 router.get('/barcode/sale/:barcode', getProductByBarcodeForSale);
 router.get('/barcode/purchase', getProductByBarcodeForPurchase);
 router.get('/barcode/purchase/:barcode', getProductByBarcodeForPurchase);
+router.get('/:id', getProductById);
 router.post('/', isAdmin, addProduct);
 router.put('/:id',isAdmin, updateProduct);
 router.delete('/:id', isAdmin, deleteProduct);

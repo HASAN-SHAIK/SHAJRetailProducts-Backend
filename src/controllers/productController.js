@@ -62,6 +62,7 @@ const getProducts = async (req, res) => {
                     selling_price,
                     actual_price,
                     stock_quantity,
+                    expiry_date,
                     ${barcodeSelect},
                     NULL::int AS min_stock_level,
                     created_at
@@ -119,8 +120,15 @@ const addProduct = async (req, res) => {
     company,
     actual_price,
     time_for_delivery,
-    is_weight_based
+    is_weight_based,
+    expiry_date: expiryDateInput
   } = req.body;
+  const expiry_date =
+    Object.prototype.hasOwnProperty.call(req.body || {}, 'expiry_date') ||
+    Object.prototype.hasOwnProperty.call(req.body || {}, 'expiryDate')
+      ? expiryDateInput ?? req.body?.expiryDate ?? null
+      : undefined;
+  const normalizedExpiryDate = expiry_date === '' ? null : expiry_date;
   const product_name = productNameInput ?? nameInput;
   const barcodeProvided = Object.prototype.hasOwnProperty.call(req.body || {}, 'barcode');
   const barcode = normalizeBarcode(req.body?.barcode);
@@ -164,8 +172,9 @@ const addProduct = async (req, res) => {
              actual_price = $2,
              selling_price = $3,
              is_weight_based = $4,
-             barcode = $5
-         WHERE id = $6
+             barcode = $5,
+             expiry_date = $6
+         WHERE id = $7
          RETURNING *`,
         [
           stock_quantity,
@@ -173,6 +182,7 @@ const addProduct = async (req, res) => {
           selling_price,
           is_weight_based ?? existingProduct.is_weight_based ?? 0,
           resolvedBarcode,
+          normalizedExpiryDate === undefined ? existingProduct.expiry_date : normalizedExpiryDate,
           existingProduct.id
         ]
       );
@@ -231,6 +241,10 @@ const addProduct = async (req, res) => {
         time_for_delivery,
         is_weight_based ?? 0
       ];
+      if (normalizedExpiryDate !== undefined) {
+        columns.push('expiry_date');
+        values.push(normalizedExpiryDate);
+      }
       if (barcodeEnabled && barcodeProvided) {
         columns.push('barcode');
         values.push(barcode);
@@ -275,7 +289,13 @@ const addProduct = async (req, res) => {
 // ✅ Update product
 const updateProduct = async (req, res) => {
     const { id } = req.params;
-    const {selling_price, actual_price, stock_quantity,name,company, is_weight_based } = req.body;
+    const {selling_price, actual_price, stock_quantity,name,company, is_weight_based, expiry_date: expiryDateInput } = req.body;
+    const expiry_date =
+        Object.prototype.hasOwnProperty.call(req.body || {}, 'expiry_date') ||
+        Object.prototype.hasOwnProperty.call(req.body || {}, 'expiryDate')
+          ? expiryDateInput ?? req.body?.expiryDate ?? null
+          : undefined;
+    const normalizedExpiryDate = expiry_date === '' ? null : expiry_date;
     const barcodeProvided = Object.prototype.hasOwnProperty.call(req.body || {}, 'barcode');
     const barcode = normalizeBarcode(req.body?.barcode);
     try {
@@ -313,6 +333,10 @@ const updateProduct = async (req, res) => {
             stock_quantity ?? product.stock_quantity,
             is_weight_based ?? product.is_weight_based ?? 0
         ];
+        if (normalizedExpiryDate !== undefined) {
+            updateFields.push(`expiry_date = $${updateValues.length + 1}`);
+            updateValues.push(normalizedExpiryDate);
+        }
         if (barcodeEnabled && barcodeProvided) {
             updateFields.push(`barcode = $${updateValues.length + 1}`);
             updateValues.push(barcode);
@@ -551,15 +575,16 @@ const getProductsCacheDB = async (req, res) => {
         if (tenantId) {
             const cache = await ensureTenantProductCache(tenantId, requestPool);
             if (cache) {
-                const products = Array.from(cache.productsById.values()).map((product) => ({
-                    id: product.id,
-                    name: product.name,
-                    company: product.company,
-                    barcode: product.barcode,
-                    selling_price: product.selling_price,
-                    stock_quantity: product.stock_quantity,
-                    is_weight_based: product.is_weight_based
-                }));
+                  const products = Array.from(cache.productsById.values()).map((product) => ({
+                      id: product.id,
+                      name: product.name,
+                      company: product.company,
+                      barcode: product.barcode,
+                      selling_price: product.selling_price,
+                      stock_quantity: product.stock_quantity,
+                      is_weight_based: product.is_weight_based,
+                      expiry_date: product.expiry_date ?? null
+                  }));
                 return res.status(200).json({ products });
             }
         }
@@ -570,14 +595,15 @@ const getProductsCacheDB = async (req, res) => {
         const result = await requestPool.query(
             `SELECT id,
                     name,
-                    company,
-                    ${barcodeSelect},
-                    selling_price,
-                    stock_quantity,
-                    is_weight_based
-             FROM products
-             WHERE is_deleted = FALSE`
-        );
+                      company,
+                      ${barcodeSelect},
+                      selling_price,
+                      stock_quantity,
+                      is_weight_based,
+                      expiry_date
+               FROM products
+               WHERE is_deleted = FALSE`
+          );
         return res.status(200).json({ products: result.rows });
     } catch (error) {
         console.error('Error fetching cacheDB products:', error);
@@ -598,14 +624,15 @@ const getProductsCache = async (req, res) => {
             const result = await requestPool.query(
                 `SELECT id,
                         name,
-                        barcode,
-                        selling_price,
-                        actual_price,
-                        stock_quantity,
-                        is_weight_based
-                 FROM products
-                 WHERE barcode = $1
-                   AND is_deleted = FALSE
+                          barcode,
+                          selling_price,
+                          actual_price,
+                          stock_quantity,
+                          is_weight_based,
+                          expiry_date
+                   FROM products
+                   WHERE barcode = $1
+                     AND is_deleted = FALSE
                  LIMIT 1`,
                 [barcode]
             );
@@ -616,13 +643,14 @@ const getProductsCache = async (req, res) => {
             const result = await requestPool.query(
                 `SELECT id,
                         name,
-                        barcode,
-                        selling_price,
-                        actual_price,
-                        stock_quantity,
-                        is_weight_based
-                 FROM products
-                 WHERE name ILIKE $1
+                          barcode,
+                          selling_price,
+                          actual_price,
+                          stock_quantity,
+                          is_weight_based,
+                          expiry_date
+                   FROM products
+                   WHERE name ILIKE $1
                    AND is_deleted = FALSE
                  LIMIT 20`,
                 [`%${search}%`]
@@ -714,15 +742,132 @@ const getProductByBarcodeForPurchase = async (req, res) => {
     }
 };
 
+const getProductById = async (req, res) => {
+    const rawId = req.params?.id;
+    const id = Number(rawId);
+    if (!Number.isFinite(id)) {
+        return res.status(400).json({ message: 'Valid product id is required.' });
+    }
+
+    try {
+        const requestPool = getRequestPool(req);
+        const barcodeSelect = (await hasBarcodeColumn(requestPool))
+            ? 'barcode'
+            : 'NULL::text AS barcode';
+
+        const result = await requestPool.query(
+            `SELECT id,
+                    name,
+                    company,
+                      category,
+                      selling_price,
+                      actual_price,
+                      stock_quantity,
+                      is_weight_based,
+                      time_for_delivery,
+                      expiry_date,
+                      ${barcodeSelect}
+             FROM products
+             WHERE id = $1
+               AND is_deleted = FALSE
+             LIMIT 1`,
+            [id]
+        );
+
+        const product = result.rows[0] || null;
+        if (!product) {
+            return res.status(404).json({ message: 'Product not found.' });
+        }
+
+        return res.status(200).json({ product });
+    } catch (error) {
+        console.error('Error fetching product by id:', error);
+        return res.status(500).json({ error: 'Database error' });
+    }
+};
+
 module.exports = {
     getProducts,
     addProduct,
     updateProduct,
     deleteProduct,
+    getProductById,
     searchProductsForSale,
     searchProductsForPurchase,
     getProductByBarcodeForSale,
     getProductByBarcodeForPurchase,
     getProductsCache,
-    getProductsCacheDB
+    getProductsCacheDB,
+    getProductsExtraDetails
 };
+
+// ✅ Extra product details for IndexedDB sync/lookup
+async function getProductsExtraDetails(req, res) {
+    try {
+        const requestPool = getRequestPool(req);
+        const barcodeSupported = await hasBarcodeColumn(requestPool);
+
+        const rawBarcode = req.query?.barcode;
+        const rawBarcodes = req.query?.barcodes;
+        const rawId = req.query?.id;
+        const rawIds = req.query?.ids;
+
+        const singleBarcode = normalizeBarcode(rawBarcode);
+        const barcodeList = typeof rawBarcodes === 'string'
+            ? rawBarcodes.split(',').map((b) => normalizeBarcode(b)).filter(Boolean)
+            : [];
+
+        const singleId = rawId ? Number(rawId) : null;
+        const idList = typeof rawIds === 'string'
+            ? rawIds.split(',').map((id) => Number(id)).filter((id) => Number.isFinite(id))
+            : [];
+
+        const barcodes = [];
+        if (singleBarcode) barcodes.push(singleBarcode);
+        if (barcodeList.length > 0) barcodes.push(...barcodeList);
+
+        const ids = [];
+        if (Number.isFinite(singleId)) ids.push(singleId);
+        if (idList.length > 0) ids.push(...idList);
+
+        if (barcodes.length === 0 && ids.length === 0) {
+            return res.status(400).json({ message: 'barcode(s) or id(s) are required.' });
+        }
+
+        if (barcodes.length > 0 && !barcodeSupported) {
+            return res.status(503).json({ error: 'Barcode is not supported on this tenant yet.' });
+        }
+
+        const barcodeSelect = barcodeSupported ? 'barcode' : 'NULL::text AS barcode';
+        const conditions = [];
+        const values = [];
+
+        if (barcodes.length > 0) {
+            values.push(barcodes);
+            conditions.push(`${barcodeSelect === 'barcode' ? 'barcode' : 'NULL'} = ANY($${values.length}::text[])`);
+        }
+        if (ids.length > 0) {
+            values.push(ids);
+            conditions.push(`id = ANY($${values.length}::int[])`);
+        }
+
+        const whereClause = conditions.length > 0 ? `AND (${conditions.join(' OR ')})` : '';
+
+          const result = await requestPool.query(
+              `SELECT ${barcodeSelect} AS barcode,
+                      actual_price,
+                      category,
+                      company,
+                      expiry_date
+               FROM products
+               WHERE is_deleted = FALSE
+               ${whereClause}`,
+            values
+        );
+
+        return res.status(200).json({ products: result.rows });
+    } catch (error) {
+        console.error('Error fetching extra product details:', error);
+        return res.status(500).json({ error: 'Database error' });
+    }
+}

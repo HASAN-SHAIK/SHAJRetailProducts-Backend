@@ -198,6 +198,34 @@ const getInventoryIntelligence = async (
     [lowStockThreshold]
   );
 
+  const expirySummaryQuery = tenantPool.query(
+    `SELECT
+        COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date < CURRENT_DATE)::int AS expired_count,
+        COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date >= CURRENT_DATE AND expiry_date <= CURRENT_DATE + INTERVAL '7 days')::int AS expiring_7_days,
+        COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date > CURRENT_DATE + INTERVAL '7 days' AND expiry_date <= CURRENT_DATE + INTERVAL '30 days')::int AS expiring_30_days
+     FROM products
+     WHERE is_deleted = FALSE`
+  );
+
+  const expiryDetailsQuery = tenantPool.query(
+    `SELECT id AS product_id,
+            name AS product_name,
+            stock_quantity AS current_stock,
+            expiry_date,
+            CASE
+              WHEN expiry_date < CURRENT_DATE THEN 'expired'
+              WHEN expiry_date <= CURRENT_DATE + INTERVAL '7 days' THEN 'expiring_7_days'
+              WHEN expiry_date <= CURRENT_DATE + INTERVAL '30 days' THEN 'expiring_30_days'
+              ELSE 'valid'
+            END AS expiry_status
+     FROM products
+     WHERE is_deleted = FALSE
+       AND expiry_date IS NOT NULL
+       AND expiry_date <= CURRENT_DATE + INTERVAL '30 days'
+     ORDER BY expiry_date ASC NULLS LAST
+     LIMIT 100`
+  );
+
   const deadStockQuery = tenantPool.query(
     `SELECT p.id AS product_id,
             p.name AS product_name,
@@ -232,11 +260,13 @@ const getInventoryIntelligence = async (
     [start, end, location]
   );
 
-  const [summaryRes, lowStockRes, deadStockRes, fastMovingRes] = await Promise.all([
+  const [summaryRes, lowStockRes, deadStockRes, fastMovingRes, expirySummaryRes, expiryDetailsRes] = await Promise.all([
     summaryQuery,
     lowStockQuery,
     deadStockQuery,
-    fastMovingQuery
+    fastMovingQuery,
+    expirySummaryQuery,
+    expiryDetailsQuery
   ]);
 
   const summaryRow = summaryRes.rows[0] || {};
@@ -251,6 +281,29 @@ const getInventoryIntelligence = async (
     total_stock_quantity: Number(summaryRow.total_stock_quantity || 0),
     dead_stock_value: Math.round(deadStockValue * 100) / 100
   };
+
+  const expirySummaryRow = expirySummaryRes.rows[0] || {};
+  const expirySummary = {
+    expiring_30_days: Number(expirySummaryRow.expiring_30_days || 0),
+    expiring_7_days: Number(expirySummaryRow.expiring_7_days || 0),
+    expired: Number(expirySummaryRow.expired_count || 0)
+  };
+  const expiryDetails = expiryDetailsRes.rows.map((row) => {
+    const rawDate = row.expiry_date;
+    const formatted =
+      rawDate instanceof Date
+        ? rawDate.toISOString().slice(0, 10)
+        : typeof rawDate === 'string'
+        ? rawDate.slice(0, 10)
+        : null;
+    return {
+      product_id: row.product_id,
+      product_name: row.product_name,
+      current_stock: Number(row.current_stock || 0),
+      expiry_date: formatted,
+      status: row.expiry_status
+    };
+  });
 
   if (groupBy === 'location') {
     const groupedFastMovingRes = await tenantPool.query(
@@ -296,6 +349,8 @@ const getInventoryIntelligence = async (
 
   return {
     inventory_summary: baseSummary,
+    expiry_summary: expirySummary,
+    expiry_details: expiryDetails,
     low_stock: lowStockRes.rows.map((row) => ({
       product_id: row.product_id,
       product_name: row.product_name,

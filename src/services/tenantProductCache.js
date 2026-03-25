@@ -61,6 +61,7 @@ const loadProductsToCache = async (tenantId, tenantPool) => {
             stock_quantity,
             is_weight_based,
             time_for_delivery,
+            expiry_date,
             ${barcodeSelect}
      FROM products
      WHERE is_deleted = FALSE`
@@ -80,6 +81,7 @@ const loadProductsToCache = async (tenantId, tenantPool) => {
       stock_quantity: row.stock_quantity,
       is_weight_based: row.is_weight_based,
       time_for_delivery: row.time_for_delivery ?? null,
+      expiry_date: row.expiry_date ?? null,
       barcode: row.barcode ?? null
     };
 
@@ -149,6 +151,7 @@ const upsertProductInCache = (tenantId, product, options = {}) => {
     stock_quantity: product.stock_quantity,
     is_weight_based: product.is_weight_based,
     time_for_delivery: product.time_for_delivery ?? null,
+    expiry_date: product.expiry_date ?? null,
     barcode: product.barcode ?? null
   };
 
