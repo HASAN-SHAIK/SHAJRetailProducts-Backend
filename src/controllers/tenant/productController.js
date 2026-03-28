@@ -1,6 +1,7 @@
 const { jsonError, jsonOk } = require('../../utils/responses');
 const { resolveMaxProducts, fetchActiveProductCount } = require('../../utils/productLimits');
 const { upsertProductInCache } = require('../../services/tenantProductCache');
+const { invalidateProductCaches } = require('../../services/smartCache');
 
 const allowedSorts = new Set([
   'id',
@@ -42,7 +43,7 @@ const createProduct = async (req, res) => {
       category,
       selling_price,
       stock_quantity,
-      actual_price,
+      purchase_price,
       is_weight_based,
       time_for_delivery,
       expiry_date
@@ -66,7 +67,7 @@ const createProduct = async (req, res) => {
     }
 
     const insertRes = await tenantPool.query(
-      `INSERT INTO products (name, company, category, selling_price, stock_quantity, actual_price, is_weight_based, time_for_delivery, expiry_date)
+      `INSERT INTO products (name, company, category, selling_price, stock_quantity, purchase_price, is_weight_based, time_for_delivery, expiry_date)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING id, name, company, category, selling_price, stock_quantity, is_weight_based, time_for_delivery, expiry_date`,
       [
@@ -75,7 +76,7 @@ const createProduct = async (req, res) => {
         category || null,
         selling_price,
         stock_quantity,
-        actual_price || null,
+        purchase_price || null,
         !!is_weight_based,
         time_for_delivery ?? null,
         normalizedExpiryDate ?? null
@@ -84,6 +85,7 @@ const createProduct = async (req, res) => {
 
     if (req.tenant_id) {
       upsertProductInCache(req.tenant_id, insertRes.rows[0]);
+      invalidateProductCaches(req.tenant_id, null, insertRes.rows[0]);
     }
 
     return jsonOk(res, insertRes.rows[0], 'Product created');
@@ -97,3 +99,4 @@ const getProductByBarcode = async (req, res) => {
 };
 
 module.exports = { getProducts, createProduct, getProductByBarcode };
+

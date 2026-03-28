@@ -2,8 +2,8 @@
 TRUNCATE TABLE transactions, orders, products, users RESTART IDENTITY CASCADE;
 
 
--- Insert Products (With Actual selling_price for Profit Calculation)
-INSERT INTO products (name, category, selling_price, actual_price,company, stock_quantity, is_deleted, time_for_delivery) VALUES
+-- Insert Products (With Purchase Price for Profit Calculation)
+INSERT INTO products (name, category, selling_price, purchase_price, company, stock_quantity, is_deleted, time_for_delivery) VALUES
 ('Laptop', 'Electronics', 50000.00, 40000.00,'Dell', 10, FALSE, 5),
 ('Smartphone', 'Electronics', 30000.00, 25000.00,'Apple', 15, FALSE, 7),
 ('Headphones', 'Accessories', 5000.00, 3000.00,'Boat',50, FALSE, 2),

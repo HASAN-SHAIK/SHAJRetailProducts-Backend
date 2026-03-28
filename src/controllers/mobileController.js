@@ -3,6 +3,7 @@ const getRequestPool = (req) => req.tenantPool || pool;
 
 const DEFAULT_LOW_STOCK_THRESHOLD = 5;
 const DEFAULT_LOW_STOCK_LIMIT = 50;
+const SALES_STATUSES = ['completed', 'partially_returned', 'fully_returned'];
 
 const parsePositiveInt = (value, fallback) => {
   const parsed = Number.parseInt(value, 10);
@@ -18,23 +19,33 @@ const getMobileDashboard = async (req, res) => {
     const [todayRes, profitRes, lowStockRes, recentOrdersRes] = await Promise.all([
       requestPool.query(
         `SELECT
-           COALESCE(SUM(CASE WHEN order_status = 'completed' THEN total_price END), 0)::numeric AS today_sales,
-           COUNT(*)::int AS today_orders
+           COALESCE(SUM(CASE WHEN order_status = ANY($1::text[]) THEN (total_price - COALESCE(returned_amount, 0)) END), 0)::numeric AS today_sales,
+           COUNT(*) FILTER (WHERE order_status = ANY($1::text[]))::int AS today_orders
          FROM orders
          WHERE transaction_type = 'sale'
            AND created_at >= CURRENT_DATE
-           AND created_at < (CURRENT_DATE + INTERVAL '1 day')`
+           AND created_at < (CURRENT_DATE + INTERVAL '1 day')`,
+        [SALES_STATUSES]
       ),
       requestPool.query(
         `SELECT
-           COALESCE(SUM((oi.selling_price - p.actual_price) * oi.quantity), 0)::numeric AS today_profit
+           COALESCE(SUM(
+             GREATEST(oi.quantity - COALESCE(r.returned_qty, 0), 0)
+             * (COALESCE(oi.profit, 0) / NULLIF(oi.quantity, 0))
+           ), 0)::numeric AS today_profit
          FROM orders o
          JOIN order_items oi ON oi.order_id = o.id
-         JOIN products p ON p.id = oi.product_id
+         LEFT JOIN (
+           SELECT r.order_id, ori.product_id, SUM(ori.quantity) AS returned_qty
+           FROM order_returns r
+           JOIN order_return_items ori ON ori.return_id = r.id
+           GROUP BY r.order_id, ori.product_id
+         ) r ON r.order_id = o.id AND r.product_id = oi.product_id
          WHERE o.transaction_type = 'sale'
-           AND o.order_status = 'completed'
+           AND o.order_status = ANY($1::text[])
            AND o.created_at >= CURRENT_DATE
-           AND o.created_at < (CURRENT_DATE + INTERVAL '1 day')`
+           AND o.created_at < (CURRENT_DATE + INTERVAL '1 day')`,
+        [SALES_STATUSES]
       ),
       requestPool.query(
         `SELECT COUNT(*)::int AS low_stock_count
@@ -117,30 +128,31 @@ const getMobileLowStock = async (req, res) => {
 const getMobileSalesSummary = async (req, res) => {
   try {
     const requestPool = getRequestPool(req);
-    const summaryRes = await requestPool.query(
+  const summaryRes = await requestPool.query(
       `SELECT
          COALESCE(SUM(CASE
            WHEN created_at >= CURRENT_DATE
             AND created_at < CURRENT_DATE + INTERVAL '1 day'
-            AND order_status = 'completed'
-           THEN total_price END), 0)::numeric AS today,
+            AND order_status = ANY($1::text[])
+           THEN (total_price - COALESCE(returned_amount, 0)) END), 0)::numeric AS today,
          COALESCE(SUM(CASE
            WHEN created_at >= CURRENT_DATE - INTERVAL '1 day'
             AND created_at < CURRENT_DATE
-            AND order_status = 'completed'
-           THEN total_price END), 0)::numeric AS yesterday,
+            AND order_status = ANY($1::text[])
+           THEN (total_price - COALESCE(returned_amount, 0)) END), 0)::numeric AS yesterday,
          COALESCE(SUM(CASE
            WHEN created_at >= date_trunc('week', CURRENT_DATE)
             AND created_at < date_trunc('week', CURRENT_DATE) + INTERVAL '7 day'
-            AND order_status = 'completed'
-           THEN total_price END), 0)::numeric AS week,
+            AND order_status = ANY($1::text[])
+           THEN (total_price - COALESCE(returned_amount, 0)) END), 0)::numeric AS week,
          COALESCE(SUM(CASE
            WHEN created_at >= date_trunc('month', CURRENT_DATE)
             AND created_at < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
-            AND order_status = 'completed'
-           THEN total_price END), 0)::numeric AS month
+            AND order_status = ANY($1::text[])
+           THEN (total_price - COALESCE(returned_amount, 0)) END), 0)::numeric AS month
        FROM orders
-       WHERE transaction_type = 'sale'`
+       WHERE transaction_type = 'sale'`,
+      [SALES_STATUSES]
     );
 
     const row = summaryRes.rows[0] || {};
@@ -161,3 +173,4 @@ module.exports = {
   getMobileLowStock,
   getMobileSalesSummary
 };
+

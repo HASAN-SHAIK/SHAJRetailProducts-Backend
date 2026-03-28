@@ -85,6 +85,7 @@ const createOrder = async (req, res) => {
     }
 
     let totalPrice = 0;
+    let totalProfit = 0;
     const preparedItems = [];
 
     const productIds = [...new Set(items.map((item) => item.product_id))];
@@ -93,7 +94,7 @@ const createOrder = async (req, res) => {
     }
 
     const productRes = await client.query(
-      'SELECT id, selling_price, stock_quantity, is_weight_based FROM products WHERE id = ANY($1) AND is_deleted = FALSE FOR UPDATE',
+      'SELECT id, selling_price, purchase_price, gst_percentage, stock_quantity, is_weight_based FROM products WHERE id = ANY($1) AND is_deleted = FALSE FOR UPDATE',
       [productIds]
     );
     if (productRes.rowCount !== productIds.length) {
@@ -120,9 +121,29 @@ const createOrder = async (req, res) => {
         throw new Error('Decimal quantity is not allowed for this product');
       }
 
-      const sellingPrice = Number(item.selling_price ?? product.selling_price);
-      totalPrice += sellingPrice * qty;
-      preparedItems.push({ product_id, qty, sellingPrice });
+      const sellingPrice = Number(item.selling_price ?? item.price ?? item.unit_price ?? product.selling_price);
+      if (!Number.isFinite(sellingPrice) || sellingPrice <= 0) {
+        throw new Error('selling_price must be > 0');
+      }
+      const purchasePriceSnapshot = Number(product.purchase_price || 0);
+      const discountAmount = Number(item.discount_amount ?? item.discount ?? 0) || 0;
+      const gstPercent = Number(product.gst_percentage || 0) || 0;
+      const lineTotal = sellingPrice * qty;
+      const profit = (sellingPrice - purchasePriceSnapshot) * qty - discountAmount;
+      const marginPercent = lineTotal > 0 ? (profit / lineTotal) * 100 : 0;
+
+      totalPrice += lineTotal - discountAmount;
+      totalProfit += profit;
+      preparedItems.push({
+        product_id,
+        qty,
+        sellingPrice,
+        purchasePriceSnapshot,
+        discountAmount,
+        gstPercent,
+        profit,
+        marginPercent
+      });
 
       const prevQty = requestedQtyByProduct.get(product_id) || 0;
       requestedQtyByProduct.set(product_id, prevQty + qty);
@@ -148,11 +169,44 @@ const createOrder = async (req, res) => {
     const orderItemProductIds = preparedItems.map((item) => item.product_id);
     const orderItemQuantities = preparedItems.map((item) => item.qty);
     const orderItemPrices = preparedItems.map((item) => item.sellingPrice);
+    const orderItemPurchaseSnapshots = preparedItems.map((item) => item.purchasePriceSnapshot);
+    const orderItemDiscounts = preparedItems.map((item) => item.discountAmount);
+    const orderItemGstPercents = preparedItems.map((item) => item.gstPercent);
+    const orderItemProfits = preparedItems.map((item) => item.profit);
+    const orderItemMargins = preparedItems.map((item) => item.marginPercent);
 
     await client.query(
-      `INSERT INTO order_items (order_id, product_id, quantity, selling_price)
-       SELECT $1, unnest($2::int[]), unnest($3::numeric[]), unnest($4::numeric[])`,
-      [orderId, orderItemProductIds, orderItemQuantities, orderItemPrices]
+      `INSERT INTO order_items (
+          order_id,
+          product_id,
+          quantity,
+          selling_price,
+          purchase_price_snapshot,
+          discount_amount,
+          gst_percent,
+          profit,
+          margin_percent
+       )
+       SELECT $1,
+              unnest($2::int[]),
+              unnest($3::numeric[]),
+              unnest($4::numeric[]),
+              unnest($5::numeric[]),
+              unnest($6::numeric[]),
+              unnest($7::numeric[]),
+              unnest($8::numeric[]),
+              unnest($9::numeric[])`,
+      [
+        orderId,
+        orderItemProductIds,
+        orderItemQuantities,
+        orderItemPrices,
+        orderItemPurchaseSnapshots,
+        orderItemDiscounts,
+        orderItemGstPercents,
+        orderItemProfits,
+        orderItemMargins
+      ]
     );
 
     const stockProductIds = [];
@@ -175,7 +229,7 @@ const createOrder = async (req, res) => {
     if (!isOnline) {
       await client.query(
         'INSERT INTO transactions (order_id, total_price, profit, payment_mode) VALUES ($1, $2, $3, $4)',
-        [orderId, totalPrice, 0, resolvedPaymentMode || 'cash']
+        [orderId, totalPrice, totalProfit, resolvedPaymentMode || 'cash']
       );
     }
 

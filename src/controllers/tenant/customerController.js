@@ -23,4 +23,22 @@ const searchCustomers = async (req, res) => {
   }
 };
 
-module.exports = { searchCustomers };
+const getCustomers = async (req, res) => {
+  try {
+    const tenantPool = req.tenantPool;
+    const rawLimit = Number(req.query?.limit);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 5000) : 1000;
+    const result = await tenantPool.query(
+      `SELECT id, name, mobile, address, location
+       FROM customers
+       ORDER BY name ASC
+       LIMIT $1`,
+      [limit]
+    );
+    return jsonOk(res, { customers: result.rows });
+  } catch (error) {
+    return jsonError(res, 500, 'CUSTOMER_LIST_FAILED', 'Failed to load customers');
+  }
+};
+
+module.exports = { searchCustomers, getCustomers };

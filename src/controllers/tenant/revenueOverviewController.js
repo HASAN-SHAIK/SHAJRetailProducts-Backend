@@ -8,13 +8,14 @@ const getRevenueOverview = async (req, res) => {
       return jsonError(res, 401, 'UNAUTHORIZED', 'Missing tenant_id');
     }
 
-    const { range, start_date: startDateRaw, end_date: endDateRaw, location } = req.query || {};
+    const { range, start_date: startDateRaw, end_date: endDateRaw, location, branch_id } = req.query || {};
     const data = await getRevenueOverviewService(
       req.tenantPool,
       range,
       startDateRaw,
       endDateRaw,
-      location
+      location,
+      branch_id
     );
     return jsonOk(res, {
       range: data.range,

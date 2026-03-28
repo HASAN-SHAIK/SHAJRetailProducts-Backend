@@ -52,7 +52,7 @@ describe('orderController unit tests', () => {
       client.query
         .mockResolvedValueOnce({}) // BEGIN
         .mockResolvedValueOnce({
-          rows: [{ selling_price: 100, actual_price: 60, stock_quantity: 10, is_weight_based: 0 }]
+          rows: [{ selling_price: 100, purchase_price: 60, stock_quantity: 10, is_weight_based: 0 }]
         }) // SELECT product
         .mockResolvedValueOnce({}) // UPDATE stock
         .mockResolvedValueOnce({ rows: [{ id: 10 }] }) // INSERT orders
@@ -87,7 +87,7 @@ describe('orderController unit tests', () => {
       client.query
         .mockResolvedValueOnce({}) // BEGIN
         .mockResolvedValueOnce({
-          rows: [{ selling_price: 100, actual_price: 60, stock_quantity: 10, is_weight_based: 1 }]
+          rows: [{ selling_price: 100, purchase_price: 60, stock_quantity: 10, is_weight_based: 1 }]
         }) // SELECT product
         .mockResolvedValueOnce({}) // UPDATE stock
         .mockResolvedValueOnce({ rows: [{ id: 11 }] }) // INSERT orders
@@ -122,7 +122,7 @@ describe('orderController unit tests', () => {
       client.query
         .mockResolvedValueOnce({}) // BEGIN
         .mockResolvedValueOnce({
-          rows: [{ selling_price: 100, actual_price: 60, stock_quantity: 10, is_weight_based: 0 }]
+          rows: [{ selling_price: 100, purchase_price: 60, stock_quantity: 10, is_weight_based: 0 }]
         }); // SELECT product
 
       const req = {
@@ -148,7 +148,7 @@ describe('orderController unit tests', () => {
       client.query
         .mockResolvedValueOnce({}) // BEGIN
         .mockResolvedValueOnce({
-          rows: [{ selling_price: 100, actual_price: 60, stock_quantity: 1, is_weight_based: 0 }]
+          rows: [{ selling_price: 100, purchase_price: 60, stock_quantity: 1, is_weight_based: 0 }]
         }); // SELECT product
 
       const req = {
@@ -190,7 +190,7 @@ describe('orderController unit tests', () => {
               product_name: 'Item A',
               company: 'ACME',
               quantity: 2,
-              actual_price: 100,
+              purchase_price: 100,
               selling_price: 150,
               category: 'cat',
               time_for_delivery: '2d'
@@ -320,7 +320,7 @@ describe('orderController unit tests', () => {
         .mockResolvedValueOnce({ rows: [{ product_id: 1, quantity: 1 }] }) // old items
         .mockResolvedValueOnce({}) // restore stock
         .mockResolvedValueOnce({}) // delete old items
-        .mockResolvedValueOnce({ rows: [{ stock_quantity: 10, actual_price: 60, selling_price: 100, is_weight_based: 0 }] }) // select product info
+        .mockResolvedValueOnce({ rows: [{ stock_quantity: 10, purchase_price: 60, selling_price: 100, is_weight_based: 0 }] }) // select product info
         .mockResolvedValueOnce({}) // insert new item
         .mockResolvedValueOnce({}) // update stock
         .mockResolvedValueOnce({}) // update transactions
@@ -350,7 +350,7 @@ describe('orderController unit tests', () => {
         .mockResolvedValueOnce({ rows: [{ product_id: 1, quantity: 1 }] }) // old items
         .mockResolvedValueOnce({}) // restore stock
         .mockResolvedValueOnce({}) // delete old items
-        .mockResolvedValueOnce({ rows: [{ stock_quantity: 10, actual_price: 60, selling_price: 100, is_weight_based: 0 }] }); // select product info
+        .mockResolvedValueOnce({ rows: [{ stock_quantity: 10, purchase_price: 60, selling_price: 100, is_weight_based: 0 }] }); // select product info
 
       const req = {
         params: { id: '1' },
@@ -502,3 +502,4 @@ describe('orderController unit tests', () => {
     });
   });
 });
+

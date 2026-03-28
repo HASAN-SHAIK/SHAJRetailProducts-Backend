@@ -11,6 +11,7 @@ const {
   getTopTenantsByRevenue
 } = require('../services/analyticsService');
 const { resolveTenantContext } = require('../config/tenantDbResolver');
+const { normalizeBranchId } = require('../utils/branch');
 const { jsonError, jsonOk } = require('../utils/responses');
 const { getPlanFeatures } = require('../utils/planFeatures');
 const { resolveFeatures } = require('../utils/resolveFeatures');
@@ -1586,7 +1587,7 @@ const importProductsFromGoogleSheet = async (req, res) => {
       category: ['category', 'productcategory', 'group'],
       selling_price: ['sellingprice', 'selling_price', 'price', 'selling'],
       stock_quantity: ['stockquantity', 'stock', 'quantity', 'qty'],
-      actual_price: ['actualprice', 'actual_price', 'cost', 'costprice'],
+      purchase_price: ['actualprice', 'purchase_price', 'cost', 'costprice'],
       company: ['company', 'brand', 'seller', 'vendor'],
       time_for_delivery: ['timefordelivery', 'deliverytime', 'leadtime'],
       is_weight_based: ['isweightbased', 'weightbased', 'is_weight_based', 'weightbased?'],
@@ -1620,18 +1621,17 @@ const importProductsFromGoogleSheet = async (req, res) => {
       const headers = rows[0].map((h) => normalizeHeader(h));
       const nameIdx = resolveHeaderIndex(headers, headerAliases.name);
       const categoryIdx = resolveHeaderIndex(headers, headerAliases.category);
-      const sellingIdx = resolveHeaderIndex(headers, headerAliases.selling_price);
-      const stockIdx = resolveHeaderIndex(headers, headerAliases.stock_quantity);
-      const actualIdx = resolveHeaderIndex(headers, headerAliases.actual_price);
+        const stockIdx = resolveHeaderIndex(headers, headerAliases.stock_quantity);
+        const purchaseIdx = resolveHeaderIndex(headers, headerAliases.purchase_price);
       const companyIdx = resolveHeaderIndex(headers, headerAliases.company);
       const deliveryIdx = resolveHeaderIndex(headers, headerAliases.time_for_delivery);
       const weightIdx = resolveHeaderIndex(headers, headerAliases.is_weight_based);
       const barcodeIdx = resolveHeaderIndex(headers, headerAliases.barcode);
 
-      const missingColumns = [];
-      if (nameIdx < 0) missingColumns.push('name');
-      if (sellingIdx < 0) missingColumns.push('selling_price');
-      if (stockIdx < 0) missingColumns.push('stock_quantity');
+        const missingColumns = [];
+        if (nameIdx < 0) missingColumns.push('name');
+        if (stockIdx < 0) missingColumns.push('stock_quantity');
+        if (purchaseIdx < 0) missingColumns.push('purchase_price');
       if (missingColumns.length > 0) {
         errors.push({
           sheet: sheetName,
@@ -1653,9 +1653,8 @@ const importProductsFromGoogleSheet = async (req, res) => {
         const name = row[nameIdx]?.toString().trim();
         const categoryRaw = categoryIdx >= 0 ? row[categoryIdx]?.toString().trim() : '';
         const category = categoryRaw ? categoryRaw : sheetName;
-        const sellingPrice = parseNumber(row[sellingIdx]);
-        const stockQuantity = parseNumber(row[stockIdx]);
-        const actualPrice = actualIdx >= 0 ? parseNumber(row[actualIdx]) : null;
+          const stockQuantity = parseNumber(row[stockIdx]);
+          const purchasePriceRaw = purchaseIdx >= 0 ? parseNumber(row[purchaseIdx]) : null;
         const company = companyIdx >= 0 ? row[companyIdx]?.toString().trim() : null;
         const timeForDelivery = deliveryIdx >= 0 ? parseNumber(row[deliveryIdx]) : null;
         const isWeightBased =
@@ -1664,10 +1663,10 @@ const importProductsFromGoogleSheet = async (req, res) => {
           barcodeIdx >= 0 ? row[barcodeIdx]?.toString().trim() : null;
         const barcode = barcodeValue ? barcodeValue : null;
 
-        const rowErrors = [];
-        if (!name) rowErrors.push('name is required');
-        if (sellingPrice === null) rowErrors.push('selling_price is required');
-        if (stockQuantity === null) rowErrors.push('stock_quantity is required');
+          const rowErrors = [];
+          if (!name) rowErrors.push('name is required');
+          if (purchasePriceRaw === null) rowErrors.push('purchase_price is required');
+          if (stockQuantity === null) rowErrors.push('stock_quantity is required');
 
         if (rowErrors.length > 0) {
           errors.push({ sheet: sheetName, row: rowNumber, errors: rowErrors });
@@ -1675,29 +1674,33 @@ const importProductsFromGoogleSheet = async (req, res) => {
         }
 
         try {
-          const insertColumns = [
-            'name',
-            'category',
-            'selling_price',
-            'stock_quantity',
-            'actual_price',
-            'company',
-            'time_for_delivery',
-            'is_weight_based'
-          ];
-          const insertValues = [
-            name,
-            category,
-            sellingPrice,
-            stockQuantity,
-            actualPrice,
-            company || null,
-            timeForDelivery !== null ? Math.round(timeForDelivery) : null,
-            isWeightBased
-          ];
+            const insertColumns = [
+              'name',
+              'category',
+              'selling_price',
+              'stock_quantity',
+              'purchase_price',
+              'company',
+              'time_for_delivery',
+              'is_weight_based'
+            ];
+            const insertValues = [
+              name,
+              category,
+              0,
+              stockQuantity,
+              purchasePriceRaw,
+              company || null,
+              timeForDelivery !== null ? Math.round(timeForDelivery) : null,
+              isWeightBased
+            ];
           if (hasBarcodeColumn) {
             insertColumns.push('barcode');
             insertValues.push(barcode);
+          }
+          if (branchId) {
+            insertColumns.push('branch_id');
+            insertValues.push(branchId);
           }
           const placeholders = insertValues.map((_, idx) => `$${idx + 1}`).join(', ');
 
@@ -1870,6 +1873,71 @@ const updateTenantUserRole = async (req, res) => {
   }
 };
 
+const getTenantBranches = async (req, res) => {
+  try {
+    const tenantId = String(req.params.tenant_id || '').trim();
+    if (!tenantId) {
+      return jsonError(res, 400, 'VALIDATION_ERROR', 'Invalid tenant id');
+    }
+
+    const context = await resolveTenantContext(tenantId);
+    if (!context) {
+      return jsonError(res, 404, 'TENANT_NOT_FOUND', 'Tenant not found');
+    }
+    const branchId = normalizeBranchId(req.body?.branch_id || req.query?.branch_id);
+
+    const result = await context.tenantPool.query(
+      `SELECT id, name, location, created_at
+       FROM branches
+       ORDER BY created_at DESC`
+    );
+
+    await logAdminAction(req.admin?.admin_id, 'TENANT_BRANCHES_VIEWED', 'branch', null, {
+      tenant_id: tenantId
+    });
+
+    return jsonOk(res, { branches: result.rows }, 'Branches fetched');
+  } catch (error) {
+    return jsonError(res, 500, 'TENANT_BRANCHES_FAILED', error.message);
+  }
+};
+
+const createTenantBranch = async (req, res) => {
+  try {
+    const tenantId = String(req.params.tenant_id || '').trim();
+    if (!tenantId) {
+      return jsonError(res, 400, 'VALIDATION_ERROR', 'Invalid tenant id');
+    }
+
+    const context = await resolveTenantContext(tenantId);
+    if (!context) {
+      return jsonError(res, 404, 'TENANT_NOT_FOUND', 'Tenant not found');
+    }
+
+    const name = String(req.body?.name || '').trim();
+    const location = req.body?.location ? String(req.body.location).trim() : null;
+    if (!name) {
+      return jsonError(res, 400, 'VALIDATION_ERROR', 'name is required');
+    }
+
+    const result = await context.tenantPool.query(
+      `INSERT INTO branches (name, location)
+       VALUES ($1, $2)
+       RETURNING id, name, location, created_at`,
+      [name, location || null]
+    );
+
+    await logAdminAction(req.admin?.admin_id, 'TENANT_BRANCH_CREATED', 'branch', null, {
+      tenant_id: tenantId,
+      name
+    });
+
+    return jsonOk(res, { branch: result.rows[0] }, 'Branch created');
+  } catch (error) {
+    return jsonError(res, 500, 'TENANT_BRANCH_CREATE_FAILED', error.message);
+  }
+};
+
 module.exports = {
   createTenantHandler,
   getDashboard: getDashboardHandler,
@@ -1895,5 +1963,8 @@ module.exports = {
   getTenantUsers,
   updateTenantUserRole,
   upgradeTenantPlan,
-  renewTenantPlan
+  renewTenantPlan,
+  getTenantBranches,
+  createTenantBranch
 };
+

@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const masterPool = require('../db/masterPool');
 const adminPool = require('../db/adminPool');
-const { getTenantPool } = require('../db/tenantPool');
+const { getTenantPool, closeTenantPool } = require('../db/tenantPool');
 
 const quoteIdentifier = (value) => {
   const escaped = String(value).replace(/"/g, '""');
@@ -40,18 +40,25 @@ const provisionTenant = async (payload) => {
 
   const dbName = `shaj_tenant_${Date.now()}`;
   const dbIdentifier = quoteIdentifier(dbName);
-  await adminPool.query(`CREATE DATABASE ${dbIdentifier}`);
-
-  const tenantPool = getTenantPool(dbName);
   const tenantSchemaPath = path.join(__dirname, '..', '..', 'Db', 'tenant_schema.sql');
-  await runSqlFile(tenantPool, tenantSchemaPath);
 
-  const client = await masterPool.connect();
+  let tenantPool = null;
+  let masterClient = null;
   let tenantId = null;
+  let dbCreated = false;
+
   try {
-    await client.query('BEGIN');
+    await adminPool.query(`CREATE DATABASE ${dbIdentifier}`);
+    dbCreated = true;
+
+    tenantPool = getTenantPool(dbName);
+    await runSqlFile(tenantPool, tenantSchemaPath);
+
+    masterClient = await masterPool.connect();
+    await masterClient.query('BEGIN');
+
     const normalizedDomain = domain?.toString().trim().toLowerCase();
-    const tenantRes = await client.query(
+    const tenantRes = await masterClient.query(
       `INSERT INTO tenants (shop_name, owner_name, email, mobile, domain, database_name, plan_type, is_active)
        VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
        RETURNING id, database_name`,
@@ -62,36 +69,55 @@ const provisionTenant = async (payload) => {
     const endDate =
       subscription_end_date ||
       new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-    await client.query(
+    await masterClient.query(
       `INSERT INTO subscriptions (tenant_id, start_date, end_date, amount, payment_status)
        VALUES ($1, CURRENT_DATE, $2, $3, $4)`,
       [tenantId, endDate, subscription_amount, subscription_status]
     );
 
-    await client.query('COMMIT');
+    await tenantPool.query(
+      `INSERT INTO shop_details (shop_name, owner_name, mobile_number, gst_number, address_line, city, state, pincode)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        shop_name || null,
+        owner_name || null,
+        mobile || null,
+        gst_number || null,
+        address_line || null,
+        city || null,
+        state || null,
+        pincode || null
+      ]
+    );
+
+    await masterClient.query('COMMIT');
+    return { tenant_id: tenantId, database_name: dbName };
   } catch (error) {
-    await client.query('ROLLBACK');
+    if (masterClient) {
+      try {
+        await masterClient.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('Tenant provision rollback failed:', rollbackError);
+      }
+    }
+    if (dbCreated) {
+      try {
+        await closeTenantPool(dbName);
+      } catch (closeError) {
+        console.error('Failed to close tenant pool during rollback:', closeError);
+      }
+      try {
+        await adminPool.query(`DROP DATABASE IF EXISTS ${dbIdentifier}`);
+      } catch (dropError) {
+        console.error('Failed to drop tenant database during rollback:', dropError);
+      }
+    }
     throw error;
   } finally {
-    client.release();
+    if (masterClient) {
+      masterClient.release();
+    }
   }
-
-  await tenantPool.query(
-    `INSERT INTO shop_details (shop_name, owner_name, mobile_number, gst_number, address_line, city, state, pincode)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [
-      shop_name || null,
-      owner_name || null,
-      mobile || null,
-      gst_number || null,
-      address_line || null,
-      city || null,
-      state || null,
-      pincode || null
-    ]
-  );
-
-  return { tenant_id: tenantId, database_name: dbName };
 };
 
 module.exports = { provisionTenant };

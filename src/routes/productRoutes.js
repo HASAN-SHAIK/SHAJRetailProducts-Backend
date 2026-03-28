@@ -12,10 +12,18 @@ const {
   getProductById,
   getProductsCache,
   getProductsCacheDB,
-  getProductsExtraDetails
+  getProductsExtraDetails,
+  bulkUpdateProducts
 } = require('../controllers/productController');
-const {  authMiddleware } = require('../middleware/authMiddleware');
+const { importProducts, importProductsFromRows } = require('../controllers/productImport.controller');
+const { authMiddleware } = require('../middleware/authMiddleware');
 const isAdmin = require('../middleware/isAdmin');
+const multer = require('multer');
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }
+});
 
 router.get('/', getProducts);
 router.get('/search', searchProductsForSale);
@@ -30,9 +38,12 @@ router.get('/barcode/sale', getProductByBarcodeForSale);
 router.get('/barcode/sale/:barcode', getProductByBarcodeForSale);
 router.get('/barcode/purchase', getProductByBarcodeForPurchase);
 router.get('/barcode/purchase/:barcode', getProductByBarcodeForPurchase);
+router.put('/bulk-update', isAdmin, bulkUpdateProducts);
+router.post('/import', isAdmin, upload.single('file'), importProducts);
+router.post('/import-rows', isAdmin, importProductsFromRows);
 router.get('/:id', getProductById);
 router.post('/', isAdmin, addProduct);
-router.put('/:id',isAdmin, updateProduct);
+router.put('/:id', isAdmin, updateProduct);
 router.delete('/:id', isAdmin, deleteProduct);
 
 module.exports = router;

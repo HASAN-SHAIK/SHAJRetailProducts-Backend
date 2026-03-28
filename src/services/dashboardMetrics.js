@@ -1,4 +1,5 @@
 const { getDateRange } = require('../utils/dateRange');
+const { normalizeBranchId } = require('../utils/branch');
 
 const diffDays = (start, end) => {
   const ms = end.getTime() - start.getTime();
@@ -15,9 +16,17 @@ const normalizeLocation = (value) => {
   return text ? text : null;
 };
 
-const getRevenueOverview = async (tenantPool, range, startDateRaw, endDateRaw, locationRaw) => {
+const getRevenueOverview = async (
+  tenantPool,
+  range,
+  startDateRaw,
+  endDateRaw,
+  locationRaw,
+  branchIdRaw
+) => {
   const { start, end, range: resolvedRange } = getDateRange(range, startDateRaw, endDateRaw);
   const location = normalizeLocation(locationRaw);
+  const branchId = normalizeBranchId(branchIdRaw);
 
   const result = await tenantPool.query(
     `SELECT
@@ -26,8 +35,9 @@ const getRevenueOverview = async (tenantPool, range, startDateRaw, endDateRaw, l
        COALESCE(SUM(total_orders), 0)::int AS total_orders
      FROM tenant_dashboard_metrics
      WHERE day BETWEEN $1 AND $2
-       AND ($3::text IS NULL OR location = $3)`,
-    [start, end, location]
+       AND ($3::text IS NULL OR location = $3)
+       AND ($4::uuid IS NULL OR branch_id = $4)`,
+    [start, end, location, branchId]
   );
 
   const row = result.rows[0] || {};
@@ -55,10 +65,12 @@ const getGrowthComparison = async (
   startDateRaw,
   endDateRaw,
   locationRaw,
+  branchIdRaw,
   groupBy
 ) => {
   const { start, end } = getDateRange(range, startDateRaw, endDateRaw);
   const location = normalizeLocation(locationRaw);
+  const branchId = normalizeBranchId(branchIdRaw);
 
   const windowDays = diffDays(start, end);
   const previousEnd = new Date(start.getTime() - 1);
@@ -78,9 +90,10 @@ const getGrowthComparison = async (
        WHERE day BETWEEN $3 AND $2
          AND location IS NOT NULL
          AND ($5::text IS NULL OR location = $5)
+         AND ($6::uuid IS NULL OR branch_id = $6)
        GROUP BY location
        ORDER BY location ASC`,
-      [start, end, previousStart, previousEnd, location]
+      [start, end, previousStart, previousEnd, location, branchId]
     );
 
     const grouped = result.rows.map((row) => {
@@ -128,8 +141,9 @@ const getGrowthComparison = async (
        COALESCE(SUM(CASE WHEN day BETWEEN $3 AND $4 THEN total_orders END), 0)::int AS previous_orders
      FROM tenant_dashboard_metrics
      WHERE day BETWEEN $3 AND $2
-       AND ($5::text IS NULL OR location = $5)`,
-    [start, end, previousStart, previousEnd, location]
+       AND ($5::text IS NULL OR location = $5)
+       AND ($6::uuid IS NULL OR branch_id = $6)`,
+    [start, end, previousStart, previousEnd, location, branchId]
   );
 
   const row = result.rows[0] || {};
@@ -170,20 +184,24 @@ const getInventoryIntelligence = async (
   endDateRaw,
   deadStockDaysRaw,
   locationRaw,
+  branchIdRaw,
   groupBy
 ) => {
   const { start, end } = getDateRange(range, startDateRaw, endDateRaw);
   const location = normalizeLocation(locationRaw);
+  const branchId = normalizeBranchId(branchIdRaw);
 
   const deadStockDays = Math.max(Number(deadStockDaysRaw) || 60, 1);
   const lowStockThreshold = 5;
 
   const summaryQuery = tenantPool.query(
     `SELECT
-       COALESCE(SUM(stock_quantity * COALESCE(actual_price, 0)), 0)::numeric AS total_stock_value,
+       COALESCE(SUM(stock_quantity * COALESCE(purchase_price, 0)), 0)::numeric AS total_stock_value,
        COALESCE(SUM(stock_quantity), 0)::numeric AS total_stock_quantity
      FROM products
-     WHERE is_deleted = FALSE`
+     WHERE is_deleted = FALSE
+       AND ($1::uuid IS NULL OR branch_id = $1)`,
+    [branchId]
   );
 
   const lowStockQuery = tenantPool.query(
@@ -193,9 +211,10 @@ const getInventoryIntelligence = async (
      FROM products
      WHERE is_deleted = FALSE
        AND stock_quantity <= $1
+       AND ($2::uuid IS NULL OR branch_id = $2)
      ORDER BY stock_quantity ASC
      LIMIT 20`,
-    [lowStockThreshold]
+    [lowStockThreshold, branchId]
   );
 
   const expirySummaryQuery = tenantPool.query(
@@ -204,7 +223,9 @@ const getInventoryIntelligence = async (
         COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date >= CURRENT_DATE AND expiry_date <= CURRENT_DATE + INTERVAL '7 days')::int AS expiring_7_days,
         COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date > CURRENT_DATE + INTERVAL '7 days' AND expiry_date <= CURRENT_DATE + INTERVAL '30 days')::int AS expiring_30_days
      FROM products
-     WHERE is_deleted = FALSE`
+     WHERE is_deleted = FALSE
+       AND ($1::uuid IS NULL OR branch_id = $1)`,
+    [branchId]
   );
 
   const expiryDetailsQuery = tenantPool.query(
@@ -222,8 +243,11 @@ const getInventoryIntelligence = async (
      WHERE is_deleted = FALSE
        AND expiry_date IS NOT NULL
        AND expiry_date <= CURRENT_DATE + INTERVAL '30 days'
+       AND ($1::uuid IS NULL OR branch_id = $1)
      ORDER BY expiry_date ASC NULLS LAST
      LIMIT 100`
+    ,
+    [branchId]
   );
 
   const deadStockQuery = tenantPool.query(
@@ -231,17 +255,18 @@ const getInventoryIntelligence = async (
             p.name AS product_name,
             p.stock_quantity AS current_stock,
             MAX(CASE WHEN $2::text IS NULL OR o.location = $2 THEN o.created_at END) AS last_sold_date,
-            COALESCE(p.actual_price, 0) AS actual_price
+            COALESCE(p.purchase_price, 0) AS purchase_price
      FROM products p
      LEFT JOIN order_items oi ON oi.product_id = p.id
      LEFT JOIN orders o ON o.id = oi.order_id AND o.transaction_type = 'sale'
      WHERE p.is_deleted = FALSE
-     GROUP BY p.id, p.name, p.stock_quantity, p.actual_price
+       AND ($3::uuid IS NULL OR p.branch_id = $3)
+     GROUP BY p.id, p.name, p.stock_quantity, p.purchase_price
      HAVING MAX(CASE WHEN $2::text IS NULL OR o.location = $2 THEN o.created_at END) IS NULL
         OR MAX(CASE WHEN $2::text IS NULL OR o.location = $2 THEN o.created_at END) < NOW() - ($1::text || ' days')::interval
      ORDER BY last_sold_date NULLS FIRST
      LIMIT 50`,
-    [deadStockDays, location]
+    [deadStockDays, location, branchId]
   );
 
   const fastMovingQuery = tenantPool.query(
@@ -254,10 +279,11 @@ const getInventoryIntelligence = async (
      WHERE o.created_at BETWEEN $1 AND $2
        AND o.transaction_type = 'sale'
        AND ($3::text IS NULL OR o.location = $3)
+       AND ($4::uuid IS NULL OR o.branch_id = $4)
      GROUP BY p.id, p.name
      ORDER BY quantity_sold DESC
      LIMIT 5`,
-    [start, end, location]
+    [start, end, location, branchId]
   );
 
   const [summaryRes, lowStockRes, deadStockRes, fastMovingRes, expirySummaryRes, expiryDetailsRes] = await Promise.all([
@@ -271,7 +297,7 @@ const getInventoryIntelligence = async (
 
   const summaryRow = summaryRes.rows[0] || {};
   const deadStockValue = deadStockRes.rows.reduce((sum, row) => {
-    const price = Number(row.actual_price || 0);
+    const price = Number(row.purchase_price || 0);
     const qty = Number(row.current_stock || 0);
     return sum + price * qty;
   }, 0);
@@ -321,11 +347,12 @@ const getInventoryIntelligence = async (
            AND o.location IS NOT NULL
            AND o.transaction_type = 'sale'
            AND ($3::text IS NULL OR o.location = $3)
+           AND ($4::uuid IS NULL OR o.branch_id = $4)
          GROUP BY o.location, p.id, p.name
        ) ranked
        WHERE rn <= 5
        ORDER BY location ASC, quantity_sold DESC`,
-      [start, end, location]
+      [start, end, location, branchId]
     );
 
     const grouped = new Map();
@@ -377,10 +404,12 @@ const getCustomerCredit = async (
   startDateRaw,
   endDateRaw,
   locationRaw,
+  branchIdRaw,
   groupBy
 ) => {
   const { start, end } = getDateRange(range, startDateRaw, endDateRaw);
   const location = normalizeLocation(locationRaw);
+  const branchId = normalizeBranchId(branchIdRaw);
 
   if (groupBy === 'location') {
     const topCustomersRes = await tenantPool.query(
@@ -399,11 +428,12 @@ const getCustomerCredit = async (
            AND o.location IS NOT NULL
            AND o.transaction_type = 'sale'
            AND ($3::text IS NULL OR o.location = $3)
+           AND ($4::uuid IS NULL OR o.branch_id = $4)
          GROUP BY o.location, c.id, c.name
        ) ranked
        WHERE rn <= 5
        ORDER BY location ASC, total_revenue DESC`,
-      [start, end, location]
+      [start, end, location, branchId]
     );
 
     const creditSummaryRes = await tenantPool.query(
@@ -417,9 +447,10 @@ const getCustomerCredit = async (
          AND o.location IS NOT NULL
          AND o.transaction_type = 'sale'
          AND ($3::text IS NULL OR o.location = $3)
+         AND ($4::uuid IS NULL OR o.branch_id = $4)
        GROUP BY o.location
        ORDER BY o.location ASC`,
-      [start, end, location]
+      [start, end, location, branchId]
     );
 
     const newCustomersRes = await tenantPool.query(
@@ -432,9 +463,10 @@ const getCustomerCredit = async (
          AND o.location IS NOT NULL
          AND o.transaction_type = 'sale'
          AND ($3::text IS NULL OR o.location = $3)
+         AND ($4::uuid IS NULL OR o.branch_id = $4)
        GROUP BY o.location
        ORDER BY o.location ASC`,
-      [start, end, location]
+      [start, end, location, branchId]
     );
 
     const repeatCustomersRes = await tenantPool.query(
@@ -449,12 +481,13 @@ const getCustomerCredit = async (
            AND o.location IS NOT NULL
            AND o.transaction_type = 'sale'
            AND ($3::text IS NULL OR o.location = $3)
+           AND ($4::uuid IS NULL OR o.branch_id = $4)
          GROUP BY o.location, o.customer_id
          HAVING COUNT(*) > 1
        ) rc
        GROUP BY location
        ORDER BY location ASC`,
-      [start, end, location]
+      [start, end, location, branchId]
     );
 
     const totalCustomersRes = await tenantPool.query(
@@ -466,9 +499,10 @@ const getCustomerCredit = async (
          AND o.location IS NOT NULL
          AND o.transaction_type = 'sale'
          AND ($3::text IS NULL OR o.location = $3)
+         AND ($4::uuid IS NULL OR o.branch_id = $4)
        GROUP BY o.location
        ORDER BY o.location ASC`,
-      [start, end, location]
+      [start, end, location, branchId]
     );
 
     const grouped = new Map();
@@ -538,10 +572,11 @@ const getCustomerCredit = async (
      WHERE o.created_at BETWEEN $1 AND $2
        AND o.transaction_type = 'sale'
        AND ($3::text IS NULL OR o.location = $3)
+       AND ($4::uuid IS NULL OR o.branch_id = $4)
      GROUP BY c.id, c.name
      ORDER BY total_revenue DESC
      LIMIT 5`,
-    [start, end, location]
+    [start, end, location, branchId]
   );
 
   const creditSummaryQuery = tenantPool.query(
@@ -553,8 +588,9 @@ const getCustomerCredit = async (
      WHERE t.payment_mode = 'credit'
        AND o.created_at BETWEEN $1 AND $2
        AND o.transaction_type = 'sale'
-       AND ($3::text IS NULL OR o.location = $3)`,
-    [start, end, location]
+       AND ($3::text IS NULL OR o.location = $3)
+       AND ($4::uuid IS NULL OR o.branch_id = $4)`,
+    [start, end, location, branchId]
   );
 
   const newCustomersQuery = tenantPool.query(
@@ -564,8 +600,9 @@ const getCustomerCredit = async (
      WHERE o.created_at BETWEEN $1 AND $2
        AND c.created_at BETWEEN $1 AND $2
        AND o.transaction_type = 'sale'
-       AND ($3::text IS NULL OR o.location = $3)`,
-    [start, end, location]
+       AND ($3::text IS NULL OR o.location = $3)
+       AND ($4::uuid IS NULL OR o.branch_id = $4)`,
+    [start, end, location, branchId]
   );
 
   const repeatCustomersQuery = tenantPool.query(
@@ -577,10 +614,11 @@ const getCustomerCredit = async (
          AND o.customer_id IS NOT NULL
          AND o.transaction_type = 'sale'
          AND ($3::text IS NULL OR o.location = $3)
+         AND ($4::uuid IS NULL OR o.branch_id = $4)
        GROUP BY o.customer_id
        HAVING COUNT(*) > 1
-     ) rc`,
-    [start, end, location]
+    ) rc`,
+    [start, end, location, branchId]
   );
 
   const totalCustomersQuery = tenantPool.query(
@@ -589,8 +627,9 @@ const getCustomerCredit = async (
      WHERE o.created_at BETWEEN $1 AND $2
        AND o.customer_id IS NOT NULL
        AND o.transaction_type = 'sale'
-       AND ($3::text IS NULL OR o.location = $3)`,
-    [start, end, location]
+       AND ($3::text IS NULL OR o.location = $3)
+       AND ($4::uuid IS NULL OR o.branch_id = $4)`,
+    [start, end, location, branchId]
   );
 
   const [
@@ -632,9 +671,17 @@ const getCustomerCredit = async (
   };
 };
 
-const getLocationSummary = async (tenantPool, range, startDateRaw, endDateRaw, locationRaw) => {
+const getLocationSummary = async (
+  tenantPool,
+  range,
+  startDateRaw,
+  endDateRaw,
+  locationRaw,
+  branchIdRaw
+) => {
   const { start, end } = getDateRange(range, startDateRaw, endDateRaw);
   const location = normalizeLocation(locationRaw);
+  const branchId = normalizeBranchId(branchIdRaw);
 
   const windowDays = diffDays(start, end);
   const previousEnd = new Date(start.getTime() - 1);
@@ -651,9 +698,10 @@ const getLocationSummary = async (tenantPool, range, startDateRaw, endDateRaw, l
      WHERE day BETWEEN $3 AND $2
        AND location IS NOT NULL
        AND ($5::text IS NULL OR location = $5)
+       AND ($6::uuid IS NULL OR branch_id = $6)
      GROUP BY location
      ORDER BY location ASC`,
-    [start, end, previousStart, previousEnd, location]
+    [start, end, previousStart, previousEnd, location, branchId]
   );
 
   return result.rows.map((row) => {
@@ -677,3 +725,4 @@ module.exports = {
   normalizeLocation,
   getLocationSummary
 };
+

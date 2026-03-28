@@ -2,6 +2,7 @@ const pool = require('../db'); // Database connection
 const getRequestPool = (req) => req.tenantPool || pool;
 const { getAuthUser } = require('../utils/auth');
 const { getDateRange } = require('../utils/dateRange');
+const { resolveBranchIdFromRequest } = require('../utils/branch');
 
 // 💳 Create a Transaction (Payment Processing)
 const createTransaction = async (req, res) => {
@@ -13,28 +14,42 @@ const createTransaction = async (req, res) => {
         const { order_id, payment_method, payment_mode, amount_paid } = req.body;
         
         // 🔍 Check if order exists and fetch total selling_price
-        const orderQuery = `SELECT total_price, order_status FROM orders WHERE id = $1 FOR UPDATE`;
+        const orderQuery = `SELECT total_price, returned_amount, order_status FROM orders WHERE id = $1 FOR UPDATE`;
         const orderRes = await client.query(orderQuery, [order_id]);
 
         if (orderRes.rows.length === 0) {
             throw new Error(`Order ID ${order_id} not found`);
         }
 
-        const { total_price, order_status } = orderRes.rows[0];
+        const { total_price, returned_amount, order_status } = orderRes.rows[0];
 
         // 🚨 Prevent duplicate payments or processing canceled orders
-        if (order_status === 'completed') {
+        if (['completed', 'partially_returned', 'fully_returned'].includes(order_status)) {
             throw new Error(`Order ID ${order_id} is already paid`);
         } else if (order_status === 'canceled') {
             throw new Error("Cannot process payment for a canceled order");
         }
 
         // 🔍 Validate amount paid
-        if (amount_paid !== total_price) {
-            throw new Error(`Amount paid (${amount_paid}) does not match order total (${total_price})`);
+        const netTotal = Number(total_price || 0) - Number(returned_amount || 0);
+        if (amount_paid !== netTotal) {
+            throw new Error(`Amount paid (${amount_paid}) does not match order total (${netTotal})`);
         }
 
         // 💾 Insert transaction
+        const profitRes = await client.query(
+            `SELECT COALESCE(SUM(
+                CASE
+                  WHEN oi.profit IS NOT NULL THEN oi.profit
+                  ELSE (oi.selling_price - COALESCE(oi.purchase_price_snapshot, 0)) * oi.quantity
+                END
+             ), 0)::numeric AS profit
+             FROM order_items oi
+             WHERE oi.order_id = $1`,
+            [order_id]
+        );
+        const resolvedProfit = Number(profitRes.rows[0]?.profit || 0);
+
         const transactionQuery = `
             INSERT INTO transactions (order_id, total_price, profit, payment_mode, created_at)
             VALUES ($1, $2, $3, $4, now()) RETURNING id;
@@ -43,7 +58,7 @@ const createTransaction = async (req, res) => {
         const resolvedPaymentMode = resolvedPaymentModeRaw === 'upi' || resolvedPaymentModeRaw === 'online'
             ? 'online'
             : 'cash';
-        const transactionRes = await client.query(transactionQuery, [order_id, total_price, 0, resolvedPaymentMode]);
+        const transactionRes = await client.query(transactionQuery, [order_id, total_price, resolvedProfit, resolvedPaymentMode]);
         const transactionId = transactionRes.rows[0].id;
 
         // ✅ Mark order as completed
@@ -74,6 +89,7 @@ const getAllTransactions = async (req, res) => {
         const resolvedLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
         const offset = (resolvedPage - 1) * resolvedLimit;
         const { start, end } = getDateRange(range, startDateRaw, endDateRaw);
+        const branchId = resolveBranchIdFromRequest(req);
                   
         // let {from_date, to_date} = req.query;
         // if(!to_date || !from_date){
@@ -92,20 +108,41 @@ const getAllTransactions = async (req, res) => {
         //     ORDER BY t.transaction_date DESC;
         // `;        
         const query = `
-        SELECT t.*, o.order_status
+        SELECT t.*, o.order_status, o.branch_id
         FROM transactions t
         JOIN orders o ON t.order_id = o.id
         WHERE t.created_at BETWEEN $1 AND $2
+          AND ($5::uuid IS NULL OR o.branch_id = $5)
         ORDER BY t.created_at DESC
         LIMIT $3 OFFSET $4;
         `;
-        const query2 = `select sum(total_price) as total_cash from transactions where payment_mode ='cash' and created_at between $1 and $2`;
-        const query3 = `select sum(total_price) as total_cash from transactions where payment_mode ='online' and created_at between $1 and $2`;
-        const query4 = `select sum(profit) as profit from transactions where created_at between $1 and $2`;
-        const result = await requestPool.query(query, [start, end, resolvedLimit, offset]);
-        const result2 = await requestPool.query(query2, [start, end]);
-        const result3 = await requestPool.query(query3, [start, end]);
-        const result4 = await requestPool.query(query4, [start, end]);
+        const query2 = `
+        SELECT SUM(t.total_price) AS total_cash
+        FROM transactions t
+        JOIN orders o ON t.order_id = o.id
+        WHERE t.payment_mode = 'cash'
+          AND t.created_at BETWEEN $1 AND $2
+          AND ($3::uuid IS NULL OR o.branch_id = $3)
+        `;
+        const query3 = `
+        SELECT SUM(t.total_price) AS total_cash
+        FROM transactions t
+        JOIN orders o ON t.order_id = o.id
+        WHERE t.payment_mode = 'online'
+          AND t.created_at BETWEEN $1 AND $2
+          AND ($3::uuid IS NULL OR o.branch_id = $3)
+        `;
+        const query4 = `
+        SELECT SUM(t.profit) AS profit
+        FROM transactions t
+        JOIN orders o ON t.order_id = o.id
+        WHERE t.created_at BETWEEN $1 AND $2
+          AND ($3::uuid IS NULL OR o.branch_id = $3)
+        `;
+        const result = await requestPool.query(query, [start, end, resolvedLimit, offset, branchId]);
+        const result2 = await requestPool.query(query2, [start, end, branchId]);
+        const result3 = await requestPool.query(query3, [start, end, branchId]);
+        const result4 = await requestPool.query(query4, [start, end, branchId]);
         // console.log(personalCashRes.rows[0].total_cash, typeof(personalCashRes.rows[0].total_cash));
         // const total_cash = parseFloat(result2.rows[0].total_cash) || 0 - parseFloat(personalCashRes.rows[0].total_cash) || 0;
 

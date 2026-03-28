@@ -3,16 +3,67 @@ const getRequestPool = (req) => req.tenantPool || pool;
 const { getAuthUser } = require('../utils/auth');
 const { resolveMaxProducts, fetchActiveProductCount } = require('../utils/productLimits');
 const { getGlobalProductByBarcode, upsertGlobalProduct } = require('../services/globalBarcodeService');
+const { jsonOk } = require('../utils/responses');
+const { resolveGstPercentage, upsertHsnGst } = require('../services/hsnGst.service');
+
+const attachGst = (product) => {
+    if (!product) return product;
+    return { ...product, gst_percentage: product.gst_percentage ?? null };
+};
+
+const attachGstList = (products) => Array.isArray(products) ? products.map(attachGst) : products;
+const fetchFullProductForCache = async (requestPool, id) => {
+    if (!id) return null;
+    const barcodeSelect = (await hasBarcodeColumn(requestPool))
+        ? 'barcode'
+        : 'NULL::text AS barcode';
+    const result = await requestPool.query(
+        `SELECT id,
+                name,
+                company,
+                category,
+                selling_price,
+                purchase_price,
+                mrp,
+                hsn_code,
+                gst_percentage,
+                is_batch_enabled,
+                stock_quantity,
+                is_weight_based,
+                time_for_delivery,
+                expiry_date,
+                created_at,
+                branch_id,
+                ${barcodeSelect}
+         FROM products
+         WHERE id = $1
+           AND is_deleted = FALSE
+         LIMIT 1`,
+        [id]
+    );
+    return result.rows[0] || null;
+};
 const {
-    ensureTenantProductCache,
     getProductByBarcodeFromCache,
+    getProductByIdFromCache,
     upsertProductInCache,
     removeProductFromCache,
     normalizeBarcode,
     hasBarcodeColumn
 } = require('../services/tenantProductCache');
+const {
+    cacheGet,
+    cacheSet,
+    buildSearchKey,
+    DEFAULTS,
+    invalidateProductCaches,
+    invalidateSearchCache,
+    invalidateOrderCaches
+} = require('../services/smartCache');
+const { resolveBranchIdFromRequest } = require('../utils/branch');
 
 const getTenantId = (req) => req.tenant_id || req.tenant?.id || null;
+
 
 // ✅ Get all products (search, filter, sort, pagination)
 const getProducts = async (req, res) => {
@@ -49,54 +100,118 @@ const getProducts = async (req, res) => {
         if (!decoded) {
             return res.status(401).json({ message: "Access Denied" });
         }
+        const branchId = resolveBranchIdFromRequest(req);
 
         const barcodeSelect = (await hasBarcodeColumn(requestPool))
             ? 'barcode'
             : 'NULL::text AS barcode';
 
-        const productsRes = await requestPool.query(
-            `SELECT id,
-                    name,
-                    company AS company_name,
-                    category AS category_name,
-                    selling_price,
-                    actual_price,
-                    stock_quantity,
-                    expiry_date,
-                    ${barcodeSelect},
-                    NULL::int AS min_stock_level,
-                    created_at
-             FROM products
-             WHERE is_deleted = FALSE
-               AND ($1::text IS NULL OR category = $1)
-               AND (
-                 $2::text IS NULL
-                 OR name ILIKE $2
-                 OR company ILIKE $2
-               )
-             ORDER BY ${resolvedSort} ${sortOrder}, created_at DESC
-             LIMIT $3 OFFSET $4`,
-            [categoryValue, searchValue, resolvedLimit, offset]
-        );
+        let productsRes;
+        let totalCountRes;
+        if (branchId) {
+            productsRes = await requestPool.query(
+                `WITH branch_stock AS (
+                    SELECT bt.product_id, COALESCE(SUM(bt.quantity), 0)::numeric AS stock_quantity
+                    FROM batches bt
+                    WHERE bt.branch_id = $1
+                    GROUP BY bt.product_id
+                )
+                SELECT p.id,
+                       p.name,
+                       p.company AS company_name,
+                       p.category AS category_name,
+                       p.selling_price,
+                       p.purchase_price,
+                       p.mrp,
+                       p.hsn_code,
+                       p.gst_percentage,
+                       COALESCE(bs.stock_quantity, p.stock_quantity) AS stock_quantity,
+                       p.expiry_date,
+                       ${barcodeSelect},
+                       NULL::int AS min_stock_level,
+                       p.created_at
+                FROM products p
+                LEFT JOIN branch_stock bs ON bs.product_id = p.id
+                WHERE p.is_deleted = FALSE
+                  AND (bs.product_id IS NOT NULL OR p.branch_id = $1)
+                  AND ($2::text IS NULL OR p.category = $2)
+                  AND (
+                    $3::text IS NULL
+                    OR p.name ILIKE $3
+                    OR p.company ILIKE $3
+                  )
+                ORDER BY ${resolvedSort} ${sortOrder}, p.created_at DESC
+                LIMIT $4 OFFSET $5`,
+                [branchId, categoryValue, searchValue, resolvedLimit, offset]
+            );
+            totalCountRes = await requestPool.query(
+                `WITH branch_stock AS (
+                    SELECT bt.product_id
+                    FROM batches bt
+                    WHERE bt.branch_id = $1
+                    GROUP BY bt.product_id
+                )
+                SELECT COUNT(*)::int AS total_records
+                FROM products p
+                LEFT JOIN branch_stock bs ON bs.product_id = p.id
+                WHERE p.is_deleted = FALSE
+                  AND (bs.product_id IS NOT NULL OR p.branch_id = $1)
+                  AND ($2::text IS NULL OR p.category = $2)
+                  AND (
+                    $3::text IS NULL
+                    OR p.name ILIKE $3
+                    OR p.company ILIKE $3
+                  )`,
+                [branchId, categoryValue, searchValue]
+            );
+        } else {
+            productsRes = await requestPool.query(
+                `SELECT id,
+                        name,
+                        company AS company_name,
+                        category AS category_name,
+                         selling_price,
+                         purchase_price,
+                         mrp,
+                        hsn_code,
+                        gst_percentage,
+                        stock_quantity,
+                        expiry_date,
+                        ${barcodeSelect},
+                        NULL::int AS min_stock_level,
+                        created_at
+                 FROM products
+                 WHERE is_deleted = FALSE
+                   AND ($1::text IS NULL OR category = $1)
+                   AND (
+                     $2::text IS NULL
+                     OR name ILIKE $2
+                     OR company ILIKE $2
+                   )
+                 ORDER BY ${resolvedSort} ${sortOrder}, created_at DESC
+                 LIMIT $3 OFFSET $4`,
+                [categoryValue, searchValue, resolvedLimit, offset]
+            );
 
-        const totalCountRes = await requestPool.query(
-            `SELECT COUNT(*)::int AS total_records
-             FROM products
-             WHERE is_deleted = FALSE
-               AND ($1::text IS NULL OR category = $1)
-               AND (
-                 $2::text IS NULL
-                 OR name ILIKE $2
-                 OR company ILIKE $2
-               )`,
-            [categoryValue, searchValue]
-        );
+            totalCountRes = await requestPool.query(
+                `SELECT COUNT(*)::int AS total_records
+                 FROM products
+                 WHERE is_deleted = FALSE
+                   AND ($1::text IS NULL OR category = $1)
+                   AND (
+                     $2::text IS NULL
+                     OR name ILIKE $2
+                     OR company ILIKE $2
+                   )`,
+                [categoryValue, searchValue]
+            );
+        }
 
         const totalRecords = Number(totalCountRes.rows[0]?.total_records || 0);
         const totalPages = totalRecords === 0 ? 0 : Math.ceil(totalRecords / resolvedLimit);
 
         return res.json({
-            products: productsRes.rows,
+            products: attachGstList(productsRes.rows),
             pagination: {
                 page: resolvedPage,
                 limit: resolvedLimit,
@@ -111,18 +226,23 @@ const getProducts = async (req, res) => {
 
 // ✅ Add new product
 const addProduct = async (req, res) => {
-  const {
-    product_name: productNameInput,
-    name: nameInput,
+    const {
+      product_name: productNameInput,
+      name: nameInput,
     category,
     selling_price,
     stock_quantity,
     company,
-    actual_price,
-    time_for_delivery,
-    is_weight_based,
-    expiry_date: expiryDateInput
-  } = req.body;
+    purchase_price: purchasePriceInput,
+    mrp: mrpInput,
+    hsn_code: hsnCodeInput,
+      hsnCode,
+      time_for_delivery,
+      is_weight_based,
+      is_batch_enabled: isBatchEnabledInput,
+      expiry_date: expiryDateInput,
+      batch_number: batchNumberInput
+    } = req.body;
   const expiry_date =
     Object.prototype.hasOwnProperty.call(req.body || {}, 'expiry_date') ||
     Object.prototype.hasOwnProperty.call(req.body || {}, 'expiryDate')
@@ -132,6 +252,27 @@ const addProduct = async (req, res) => {
   const product_name = productNameInput ?? nameInput;
   const barcodeProvided = Object.prototype.hasOwnProperty.call(req.body || {}, 'barcode');
   const barcode = normalizeBarcode(req.body?.barcode);
+  const hsn_code = hsnCodeInput ?? hsnCode;
+  const purchase_price = Object.prototype.hasOwnProperty.call(req.body || {}, 'purchase_price')
+    ? Number(purchasePriceInput)
+    : undefined;
+  const normalizedPurchasePrice = Number.isFinite(purchase_price) ? purchase_price : undefined;
+  const mrp = Object.prototype.hasOwnProperty.call(req.body || {}, 'mrp')
+    ? Number(mrpInput)
+    : undefined;
+  const normalizedMrp = Number.isFinite(mrp) ? mrp : undefined;
+  const batch_number = batchNumberInput ? String(batchNumberInput).trim() : null;
+  const shouldCreateBatch = Boolean(batch_number);
+  const shouldEnableBatch =
+    shouldCreateBatch ||
+    isBatchEnabledInput === true ||
+    isBatchEnabledInput === 'true' ||
+    isBatchEnabledInput === 1 ||
+    isBatchEnabledInput === '1';
+  const gstInput = Object.prototype.hasOwnProperty.call(req.body || {}, 'gst_percentage')
+    ? Number(req.body?.gst_percentage)
+    : null;
+  const branchId = resolveBranchIdFromRequest(req);
 
   try {
     if (!product_name) {
@@ -140,10 +281,21 @@ const addProduct = async (req, res) => {
     if (selling_price === undefined) {
       return res.status(400).json({ message: 'Selling price is required.' });
     }
+    if (normalizedPurchasePrice === undefined) {
+      return res.status(400).json({ message: 'Purchase price is required.' });
+    }
     if (stock_quantity === undefined) {
       return res.status(400).json({ message: 'Stock quantity is required.' });
     }
     const requestPool = getRequestPool(req);
+    let gst_percentage = gstInput;
+    if (Number.isNaN(gst_percentage)) gst_percentage = null;
+    if (gst_percentage === null && hsn_code) {
+      gst_percentage = await resolveGstPercentage(req, hsn_code);
+    }
+    if (hsn_code && gst_percentage !== null) {
+      await upsertHsnGst(requestPool, hsn_code, gst_percentage);
+    }
     const barcodeEnabled = req.features?.enable_barcode === true;
     if (barcodeEnabled && barcodeProvided && barcode) {
       const dupRes = await requestPool.query(
@@ -169,23 +321,50 @@ const addProduct = async (req, res) => {
       const updated = await requestPool.query(
         `UPDATE products
          SET stock_quantity = stock_quantity + $1,
-             actual_price = $2,
+             purchase_price = COALESCE($2, purchase_price),
              selling_price = $3,
-             is_weight_based = $4,
-             barcode = $5,
-             expiry_date = $6
-         WHERE id = $7
+             mrp = COALESCE($4, mrp),
+             is_weight_based = $5,
+             barcode = $6,
+             expiry_date = $7,
+             hsn_code = $8,
+             gst_percentage = $9,
+             is_batch_enabled = CASE WHEN $10 THEN TRUE ELSE is_batch_enabled END,
+             branch_id = COALESCE(branch_id, $11)
+         WHERE id = $12
          RETURNING *`,
         [
           stock_quantity,
-          actual_price,
+          normalizedPurchasePrice,
           selling_price,
+          normalizedMrp,
           is_weight_based ?? existingProduct.is_weight_based ?? 0,
           resolvedBarcode,
           normalizedExpiryDate === undefined ? existingProduct.expiry_date : normalizedExpiryDate,
+          hsn_code ?? existingProduct.hsn_code,
+          gst_percentage ?? existingProduct.gst_percentage,
+          shouldEnableBatch,
+          branchId,
           existingProduct.id
         ]
       );
+      if (shouldCreateBatch) {
+        const batchPurchase = normalizedPurchasePrice ?? purchase_price ?? existingProduct.purchase_price ?? existingProduct.purchase_price ?? null;
+        await requestPool.query(
+          `INSERT INTO batches
+            (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [
+            existingProduct.id,
+            branchId,
+            batch_number,
+            normalizedExpiryDate === undefined ? null : normalizedExpiryDate,
+            batchPurchase,
+            selling_price ?? existingProduct.selling_price,
+            stock_quantity ?? 0
+          ]
+        );
+      }
       if (barcodeEnabled && barcodeProvided && resolvedBarcode) {
         try {
           await upsertGlobalProduct({
@@ -204,6 +383,7 @@ const addProduct = async (req, res) => {
         upsertProductInCache(tenantId, updated.rows[0], {
           previousBarcode: existingProduct.barcode
         });
+        invalidateProductCaches(tenantId, branchId, updated.rows[0]);
       }
 
       return res.status(200).json({
@@ -226,7 +406,7 @@ const addProduct = async (req, res) => {
         'category',
         'selling_price',
         'stock_quantity',
-        'actual_price',
+        'purchase_price',
         'company',
         'time_for_delivery',
         'is_weight_based'
@@ -236,18 +416,38 @@ const addProduct = async (req, res) => {
         category,
         selling_price,
         stock_quantity,
-        actual_price,
+        normalizedPurchasePrice,
         company,
         time_for_delivery,
         is_weight_based ?? 0
       ];
+      if (hsn_code) {
+        columns.push('hsn_code');
+        values.push(hsn_code);
+      }
+      if (gst_percentage !== null && gst_percentage !== undefined) {
+        columns.push('gst_percentage');
+        values.push(gst_percentage);
+      }
       if (normalizedExpiryDate !== undefined) {
         columns.push('expiry_date');
         values.push(normalizedExpiryDate);
       }
+      if (shouldCreateBatch) {
+        columns.push('is_batch_enabled');
+        values.push(true);
+      }
+      if (normalizedMrp !== undefined) {
+        columns.push('mrp');
+        values.push(normalizedMrp);
+      }
       if (barcodeEnabled && barcodeProvided) {
         columns.push('barcode');
         values.push(barcode);
+      }
+      if (branchId) {
+        columns.push('branch_id');
+        values.push(branchId);
       }
       const placeholders = values.map((_, idx) => `$${idx + 1}`).join(', ');
       const result = await requestPool.query(
@@ -256,6 +456,27 @@ const addProduct = async (req, res) => {
          RETURNING *`,
         values
       );
+      if (shouldEnableBatch && !columns.includes('is_batch_enabled')) {
+        columns.push('is_batch_enabled');
+        values.push(true);
+      }
+      if (shouldCreateBatch) {
+        const batchPurchase = normalizedPurchasePrice ?? null;
+        await requestPool.query(
+          `INSERT INTO batches
+            (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [
+            result.rows[0]?.id,
+            branchId,
+            batch_number,
+            normalizedExpiryDate === undefined ? null : normalizedExpiryDate,
+            batchPurchase,
+            selling_price,
+            stock_quantity ?? 0
+          ]
+        );
+      }
       if (barcodeEnabled && barcodeProvided && barcode) {
         try {
           await upsertGlobalProduct({
@@ -272,11 +493,12 @@ const addProduct = async (req, res) => {
       const tenantId = getTenantId(req);
       if (tenantId) {
         upsertProductInCache(tenantId, result.rows[0]);
+        invalidateProductCaches(tenantId, branchId, result.rows[0]);
       }
 
       return res.status(201).json({
         message: 'New product added.',
-        product: result.rows[0]
+        product: attachGst(result.rows[0])
       });
     }
   } catch (error) {
@@ -289,7 +511,18 @@ const addProduct = async (req, res) => {
 // ✅ Update product
 const updateProduct = async (req, res) => {
     const { id } = req.params;
-    const {selling_price, actual_price, stock_quantity,name,company, is_weight_based, expiry_date: expiryDateInput } = req.body;
+    const {
+        selling_price,
+        purchase_price,
+        stock_quantity,
+        name,
+        company,
+        is_weight_based,
+        hsn_code: hsnCodeInput,
+        hsnCode,
+        expiry_date: expiryDateInput
+    } = req.body;
+    const branchId = resolveBranchIdFromRequest(req);
     const expiry_date =
         Object.prototype.hasOwnProperty.call(req.body || {}, 'expiry_date') ||
         Object.prototype.hasOwnProperty.call(req.body || {}, 'expiryDate')
@@ -298,6 +531,10 @@ const updateProduct = async (req, res) => {
     const normalizedExpiryDate = expiry_date === '' ? null : expiry_date;
     const barcodeProvided = Object.prototype.hasOwnProperty.call(req.body || {}, 'barcode');
     const barcode = normalizeBarcode(req.body?.barcode);
+    const hsn_code = hsnCodeInput ?? hsnCode;
+    const gstInput = Object.prototype.hasOwnProperty.call(req.body || {}, 'gst_percentage')
+        ? Number(req.body?.gst_percentage)
+        : null;
     try {
         const requestPool = getRequestPool(req);
         const barcodeEnabled = req.features?.enable_barcode === true;
@@ -314,14 +551,23 @@ const updateProduct = async (req, res) => {
         const product = productRes.rows[0];
         // console.log(product)
         // const result = await pool.query(
-        //     'UPDATE products SET name = $1, category = $2, selling_price = $3, stock_quantity = $4, actual_price = $5, company = $6 WHERE id = $7 RETURNING *',
-        //     [product_name|| product.name, category || product.category, selling_price || product.selling_price, stock_quantity || product.stock_quantity,actual_price || product.actual_price, company || product.company, id]
+        //     'UPDATE products SET name = $1, category = $2, selling_price = $3, stock_quantity = $4, purchase_price = $5, company = $6 WHERE id = $7 RETURNING *',
+        //     [product_name|| product.name, category || product.category, selling_price || product.selling_price, stock_quantity || product.stock_quantity,purchase_price || product.purchase_price, company || product.company, id]
         // );
+        let gst_percentage = gstInput;
+        if (Number.isNaN(gst_percentage)) gst_percentage = null;
+        if (gst_percentage === null && hsn_code) {
+            gst_percentage = await resolveGstPercentage(req, hsn_code);
+        }
+        if (hsn_code && gst_percentage !== null) {
+            await upsertHsnGst(requestPool, hsn_code, gst_percentage);
+        }
+
         const updateFields = [
             'name = $1',
             'company = $2',
             'selling_price = $3',
-            'actual_price = $4',
+            'purchase_price = $4',
             'stock_quantity = $5',
             'is_weight_based = $6'
         ];
@@ -329,10 +575,18 @@ const updateProduct = async (req, res) => {
             name || product.name,
             company || product.company,
             selling_price ?? product.selling_price,
-            actual_price ?? product.actual_price,
+            purchase_price ?? product.purchase_price,
             stock_quantity ?? product.stock_quantity,
             is_weight_based ?? product.is_weight_based ?? 0
         ];
+        if (hsn_code) {
+            updateFields.push(`hsn_code = $${updateValues.length + 1}`);
+            updateValues.push(hsn_code);
+        }
+        if (gst_percentage !== null && gst_percentage !== undefined) {
+            updateFields.push(`gst_percentage = $${updateValues.length + 1}`);
+            updateValues.push(gst_percentage);
+        }
         if (normalizedExpiryDate !== undefined) {
             updateFields.push(`expiry_date = $${updateValues.length + 1}`);
             updateValues.push(normalizedExpiryDate);
@@ -340,6 +594,10 @@ const updateProduct = async (req, res) => {
         if (barcodeEnabled && barcodeProvided) {
             updateFields.push(`barcode = $${updateValues.length + 1}`);
             updateValues.push(barcode);
+        }
+        if (branchId) {
+            updateFields.push(`branch_id = $${updateValues.length + 1}`);
+            updateValues.push(branchId);
         }
         updateValues.push(id);
         const result = await requestPool.query(
@@ -363,8 +621,9 @@ const updateProduct = async (req, res) => {
             upsertProductInCache(tenantId, result.rows[0], {
                 previousBarcode: product?.barcode
             });
+            invalidateProductCaches(tenantId, branchId, result.rows[0]);
         }
-        res.json(result.rows[0]);
+        res.json(attachGst(result.rows[0]));
     } catch (error) {
         res.status(500).json({ error, message: 'Database error' });
     }
@@ -375,6 +634,7 @@ const deleteProduct = async (req, res) => {
     const { id } = req.params;
     try {
         const requestPool = getRequestPool(req);
+        const branchId = resolveBranchIdFromRequest(req);
         const existingRes = await requestPool.query(
             'SELECT id, barcode FROM products WHERE id = $1',
             [id]
@@ -383,6 +643,7 @@ const deleteProduct = async (req, res) => {
         const tenantId = getTenantId(req);
         if (tenantId && existingRes.rowCount > 0) {
             removeProductFromCache(tenantId, existingRes.rows[0]);
+            invalidateProductCaches(tenantId, branchId, existingRes.rows[0]);
         }
         res.json({ message: 'Product deleted' });
     } catch (error) {
@@ -402,6 +663,16 @@ const searchProductsForSale = async (req, res) => {
         const barcodeEnabled = req.features?.enable_barcode === true;
         const barcodeSupported = barcodeEnabled && (await hasBarcodeColumn(requestPool));
         const barcodeValue = barcodeSupported ? normalizeBarcode(q || barcode) : null;
+        const branchId = resolveBranchIdFromRequest(req);
+        const tenantId = getTenantId(req);
+
+        if (view !== 'mobile' && tenantId) {
+            const cacheKey = buildSearchKey(tenantId, branchId, term);
+            const cached = cacheGet(cacheKey);
+            if (cached) {
+                return res.status(200).json({ products: cached });
+            }
+        }
 
         if (view === 'mobile') {
             const barcodeSelect = barcodeSupported ? 'barcode' : 'NULL::text AS barcode';
@@ -414,6 +685,7 @@ const searchProductsForSale = async (req, res) => {
                     stock_quantity AS stock
                 FROM products
                 WHERE is_deleted = FALSE
+                  AND COALESCE(selling_price, 0) > 0
                   AND (
                     name ILIKE $1
                     OR company ILIKE $1
@@ -427,26 +699,92 @@ const searchProductsForSale = async (req, res) => {
             return res.status(200).json({ products: rows });
         }
 
-        const query = `
-            SELECT
-                id,
-                name,
-                company,
-                selling_price,
-                stock_quantity,
-                is_weight_based
-            FROM products
-            WHERE is_deleted = FALSE
-              AND (
-                name ILIKE $1
-                OR company ILIKE $1
-                ${barcodeSupported ? 'OR ($2::text IS NOT NULL AND barcode = $2)' : ''}
-              )
-            ORDER BY name ASC
-            LIMIT 20
-        `;
-        const values = barcodeSupported ? [`%${term}%`, barcodeValue] : [`%${term}%`];
-        const { rows } = await requestPool.query(query, values);
+        let rows = [];
+        if (branchId) {
+            const query = `
+                WITH stock_by_branch AS (
+                    SELECT bt.product_id, bt.branch_id, COALESCE(SUM(bt.quantity), 0)::numeric AS qty
+                    FROM batches bt
+                    GROUP BY bt.product_id, bt.branch_id
+                ),
+                current_branch AS (
+                    SELECT s.product_id, s.qty
+                    FROM stock_by_branch s
+                    WHERE s.branch_id = $1
+                ),
+                other_branches AS (
+                    SELECT s.product_id,
+                           STRING_AGG(DISTINCT b.name, ', ' ORDER BY b.name) AS locations
+                    FROM stock_by_branch s
+                    JOIN branches b ON b.id = s.branch_id
+                    WHERE s.branch_id <> $1
+                      AND s.qty > 0
+                    GROUP BY s.product_id
+                )
+                SELECT p.id,
+                        p.name,
+                        p.company,
+                        p.selling_price,
+                        p.purchase_price,
+                        p.mrp,
+                       COALESCE(cb.qty, CASE WHEN p.branch_id = $1 THEN p.stock_quantity ELSE 0 END) AS stock_quantity,
+                       p.is_weight_based,
+                       CASE
+                           WHEN COALESCE(cb.qty, CASE WHEN p.branch_id = $1 THEN p.stock_quantity ELSE 0 END) > 0 THEN NULL
+                           WHEN ob.locations IS NOT NULL THEN CONCAT('Available in ', ob.locations)
+                           ELSE NULL
+                       END AS location_tag
+                FROM products p
+                LEFT JOIN current_branch cb ON cb.product_id = p.id
+                LEFT JOIN other_branches ob ON ob.product_id = p.id
+                WHERE p.is_deleted = FALSE
+                  AND COALESCE(p.selling_price, 0) > 0
+                  AND (
+                    p.name ILIKE $2
+                    OR p.company ILIKE $2
+                    ${barcodeSupported ? 'OR ($3::text IS NOT NULL AND p.barcode = $3)' : ''}
+                  )
+                  AND (
+                    COALESCE(cb.qty, CASE WHEN p.branch_id = $1 THEN p.stock_quantity ELSE 0 END) > 0
+                    OR ob.locations IS NOT NULL
+                  )
+                ORDER BY
+                  CASE WHEN COALESCE(cb.qty, CASE WHEN p.branch_id = $1 THEN p.stock_quantity ELSE 0 END) > 0 THEN 0 ELSE 1 END,
+                  p.name ASC
+                LIMIT 20
+            `;
+            const values = barcodeSupported
+                ? [branchId, `%${term}%`, barcodeValue]
+                : [branchId, `%${term}%`];
+            ({ rows } = await requestPool.query(query, values));
+        } else {
+            const query = `
+                SELECT
+                    id,
+                    name,
+                    company,
+                    selling_price,
+                    purchase_price,
+                    stock_quantity,
+                    is_weight_based
+                FROM products
+                WHERE is_deleted = FALSE
+                  AND COALESCE(selling_price, 0) > 0
+                  AND (
+                    name ILIKE $1
+                    OR company ILIKE $1
+                    ${barcodeSupported ? 'OR ($2::text IS NOT NULL AND barcode = $2)' : ''}
+                  )
+                ORDER BY name ASC
+                LIMIT 20
+            `;
+            const values = barcodeSupported ? [`%${term}%`, barcodeValue] : [`%${term}%`];
+            ({ rows } = await requestPool.query(query, values));
+        }
+        if (view !== 'mobile' && tenantId) {
+            const cacheKey = buildSearchKey(tenantId, branchId, term);
+            cacheSet(cacheKey, rows, DEFAULTS.searchTtlMs, { tenantId });
+        }
         return res.status(200).json({ products: rows });
     } catch (error) {
         console.error("Error searching products:", error);
@@ -465,13 +803,24 @@ const searchProductsForPurchase = async (req, res) => {
         const barcodeEnabled = req.features?.enable_barcode === true;
         const barcodeSupported = barcodeEnabled && (await hasBarcodeColumn(requestPool));
         const barcodeValue = barcodeSupported ? normalizeBarcode(barcode) : null;
+        const branchId = resolveBranchIdFromRequest(req);
+        const tenantId = getTenantId(req);
+
+        if (tenantId) {
+            const cacheKey = buildSearchKey(tenantId, branchId, term);
+            const cached = cacheGet(cacheKey);
+            if (cached) {
+                return res.status(200).json({ products: cached });
+            }
+        }
 
         const query = `
             SELECT
                 id,
                 name,
                 selling_price,
-                actual_price,
+                purchase_price,
+                mrp,
                 company,
                 stock_quantity,
                 is_weight_based,
@@ -489,6 +838,10 @@ const searchProductsForPurchase = async (req, res) => {
         `;
         const values = barcodeSupported ? [`%${term}%`, barcodeValue] : [`%${term}%`];
         const { rows } = await requestPool.query(query, values);
+        if (tenantId) {
+            const cacheKey = buildSearchKey(tenantId, branchId, term);
+            cacheSet(cacheKey, rows, DEFAULTS.searchTtlMs, { tenantId });
+        }
         return res.status(200).json({ products: rows });
     } catch (error) {
         console.error("Error searching products for purchase:", error);
@@ -509,13 +862,70 @@ const getProductByBarcodeForSale = async (req, res) => {
         if (!code) {
             return res.status(400).json({ error: "Barcode is required." });
         }
+        const branchId = resolveBranchIdFromRequest(req);
+
+        if (branchId) {
+            const result = await requestPool.query(
+                `WITH stock_by_branch AS (
+                    SELECT bt.product_id, bt.branch_id, COALESCE(SUM(bt.quantity), 0)::numeric AS qty
+                    FROM batches bt
+                    GROUP BY bt.product_id, bt.branch_id
+                ),
+                current_branch AS (
+                    SELECT s.product_id, s.qty
+                    FROM stock_by_branch s
+                    WHERE s.branch_id = $1
+                ),
+                other_branches AS (
+                    SELECT s.product_id,
+                           STRING_AGG(DISTINCT b.name, ', ' ORDER BY b.name) AS locations
+                    FROM stock_by_branch s
+                    JOIN branches b ON b.id = s.branch_id
+                    WHERE s.branch_id <> $1
+                      AND s.qty > 0
+                    GROUP BY s.product_id
+                )
+                SELECT p.id,
+                        p.name,
+                        p.company,
+                        p.category,
+                        p.selling_price,
+                        p.purchase_price,
+                        p.mrp,
+                        p.gst_percentage,
+                       COALESCE(cb.qty, CASE WHEN p.branch_id = $1 THEN p.stock_quantity ELSE 0 END) AS stock_quantity,
+                       p.is_weight_based,
+                       p.barcode,
+                       p.hsn_code,
+                       CASE
+                           WHEN COALESCE(cb.qty, CASE WHEN p.branch_id = $1 THEN p.stock_quantity ELSE 0 END) > 0 THEN NULL
+                           WHEN ob.locations IS NOT NULL THEN CONCAT('Available in ', ob.locations)
+                           ELSE NULL
+                       END AS location_tag
+                FROM products p
+                LEFT JOIN current_branch cb ON cb.product_id = p.id
+                LEFT JOIN other_branches ob ON ob.product_id = p.id
+                WHERE p.barcode = $2
+                  AND p.is_deleted = FALSE
+                  AND COALESCE(p.selling_price, 0) > 0
+                  AND (COALESCE(cb.qty, CASE WHEN p.branch_id = $1 THEN p.stock_quantity ELSE 0 END) > 0 OR ob.locations IS NOT NULL)
+                LIMIT 1`,
+                [branchId, code]
+            );
+            const product = result.rows[0] || null;
+            if (product) {
+                return res.status(200).json({ product: attachGst(product) });
+            }
+        }
 
         const tenantId = getTenantId(req);
         if (tenantId) {
             const start = Date.now();
-            await ensureTenantProductCache(tenantId, requestPool);
-            const cached = getProductByBarcodeFromCache(tenantId, code);
+            const cached = getProductByBarcodeFromCache(tenantId, code, branchId);
             if (cached) {
+                if (Number(cached.selling_price || 0) <= 0) {
+                    return res.status(404).json({ error: "Product not found." });
+                }
                 console.log(`[Cache HIT] barcode lookup ${Date.now() - start}ms`);
                 const product = {
                     id: cached.id,
@@ -523,33 +933,48 @@ const getProductByBarcodeForSale = async (req, res) => {
                     company: cached.company,
                     category: cached.category,
                     selling_price: cached.selling_price,
+                    purchase_price: cached.purchase_price,
+                    mrp: cached.mrp,
                     stock_quantity: cached.stock_quantity,
                     is_weight_based: cached.is_weight_based,
-                    barcode: cached.barcode
+                    barcode: cached.barcode,
+                    hsn_code: cached.hsn_code,
+                    gst_percentage: cached.gst_percentage
                 };
-                return res.status(200).json({ product });
+                return res.status(200).json({ product: attachGst(product) });
             }
             console.log(`[Cache MISS] barcode lookup ${Date.now() - start}ms`);
-        } else {
-            const result = await requestPool.query(
-                `SELECT id,
-                        name,
-                        company,
-                        category,
-                        selling_price,
-                        stock_quantity,
-                        is_weight_based,
-                        barcode
-                 FROM products
-                 WHERE barcode = $1
-                   AND is_deleted = FALSE
-                 LIMIT 1`,
-                [code]
-            );
-            const product = result.rows[0] || null;
-            if (product) {
-                return res.status(200).json({ product });
+        }
+
+        const result = await requestPool.query(
+            `SELECT id,
+                    name,
+                    company,
+                    category,
+                    selling_price,
+                    purchase_price,
+                    mrp,
+                    stock_quantity,
+                    is_weight_based,
+                    barcode,
+                    hsn_code,
+                    gst_percentage
+             FROM products
+             WHERE barcode = $1
+               AND is_deleted = FALSE
+               AND COALESCE(selling_price, 0) > 0
+             LIMIT 1`,
+            [code]
+        );
+        const product = result.rows[0] || null;
+        if (product) {
+            if (tenantId) {
+                const fullProduct = await fetchFullProductForCache(requestPool, product.id);
+                if (fullProduct) {
+                    upsertProductInCache(tenantId, fullProduct);
+                }
             }
+            return res.status(200).json({ product: attachGst(product) });
         }
         const globalMatch = await getGlobalProductByBarcode(code);
         if (!globalMatch) {
@@ -570,41 +995,62 @@ const getProductByBarcodeForSale = async (req, res) => {
 const getProductsCacheDB = async (req, res) => {
     try {
         const requestPool = getRequestPool(req);
-        const tenantId = getTenantId(req);
-
-        if (tenantId) {
-            const cache = await ensureTenantProductCache(tenantId, requestPool);
-            if (cache) {
-                  const products = Array.from(cache.productsById.values()).map((product) => ({
-                      id: product.id,
-                      name: product.name,
-                      company: product.company,
-                      barcode: product.barcode,
-                      selling_price: product.selling_price,
-                      stock_quantity: product.stock_quantity,
-                      is_weight_based: product.is_weight_based,
-                      expiry_date: product.expiry_date ?? null
-                  }));
-                return res.status(200).json({ products });
-            }
-        }
+        const branchId = resolveBranchIdFromRequest(req);
 
         const barcodeSelect = (await hasBarcodeColumn(requestPool))
             ? 'barcode'
             : 'NULL::text AS barcode';
-        const result = await requestPool.query(
-            `SELECT id,
-                    name,
-                      company,
-                      ${barcodeSelect},
-                      selling_price,
-                      stock_quantity,
-                      is_weight_based,
-                      expiry_date
-               FROM products
-               WHERE is_deleted = FALSE`
-          );
-        return res.status(200).json({ products: result.rows });
+        const result = branchId
+            ? await requestPool.query(
+                `WITH branch_stock AS (
+                    SELECT product_id, COALESCE(SUM(quantity), 0)::numeric AS stock_quantity
+                    FROM batches
+                    WHERE branch_id = $1
+                    GROUP BY product_id
+                )
+                SELECT p.id,
+                       p.name,
+                       p.company,
+                       p.category,
+                       p.selling_price,
+                       p.purchase_price,
+                       p.mrp,
+                       p.hsn_code,
+                       p.gst_percentage,
+                       p.is_batch_enabled,
+                       COALESCE(bs.stock_quantity, p.stock_quantity) AS stock_quantity,
+                       p.is_weight_based,
+                       p.time_for_delivery,
+                       p.expiry_date,
+                       p.created_at,
+                       ${barcodeSelect}
+                FROM products p
+                LEFT JOIN branch_stock bs ON bs.product_id = p.id
+                WHERE p.is_deleted = FALSE
+                  AND (bs.product_id IS NOT NULL OR p.branch_id = $1)`,
+                [branchId]
+              )
+            : await requestPool.query(
+                `SELECT id,
+                        name,
+                        company,
+                        category,
+                        selling_price,
+                        purchase_price,
+                        mrp,
+                        hsn_code,
+                        gst_percentage,
+                        is_batch_enabled,
+                        stock_quantity,
+                        is_weight_based,
+                        time_for_delivery,
+                        expiry_date,
+                        created_at,
+                        ${barcodeSelect}
+                 FROM products
+                 WHERE is_deleted = FALSE`
+              );
+          return res.status(200).json({ products: attachGstList(result.rows) });
     } catch (error) {
         console.error('Error fetching cacheDB products:', error);
         return res.status(500).json({ error: 'Database error' });
@@ -615,47 +1061,78 @@ const getProductsCacheDB = async (req, res) => {
 const getProductsCache = async (req, res) => {
     try {
         const requestPool = getRequestPool(req);
+        const tenantId = getTenantId(req);
+        const branchId = resolveBranchIdFromRequest(req);
         const rawBarcode = req.query?.barcode;
         const rawSearch = req.query?.search;
         const barcode = typeof rawBarcode === 'string' ? rawBarcode.trim() : '';
         const search = typeof rawSearch === 'string' ? rawSearch.trim() : '';
 
         if (barcode) {
+            if (tenantId) {
+                const cached = getProductByBarcodeFromCache(tenantId, barcode, branchId);
+                if (cached) {
+                    return res.status(200).json({ products: attachGstList([cached]) });
+                }
+            }
             const result = await requestPool.query(
                 `SELECT id,
                         name,
                           barcode,
                           selling_price,
-                          actual_price,
+                          purchase_price,
+                          mrp,
                           stock_quantity,
                           is_weight_based,
-                          expiry_date
+                          expiry_date,
+                          hsn_code,
+                          gst_percentage
                    FROM products
                    WHERE barcode = $1
                      AND is_deleted = FALSE
                  LIMIT 1`,
                 [barcode]
             );
-            return res.status(200).json({ products: result.rows });
+            if (tenantId && result.rows[0]) {
+                const fullProduct = await fetchFullProductForCache(requestPool, result.rows[0].id);
+                if (fullProduct) {
+                    upsertProductInCache(tenantId, fullProduct);
+                }
+            }
+            return res.status(200).json({ products: attachGstList(result.rows) });
         }
 
         if (search) {
+            if (tenantId) {
+                const cacheKey = buildSearchKey(tenantId, branchId, search);
+                const cached = cacheGet(cacheKey);
+                if (cached) {
+                    return res.status(200).json({ products: attachGstList(cached) });
+                }
+            }
             const result = await requestPool.query(
                 `SELECT id,
                         name,
                           barcode,
                           selling_price,
-                          actual_price,
+                          purchase_price,
+                          mrp,
                           stock_quantity,
                           is_weight_based,
-                          expiry_date
+                          expiry_date,
+                          hsn_code,
+                          gst_percentage
                    FROM products
                    WHERE name ILIKE $1
                    AND is_deleted = FALSE
                  LIMIT 20`,
                 [`%${search}%`]
             );
-            return res.status(200).json({ products: result.rows });
+            if (tenantId) {
+                const cacheKey = buildSearchKey(tenantId, branchId, search);
+                cacheSet(cacheKey, result.rows, DEFAULTS.searchTtlMs, { tenantId });
+            }
+            return res.status(200).json({ products: attachGstList(result.rows) });
         }
 
         return res.status(400).json({ message: 'barcode or search is required.' });
@@ -680,52 +1157,64 @@ const getProductByBarcodeForPurchase = async (req, res) => {
         }
 
         const tenantId = getTenantId(req);
+        const branchId = resolveBranchIdFromRequest(req);
         if (tenantId) {
             const start = Date.now();
-            await ensureTenantProductCache(tenantId, requestPool);
-            const cached = getProductByBarcodeFromCache(tenantId, code);
+            const cached = getProductByBarcodeFromCache(tenantId, code, branchId);
             if (cached) {
                 console.log(`[Cache HIT] barcode lookup ${Date.now() - start}ms`);
                 const product = {
                     id: cached.id,
                     name: cached.name,
                     selling_price: cached.selling_price,
-                    actual_price: cached.actual_price,
+                    purchase_price: cached.purchase_price,
+                    mrp: cached.mrp,
                     company: cached.company,
                     stock_quantity: cached.stock_quantity,
                     type: cached.is_weight_based,
                     is_weight_based: cached.is_weight_based,
                     time_for_delivery: cached.time_for_delivery,
                     category: cached.category,
-                    barcode: cached.barcode
+                    barcode: cached.barcode,
+                    hsn_code: cached.hsn_code,
+                    gst_percentage: cached.gst_percentage
                 };
-                return res.status(200).json({ product });
+                return res.status(200).json({ product: attachGst(product) });
             }
             console.log(`[Cache MISS] barcode lookup ${Date.now() - start}ms`);
-        } else {
-            const result = await requestPool.query(
-                `SELECT
-                    id,
-                    name,
-                    selling_price,
-                    actual_price,
-                    company,
-                    stock_quantity,
-                    is_weight_based AS type,
-                    is_weight_based,
-                    time_for_delivery,
-                    category,
-                    barcode
-                 FROM products
-                 WHERE barcode = $1
-                   AND is_deleted = FALSE
-                 LIMIT 1`,
-                [code]
-            );
-            const product = result.rows[0] || null;
-            if (product) {
-                return res.status(200).json({ product });
+        }
+
+        const result = await requestPool.query(
+            `SELECT
+                id,
+                name,
+                selling_price,
+                purchase_price,
+                mrp,
+                company,
+                stock_quantity,
+                is_weight_based AS type,
+                is_weight_based,
+                time_for_delivery,
+                category,
+                barcode,
+                hsn_code,
+                gst_percentage
+             FROM products
+             WHERE barcode = $1
+               AND is_deleted = FALSE
+             LIMIT 1`,
+            [code]
+        );
+        const product = result.rows[0] || null;
+        if (product) {
+            if (tenantId) {
+                const fullProduct = await fetchFullProductForCache(requestPool, product.id);
+                if (fullProduct) {
+                    upsertProductInCache(tenantId, fullProduct);
+                }
             }
+            return res.status(200).json({ product: attachGst(product) });
         }
         const globalMatch = await getGlobalProductByBarcode(code);
         if (!globalMatch) {
@@ -751,6 +1240,13 @@ const getProductById = async (req, res) => {
 
     try {
         const requestPool = getRequestPool(req);
+        const tenantId = getTenantId(req);
+        if (tenantId) {
+            const cached = getProductByIdFromCache(tenantId, id);
+            if (cached) {
+                return res.status(200).json({ product: attachGst(cached) });
+            }
+        }
         const barcodeSelect = (await hasBarcodeColumn(requestPool))
             ? 'barcode'
             : 'NULL::text AS barcode';
@@ -761,7 +1257,10 @@ const getProductById = async (req, res) => {
                     company,
                       category,
                       selling_price,
-                      actual_price,
+                      purchase_price,
+                      mrp,
+                      hsn_code,
+                      gst_percentage,
                       stock_quantity,
                       is_weight_based,
                       time_for_delivery,
@@ -778,8 +1277,11 @@ const getProductById = async (req, res) => {
         if (!product) {
             return res.status(404).json({ message: 'Product not found.' });
         }
+        if (tenantId) {
+            upsertProductInCache(tenantId, product);
+        }
 
-        return res.status(200).json({ product });
+        return res.status(200).json({ product: attachGst(product) });
     } catch (error) {
         console.error('Error fetching product by id:', error);
         return res.status(500).json({ error: 'Database error' });
@@ -791,6 +1293,7 @@ module.exports = {
     addProduct,
     updateProduct,
     deleteProduct,
+    bulkUpdateProducts,
     getProductById,
     searchProductsForSale,
     searchProductsForPurchase,
@@ -800,6 +1303,134 @@ module.exports = {
     getProductsCacheDB,
     getProductsExtraDetails
 };
+
+// ✅ Bulk update products (table edit)
+async function bulkUpdateProducts(req, res) {
+    const requestPool = getRequestPool(req);
+    const payload = req.body?.products ?? req.body;
+    if (!Array.isArray(payload) || payload.length === 0) {
+        return res.status(400).json({ message: 'products must be a non-empty array.' });
+    }
+    const branchId = resolveBranchIdFromRequest(req);
+    const tenantId = getTenantId(req);
+
+    const client = await requestPool.connect();
+    try {
+        await client.query('BEGIN');
+
+        for (const item of payload) {
+            const rawId = item?.id;
+            const id = Number(rawId);
+            if (!Number.isFinite(id)) {
+                throw new Error('Valid product id is required.');
+            }
+
+            const fields = [];
+            const values = [];
+
+            const addField = (column, value) => {
+                fields.push(`${column} = $${values.length + 1}`);
+                values.push(value);
+            };
+
+            if (item.hasOwnProperty('selling_price')) {
+                const price = Number(item.selling_price);
+                if (!Number.isFinite(price) || price < 0) {
+                    throw new Error('selling_price must be >= 0');
+                }
+                addField('selling_price', price);
+            }
+            if (item.hasOwnProperty('mrp')) {
+                const mrp = Number(item.mrp);
+                if (!Number.isFinite(mrp) || mrp < 0) {
+                    throw new Error('mrp must be >= 0');
+                }
+                addField('mrp', mrp);
+            }
+            if (item.hasOwnProperty('purchase_price')) {
+                const purchasePrice = Number(item.purchase_price);
+                if (!Number.isFinite(purchasePrice) || purchasePrice < 0) {
+                    throw new Error('purchase_price must be >= 0');
+                }
+                addField('purchase_price', purchasePrice);
+            }
+            if (item.hasOwnProperty('category')) {
+                addField('category', item.category ?? null);
+            }
+            if (item.hasOwnProperty('hsn_code')) {
+                addField('hsn_code', item.hsn_code ?? null);
+            }
+            if (item.hasOwnProperty('gst_percentage')) {
+                const rawGst = item.gst_percentage;
+                if (rawGst === '' || rawGst === null || rawGst === undefined) {
+                    addField('gst_percentage', null);
+                } else {
+                    const gstValue = Number(rawGst);
+                    if (!Number.isFinite(gstValue) || gstValue < 0) {
+                        throw new Error('gst_percentage must be >= 0');
+                    }
+                    addField('gst_percentage', gstValue);
+                }
+            }
+
+            if (fields.length === 0) {
+                throw new Error(`No updatable fields provided for product ${id}`);
+            }
+
+            values.push(id);
+            await client.query(
+                `UPDATE products SET ${fields.join(', ')} WHERE id = $${values.length}`,
+                values
+            );
+        }
+
+        await client.query('COMMIT');
+        if (tenantId) {
+            const ids = payload
+                .map((item) => Number(item?.id))
+                .filter((value) => Number.isFinite(value));
+            if (ids.length > 0) {
+                const barcodeSelect = (await hasBarcodeColumn(requestPool))
+                    ? 'barcode'
+                    : 'NULL::text AS barcode';
+                const updatedRes = await requestPool.query(
+                    `SELECT id,
+                            name,
+                            company,
+                            category,
+                            selling_price,
+                            purchase_price,
+                            mrp,
+                            hsn_code,
+                            gst_percentage,
+                            is_batch_enabled,
+                            stock_quantity,
+                            is_weight_based,
+                            time_for_delivery,
+                            expiry_date,
+                            created_at,
+                            branch_id,
+                            ${barcodeSelect}
+                     FROM products
+                     WHERE id = ANY($1::int[])`,
+                    [ids]
+                );
+                invalidateSearchCache(tenantId, branchId);
+                invalidateOrderCaches(tenantId, branchId);
+                for (const row of updatedRes.rows) {
+                    removeProductFromCache(tenantId, row);
+                    upsertProductInCache(tenantId, row);
+                }
+            }
+        }
+        return res.status(200).json({ success: true, data: { updated: payload.length } });
+    } catch (error) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: error.message || 'Bulk update failed.' });
+    } finally {
+        client.release();
+    }
+}
 
 // ✅ Extra product details for IndexedDB sync/lookup
 async function getProductsExtraDetails(req, res) {
@@ -855,19 +1486,23 @@ async function getProductsExtraDetails(req, res) {
 
           const result = await requestPool.query(
               `SELECT ${barcodeSelect} AS barcode,
-                      actual_price,
+                      purchase_price,
+                      mrp,
                       category,
                       company,
-                      expiry_date
+                      expiry_date,
+                      hsn_code,
+                      gst_percentage
                FROM products
                WHERE is_deleted = FALSE
                ${whereClause}`,
             values
         );
 
-        return res.status(200).json({ products: result.rows });
+        return res.status(200).json({ products: attachGstList(result.rows) });
     } catch (error) {
         console.error('Error fetching extra product details:', error);
         return res.status(500).json({ error: 'Database error' });
     }
 }
+

@@ -22,7 +22,9 @@ const {
   getTenantUsers,
   updateTenantUserRole,
   upgradeTenantPlan,
-  renewTenantPlan
+  renewTenantPlan,
+  getTenantBranches,
+  createTenantBranch
 } = require('../controllers/platformController');
 const {
   getSupportCasesAdmin,
@@ -55,6 +57,8 @@ router.get('/activity-logs', getActivityLogs);
 router.post('/tenants/:tenant_id/products/import-google-sheet', importProductsFromGoogleSheet);
 router.post('/tenants/:tenant_id/users', createTenantUser);
 router.get('/tenants/:tenant_id/users', getTenantUsers);
+router.get('/tenants/:tenant_id/branches', getTenantBranches);
+router.post('/tenants/:tenant_id/branches', createTenantBranch);
 router.post('/tenants/:tenant_id/upgrade-plan', upgradeTenantPlan);
 router.post('/tenants/:tenant_id/renew-plan', renewTenantPlan);
 router.patch('/users/:id/role', updateTenantUserRole);

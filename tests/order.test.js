@@ -132,7 +132,7 @@ describe("Order API", () => {
                     "product_name": "TMT Steel Rod",
                     "company": "JSW",
                     "quantity": 50,
-                    "actual_price": 100,
+                    "purchase_price": 100,
                     "selling_price": 120,
                     "category": "construction",
                     "time_for_delivery": 3
@@ -141,7 +141,7 @@ describe("Order API", () => {
                     "product_name": "Cement Bag",
                     "company": "Ultratech",
                     "quantity": 30,
-                    "actual_price": 200,
+                    "purchase_price": 200,
                     "selling_price": 250,
                     "category": "construction"
                   }

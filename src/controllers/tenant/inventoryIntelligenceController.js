@@ -9,6 +9,7 @@ const getInventoryIntelligence = async (req, res) => {
       end_date: endDateRaw,
       dead_stock_days: deadStockDaysRaw,
       location,
+      branch_id,
       group_by
     } = req.query || {};
     const data = await getInventoryIntelligenceService(
@@ -18,6 +19,7 @@ const getInventoryIntelligence = async (req, res) => {
       endDateRaw,
       deadStockDaysRaw,
       location,
+      branch_id,
       group_by
     );
     if (group_by === 'location') {
