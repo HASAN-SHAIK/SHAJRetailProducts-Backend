@@ -52,6 +52,10 @@ const getDateRange = (range, startDateRaw, endDateRaw) => {
       start.setUTCDate(start.getUTCDate() - 30);
       return { start, end: toUtcEndOfDay(now), range: 'last_30_days' };
     }
+    case 'all': {
+      const start = new Date(0);
+      return { start: toUtcStartOfDay(start), end: toUtcEndOfDay(now), range: 'all' };
+    }
     case 'custom':
       return buildCustom();
     default:

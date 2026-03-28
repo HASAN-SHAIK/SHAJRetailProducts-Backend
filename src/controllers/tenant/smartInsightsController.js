@@ -20,16 +20,17 @@ const getSmartInsights = async (req, res) => {
       end_date: endDateRaw,
       dead_stock_days: deadStockDaysRaw,
       location,
+      branch_id,
       group_by
     } = req.query || {};
     const tenantPool = req.tenantPool;
 
     if (group_by === 'location') {
       const [growthData, inventoryData, creditData, locationSummary] = await Promise.all([
-        getGrowthComparison(tenantPool, range, startDateRaw, endDateRaw, location, 'location'),
-        getInventoryIntelligence(tenantPool, range, startDateRaw, endDateRaw, deadStockDaysRaw, location, 'location'),
-        getCustomerCredit(tenantPool, range, startDateRaw, endDateRaw, location, 'location'),
-        getLocationSummary(tenantPool, range, startDateRaw, endDateRaw, location)
+        getGrowthComparison(tenantPool, range, startDateRaw, endDateRaw, location, branch_id, 'location'),
+        getInventoryIntelligence(tenantPool, range, startDateRaw, endDateRaw, deadStockDaysRaw, location, branch_id, 'location'),
+        getCustomerCredit(tenantPool, range, startDateRaw, endDateRaw, location, branch_id, 'location'),
+        getLocationSummary(tenantPool, range, startDateRaw, endDateRaw, location, branch_id)
       ]);
 
       const inventoryMap = new Map(
@@ -126,10 +127,10 @@ const getSmartInsights = async (req, res) => {
     }
 
     const [revenueData, growthData, inventoryData, creditData] = await Promise.all([
-      getRevenueOverview(tenantPool, range, startDateRaw, endDateRaw, location),
-      getGrowthComparison(tenantPool, range, startDateRaw, endDateRaw, location),
-      getInventoryIntelligence(tenantPool, range, startDateRaw, endDateRaw, deadStockDaysRaw, location),
-      getCustomerCredit(tenantPool, range, startDateRaw, endDateRaw, location)
+      getRevenueOverview(tenantPool, range, startDateRaw, endDateRaw, location, branch_id),
+      getGrowthComparison(tenantPool, range, startDateRaw, endDateRaw, location, branch_id),
+      getInventoryIntelligence(tenantPool, range, startDateRaw, endDateRaw, deadStockDaysRaw, location, branch_id),
+      getCustomerCredit(tenantPool, range, startDateRaw, endDateRaw, location, branch_id)
     ]);
 
     const insights = [];

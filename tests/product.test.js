@@ -34,7 +34,7 @@ describe("product API", () => {
             "product_name": "cement",
             "company": "Sagar Cements",
             "stock_quantity": 50,
-            "actual_price": 200,
+            "purchase_price": 200,
             "selling_price": 250,
             "category": "construction"
           });
@@ -60,7 +60,7 @@ describe("product API", () => {
           "product_name": "cement",
           "company": "Sagar Cements",
           "stock_quantity": 50,
-          "actual_price": 200,
+          "purchase_price": 200,
           "selling_price": 260,
           "category": "construction"
         });

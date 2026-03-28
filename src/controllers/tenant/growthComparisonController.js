@@ -3,13 +3,14 @@ const { getGrowthComparison: getGrowthComparisonService } = require('../../servi
 
 const getGrowthComparison = async (req, res) => {
   try {
-    const { range, start_date: startDateRaw, end_date: endDateRaw, location, group_by } = req.query || {};
+    const { range, start_date: startDateRaw, end_date: endDateRaw, location, branch_id, group_by } = req.query || {};
     const data = await getGrowthComparisonService(
       req.tenantPool,
       range,
       startDateRaw,
       endDateRaw,
       location,
+      branch_id,
       group_by
     );
     if (group_by === 'location') {

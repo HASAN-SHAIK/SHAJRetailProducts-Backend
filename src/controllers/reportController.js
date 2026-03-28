@@ -33,6 +33,8 @@ const formatDateUtc = (dateObj) => {
     return `${year}-${month}-${day}`;
 };
 
+const SALES_STATUSES = ['completed', 'partially_returned', 'fully_returned'];
+
 const getSalesReport = async (req, res) => {
    try {
         const requestPool = getRequestPool(req);
@@ -55,31 +57,56 @@ const getSalesReport = async (req, res) => {
        }
        // Fetch Total Revenue
        const revenueResult = await requestPool.query(
-           "SELECT SUM(total_price) AS total_revenue FROM orders WHERE order_status = 'completed' AND created_at BETWEEN $1 AND $2;",
-           [from_date, to_date]
+           `SELECT SUM(o.total_price - COALESCE(o.returned_amount, 0)) AS total_revenue
+            FROM orders o
+            WHERE o.order_status = ANY($3::text[])
+              AND o.created_at BETWEEN $1 AND $2;`,
+           [from_date, to_date, SALES_STATUSES]
        );
        // Fetch Total Orders
        const ordersResult = await requestPool.query(
-           "SELECT COUNT(*) AS total_orders FROM orders WHERE order_status = 'completed' AND created_at BETWEEN $1 AND $2;",
-           [from_date, to_date]
+           "SELECT COUNT(*) AS total_orders FROM orders WHERE order_status = ANY($3::text[]) AND created_at BETWEEN $1 AND $2;",
+           [from_date, to_date, SALES_STATUSES]
        );
 
         // Total Cost (How much we paid for sold products)
         const costResult = await requestPool.query(
-                `SELECT SUM(oi.quantity * p.actual_price) AS total_cost
+                `SELECT SUM(GREATEST(oi.quantity - COALESCE(r.returned_qty, 0), 0) * COALESCE(oi.purchase_price_snapshot, 0)) AS total_cost
                  FROM order_items oi
-                 JOIN products p ON oi.product_id = p.id
                  JOIN orders o ON oi.order_id = o.id
-                 WHERE o.order_status = 'completed' and o.created_at BETWEEN $1 and $2;`,
-                 [from_date, to_date]
+                 LEFT JOIN (
+                   SELECT r.order_id, ori.product_id, SUM(ori.quantity) AS returned_qty
+                   FROM order_returns r
+                   JOIN order_return_items ori ON ori.return_id = r.id
+                   GROUP BY r.order_id, ori.product_id
+                 ) r ON r.order_id = o.id AND r.product_id = oi.product_id
+                 WHERE o.order_status = ANY($3::text[]) AND o.created_at BETWEEN $1 AND $2;`,
+                 [from_date, to_date, SALES_STATUSES]
         );
 
         // const totalProfitRes = await pool.query('select sum(profit) as total_profit from transactions where transaction_date = $1', [to_date])
         const totalRevenue = revenueResult.rows[0].total_revenue || 0;
         const totalCost = costResult.rows[0].total_cost || 0;
-        const totalProfit = totalRevenue - totalCost;
-        const bestSellingProducts = await getBestSellingProducts(requestPool);
-        const profitByProductResult = await getprofitByProductResult(requestPool);
+        const profitResult = await requestPool.query(
+            `SELECT COALESCE(SUM(
+                GREATEST(oi.quantity - COALESCE(r.returned_qty, 0), 0)
+                * (COALESCE(oi.profit, 0) / NULLIF(oi.quantity, 0))
+             ), 0) AS total_profit
+             FROM order_items oi
+             JOIN orders o ON oi.order_id = o.id
+             LEFT JOIN (
+               SELECT r.order_id, ori.product_id, SUM(ori.quantity) AS returned_qty
+               FROM order_returns r
+               JOIN order_return_items ori ON ori.return_id = r.id
+               GROUP BY r.order_id, ori.product_id
+             ) r ON r.order_id = o.id AND r.product_id = oi.product_id
+             WHERE o.order_status = ANY($3::text[])
+               AND o.created_at BETWEEN $1 AND $2;`,
+            [from_date, to_date, SALES_STATUSES]
+        );
+        const totalProfit = profitResult.rows[0]?.total_profit || 0;
+        const bestSellingProducts = await getBestSellingProducts(requestPool, from_date, to_date);
+        const profitByProductResult = await getprofitByProductResult(requestPool, from_date, to_date);
 
        return res.json({
            total_revenue: revenueResult.rows[0].total_revenue || 0,
@@ -94,24 +121,53 @@ const getSalesReport = async (req, res) => {
    }
 };
 
-const getBestSellingProducts = async (db) =>{
+const getBestSellingProducts = async (db, fromDate, toDate) =>{
     // Fetch Best-Selling Products
     const bestSellingResult = await db.query(
-            `select  sum(t.profit) as Profit, p.name as Name,p.company as Company, sum(oi.quantity) as NoOfSold from order_items oi 
-              join transactions t on t.order_id = oi.order_id
-              join products p on p.id = oi.product_id
-              group by p.id order by NoOfSold desc`
+            `SELECT SUM(GREATEST(oi.quantity - COALESCE(r.returned_qty, 0), 0)) AS NoOfSold,
+                    SUM(GREATEST(oi.quantity - COALESCE(r.returned_qty, 0), 0) * (COALESCE(oi.profit, 0) / NULLIF(oi.quantity, 0))) AS Profit,
+                    p.name AS Name,
+                    p.company AS Company
+             FROM order_items oi
+             JOIN products p ON p.id = oi.product_id
+             JOIN orders o ON o.id = oi.order_id
+             LEFT JOIN (
+               SELECT r.order_id, ori.product_id, SUM(ori.quantity) AS returned_qty
+               FROM order_returns r
+               JOIN order_return_items ori ON ori.return_id = r.id
+               GROUP BY r.order_id, ori.product_id
+             ) r ON r.order_id = o.id AND r.product_id = oi.product_id
+             WHERE o.order_status = ANY($3::text[])
+               AND o.created_at BETWEEN $1 AND $2
+             GROUP BY p.id
+             ORDER BY NoOfSold DESC`,
+            [fromDate, toDate, SALES_STATUSES]
     );
     return bestSellingResult;
 }
 
-const getprofitByProductResult = async (db) => {
+const getprofitByProductResult = async (db, fromDate, toDate) => {
     // Profit by Product
     const profitByProductResult = await db.query(
-        `select  sum(t.profit) as Profit, p.name as Name,p.company as Company, sum(oi.quantity) as NoOfSold, p.selling_price as Price from order_items oi 
-        join transactions t on t.order_id = oi.order_id
-        join products p on p.id = oi.product_id
-        group by p.id order by Profit desc`
+        `SELECT SUM(GREATEST(oi.quantity - COALESCE(r.returned_qty, 0), 0)) AS NoOfSold,
+                SUM(GREATEST(oi.quantity - COALESCE(r.returned_qty, 0), 0) * (COALESCE(oi.profit, 0) / NULLIF(oi.quantity, 0))) AS Profit,
+                p.name AS Name,
+                p.company AS Company,
+                p.selling_price AS Price
+         FROM order_items oi
+         JOIN products p ON p.id = oi.product_id
+         JOIN orders o ON o.id = oi.order_id
+         LEFT JOIN (
+           SELECT r.order_id, ori.product_id, SUM(ori.quantity) AS returned_qty
+           FROM order_returns r
+           JOIN order_return_items ori ON ori.return_id = r.id
+           GROUP BY r.order_id, ori.product_id
+         ) r ON r.order_id = o.id AND r.product_id = oi.product_id
+         WHERE o.order_status = ANY($3::text[])
+           AND o.created_at BETWEEN $1 AND $2
+         GROUP BY p.id
+         ORDER BY Profit DESC`,
+        [fromDate, toDate, SALES_STATUSES]
     );
     return profitByProductResult;
 }
@@ -126,12 +182,12 @@ const getInventoryReport = async (req, res) => {
         );
         // Low Stock Products (Threshold based)
         const lowStockResult = await requestPool.query(
-            "SELECT id as ProductId, name as Name,stock_quantity as Quantity, actual_price as ActualPrice , company as Seller,time_for_delivery as TimeForDelivery FROM products WHERE stock_quantity > 0 AND stock_quantity <= $1 AND is_deleted = FALSE order by stock_quantity",
+            "SELECT id as ProductId, name as Name,stock_quantity as Quantity, purchase_price as ActualPrice , company as Seller,time_for_delivery as TimeForDelivery FROM products WHERE stock_quantity > 0 AND stock_quantity <= $1 AND is_deleted = FALSE order by stock_quantity",
             [threshold]
         );
         // Out of Stock Products
         const outOfStockResult = await requestPool.query(
-            "SELECT id as ProductId, name as Name, actual_price as ActualPrice , company as Seller,time_for_delivery as TimeForDelivery FROM products WHERE stock_quantity = 0 AND is_deleted = FALSE;"
+            "SELECT id as ProductId, name as Name, purchase_price as ActualPrice , company as Seller,time_for_delivery as TimeForDelivery FROM products WHERE stock_quantity = 0 AND is_deleted = FALSE;"
         );
         // Total Inventory Value
         const stockValueResult = await requestPool.query(
@@ -139,7 +195,7 @@ const getInventoryReport = async (req, res) => {
         );
         // Estimated Profit
         const actual_stock_value = await requestPool.query(
-            "SELECT SUM(stock_quantity * actual_price) AS total_inventory_actual_value FROM products WHERE is_deleted = FALSE;"
+            "SELECT SUM(stock_quantity * purchase_price) AS total_inventory_actual_value FROM products WHERE is_deleted = FALSE;"
         )
         const decoded = getAuthUser(req);
         if (!decoded) {
@@ -173,6 +229,7 @@ const getProfitReport = async (req, res) => {
         })             
         let { from_date, to_date } = req.query;
         let dateFilter = "";
+        let dateFilterOrders = "";
         let values = [];
         if (!from_date || !to_date) {
             const { start, end } = getPreviousMonthRangeUtc();
@@ -181,19 +238,33 @@ const getProfitReport = async (req, res) => {
         }
         if (from_date && to_date) {
             dateFilter = "AND t.created_at BETWEEN $1 AND $2";
+            dateFilterOrders = "AND o.created_at BETWEEN $1 AND $2";
             values.push(from_date, to_date);
         }
         // Total Revenue (Completed Sales)
         const revenueResult = await requestPool.query(
-            `SELECT SUM(o.total_price) AS total_revenue
+            `SELECT SUM(o.total_price - COALESCE(o.returned_amount, 0)) AS total_revenue
              FROM orders o
-             JOIN transactions t ON o.id = t.order_id
-             WHERE o.order_status = 'completed' ${dateFilter};`,
-            values
+             WHERE o.order_status = ANY($3::text[]) ${dateFilterOrders};`,
+            [...values, SALES_STATUSES]
         );
         // Total Profit (How much we Got for sold products)
         const profitResult = await requestPool.query(
-            `select sum(profit) as total_profit from transactions where created_at BETWEEN $1 and $2;`, [from_date, to_date]
+            `SELECT COALESCE(SUM(
+                GREATEST(oi.quantity - COALESCE(r.returned_qty, 0), 0)
+                * (COALESCE(oi.profit, 0) / NULLIF(oi.quantity, 0))
+             ), 0) AS total_profit
+             FROM order_items oi
+             JOIN orders o ON o.id = oi.order_id
+             LEFT JOIN (
+               SELECT r.order_id, ori.product_id, SUM(ori.quantity) AS returned_qty
+               FROM order_returns r
+               JOIN order_return_items ori ON ori.return_id = r.id
+               GROUP BY r.order_id, ori.product_id
+             ) r ON r.order_id = o.id AND r.product_id = oi.product_id
+             WHERE o.order_status = ANY($3::text[])
+               AND o.created_at BETWEEN $1 AND $2;`,
+            [from_date, to_date, SALES_STATUSES]
         );
 
         const totalProductsRes = await requestPool.query(`select count(*) as total_products from products`);
@@ -234,27 +305,55 @@ const getDailySalesReport = async (req, res) => {
         salesDate.setHours(0, 0, 0, 0);
         // Total Sales Revenue for the day
         const salesResult = await requestPool.query(
-            `SELECT SUM(oi.quantity * oi.selling_price) AS total_revenue
-             FROM orders o join order_items oi on oi.order_id = o.id
-             WHERE o.order_status = 'completed'
-             AND DATE(o.created_at) = $1;`,
-            [salesDate]
+            `SELECT SUM(GREATEST(oi.quantity - COALESCE(r.returned_qty, 0), 0) * oi.selling_price - COALESCE(oi.discount_amount, 0)) AS total_revenue
+             FROM orders o
+             JOIN order_items oi on oi.order_id = o.id
+             LEFT JOIN (
+               SELECT r.order_id, ori.product_id, SUM(ori.quantity) AS returned_qty
+               FROM order_returns r
+               JOIN order_return_items ori ON ori.return_id = r.id
+               GROUP BY r.order_id, ori.product_id
+             ) r ON r.order_id = o.id AND r.product_id = oi.product_id
+             WHERE o.order_status = ANY($2::text[])
+               AND DATE(o.created_at) = $1;`,
+            [salesDate, SALES_STATUSES]
         );
-        const totalOrderRes = await requestPool.query(`select count(*) as total_orders from orders where order_status = 'completed' and Date(created_at) = $1`,[salesDate]);
+        const totalOrderRes = await requestPool.query(`select count(*) as total_orders from orders where order_status = ANY($2::text[]) and Date(created_at) = $1`,[salesDate, SALES_STATUSES]);
         // Best-Selling Products
         const bestSellingProducts = await requestPool.query(
-            `SELECT p.name, SUM(oi.quantity) AS total_sold
+            `SELECT p.name, SUM(GREATEST(oi.quantity - COALESCE(r.returned_qty, 0), 0)) AS total_sold
              FROM order_items oi
              JOIN products p ON oi.product_id = p.id
              JOIN orders o ON oi.order_id = o.id
-             WHERE o.order_status = 'completed'
+             LEFT JOIN (
+               SELECT r.order_id, ori.product_id, SUM(ori.quantity) AS returned_qty
+               FROM order_returns r
+               JOIN order_return_items ori ON ori.return_id = r.id
+               GROUP BY r.order_id, ori.product_id
+             ) r ON r.order_id = o.id AND r.product_id = oi.product_id
+             WHERE o.order_status = ANY($1::text[])
              GROUP BY p.name
-             ORDER BY total_sold DESC;`
+             ORDER BY total_sold DESC;`,
+            [SALES_STATUSES]
         );
         let endOfDay = new Date(salesDate);
         endOfDay.setHours(23, 59, 59, 999);
         const profitResult = await requestPool.query(
-            `select sum(t.profit) as total_profit from transactions t join orders o on o.id = t.order_id where o.order_status = 'completed' and t.created_at between $1 and $2;`, [salesDate, endOfDay]
+            `SELECT COALESCE(SUM(
+                GREATEST(oi.quantity - COALESCE(r.returned_qty, 0), 0)
+                * (COALESCE(oi.profit, 0) / NULLIF(oi.quantity, 0))
+             ), 0) AS total_profit
+             FROM order_items oi
+             JOIN orders o ON o.id = oi.order_id
+             LEFT JOIN (
+               SELECT r.order_id, ori.product_id, SUM(ori.quantity) AS returned_qty
+               FROM order_returns r
+               JOIN order_return_items ori ON ori.return_id = r.id
+               GROUP BY r.order_id, ori.product_id
+             ) r ON r.order_id = o.id AND r.product_id = oi.product_id
+             WHERE o.order_status = ANY($3::text[])
+               AND o.created_at BETWEEN $1 AND $2;`,
+            [salesDate, endOfDay, SALES_STATUSES]
         );
         
         res.json({
@@ -286,15 +385,25 @@ const getProfitGraph = async (req, res) => {
         const { start, end } = getLastNDaysRangeUtc(range);
 
         const profitRes = await requestPool.query(
-            `SELECT DATE(t.created_at AT TIME ZONE 'UTC') AS day, SUM(t.profit) AS profit
-             FROM transactions t
-             JOIN orders o ON o.id = t.order_id
-             WHERE o.order_status = 'completed'
-               AND t.created_at >= $1
-               AND t.created_at < $2
+            `SELECT DATE(o.created_at AT TIME ZONE 'UTC') AS day,
+                    COALESCE(SUM(
+                      GREATEST(oi.quantity - COALESCE(r.returned_qty, 0), 0)
+                      * (COALESCE(oi.profit, 0) / NULLIF(oi.quantity, 0))
+                    ), 0) AS profit
+             FROM order_items oi
+             JOIN orders o ON o.id = oi.order_id
+             LEFT JOIN (
+               SELECT r.order_id, ori.product_id, SUM(ori.quantity) AS returned_qty
+               FROM order_returns r
+               JOIN order_return_items ori ON ori.return_id = r.id
+               GROUP BY r.order_id, ori.product_id
+             ) r ON r.order_id = o.id AND r.product_id = oi.product_id
+             WHERE o.order_status = ANY($3::text[])
+               AND o.created_at >= $1
+               AND o.created_at < $2
              GROUP BY day
              ORDER BY day ASC;`,
-            [start, end]
+            [start, end, SALES_STATUSES]
         );
 
         const profitByDay = new Map(
@@ -326,3 +435,4 @@ const getProfitGraph = async (req, res) => {
 
 
 module.exports = { getSalesReport, getInventoryReport, getProfitReport, getDailySalesReport, getProfitGraph };
+

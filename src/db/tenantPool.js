@@ -73,6 +73,14 @@ const getAllTenantPoolEntries = () =>
     pool: entry.pool
   }));
 
+const closeTenantPool = async (database) => {
+  if (!database) return;
+  const entry = pools.get(database);
+  if (!entry) return;
+  pools.delete(database);
+  await entry.pool.end();
+};
+
 const closeIdleTenantPools = async () => {
   const now = Date.now();
   const { ttlMs } = getIdleSettings();
@@ -116,6 +124,7 @@ module.exports = {
   getTenantPool,
   getAllTenantPools,
   getAllTenantPoolEntries,
+  closeTenantPool,
   closeAllTenantPools,
   closeIdleTenantPools
 };
