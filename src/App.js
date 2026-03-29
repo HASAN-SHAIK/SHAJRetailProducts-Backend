@@ -7,6 +7,7 @@ const authRoutes = require('./routes/authRoutes');
 const app = express();
 const cookieParser = require('cookie-parser');
 const { tenantAuthMiddleware } = require('./middleware/tenantAuthMiddleware');
+const { branchDeviceGuard } = require('./middleware/branchDeviceGuard');
 const { adminAuthMiddleware } = require('./middleware/adminAuthMiddleware');
 const { subscriptionMiddleware } = require('./middleware/subscription');
 const { mergeFeatureFlags } = require('./middleware/featureFlags');
@@ -59,7 +60,7 @@ app.use('/platform/auth', platformAuthRoutes);
 app.use('/platform', adminAuthMiddleware, platformRoutes);
 
 app.use('/api/auth', authRoutes);
-app.use('/api', tenantAuthMiddleware, subscriptionMiddleware, mergeFeatureFlags, tenantRoutes);
+app.use('/api', tenantAuthMiddleware, branchDeviceGuard, subscriptionMiddleware, mergeFeatureFlags, tenantRoutes);
 app.get('/api/banner', tenantAuthMiddleware, mergeFeatureFlags, getPlatformBanner);
 app.get('/tenant/me', tenantAuthMiddleware, mergeFeatureFlags, getTenantMe);
 app.get('/api/tenant/me', tenantAuthMiddleware, mergeFeatureFlags, getTenantMe);

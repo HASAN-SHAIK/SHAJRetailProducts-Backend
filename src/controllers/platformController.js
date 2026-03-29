@@ -14,6 +14,7 @@ const { resolveTenantContext } = require('../config/tenantDbResolver');
 const { normalizeBranchId } = require('../utils/branch');
 const { jsonError, jsonOk } = require('../utils/responses');
 const { getPlanFeatures } = require('../utils/planFeatures');
+const { resolvePlanDeviceLimit, normalizePlan } = require('../config/planDeviceLimits');
 const { resolveFeatures } = require('../utils/resolveFeatures');
 const { sanitizeAddons } = require('../utils/addons');
 
@@ -1887,7 +1888,7 @@ const getTenantBranches = async (req, res) => {
     const branchId = normalizeBranchId(req.body?.branch_id || req.query?.branch_id);
 
     const result = await context.tenantPool.query(
-      `SELECT id, name, location, created_at
+      `SELECT id, name, location, created_at, subscription_plan, max_devices_allowed
        FROM branches
        ORDER BY created_at DESC`
     );
@@ -1916,15 +1917,27 @@ const createTenantBranch = async (req, res) => {
 
     const name = String(req.body?.name || '').trim();
     const location = req.body?.location ? String(req.body.location).trim() : null;
+    const planInput = req.body?.subscription_plan || req.body?.plan;
+    const normalizedPlan = normalizePlan(planInput || context?.tenant?.plan_type || 'basic');
+    const maxDevicesRaw = req.body?.max_devices_allowed;
+    const maxDevicesAllowed =
+      maxDevicesRaw === null || maxDevicesRaw === undefined
+        ? resolvePlanDeviceLimit(normalizedPlan)
+        : Number(maxDevicesRaw);
     if (!name) {
       return jsonError(res, 400, 'VALIDATION_ERROR', 'name is required');
     }
 
     const result = await context.tenantPool.query(
-      `INSERT INTO branches (name, location)
-       VALUES ($1, $2)
-       RETURNING id, name, location, created_at`,
-      [name, location || null]
+      `INSERT INTO branches (name, location, subscription_plan, max_devices_allowed)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, name, location, created_at, subscription_plan, max_devices_allowed`,
+      [
+        name,
+        location || null,
+        normalizedPlan,
+        Number.isFinite(maxDevicesAllowed) ? maxDevicesAllowed : null
+      ]
     );
 
     await logAdminAction(req.admin?.admin_id, 'TENANT_BRANCH_CREATED', 'branch', null, {
