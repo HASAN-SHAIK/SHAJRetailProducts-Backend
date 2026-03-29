@@ -19,16 +19,17 @@ require('dotenv').config();
 
 app.set('trust proxy', 1);
 app.use(cookieParser());
-const allowedOrigins = [
-  process.env.FRONTEND_ADMIN_URL,
-  process.env.FRONTEND_TENANT_URL,
-];
+const rawCorsOrigins = process.env.CORS_ORIGINS;
+const allowedOrigins = rawCorsOrigins
+  ? rawCorsOrigins.split(',').map((origin) => origin.trim()).filter(Boolean)
+  : [process.env.FRONTEND_ADMIN_URL, process.env.FRONTEND_TENANT_URL].filter(Boolean);
+const allowAllOrigins = allowedOrigins.includes('*');
 const PORT = process.env.PORT || 5000;
 
 app.use(
   cors({
     origin: function (origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) {
+      if (!origin || allowAllOrigins || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
         callback(new Error('Not allowed by CORS'));
