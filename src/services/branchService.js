@@ -1,5 +1,6 @@
 const pool = require('../db');
 const getRequestPool = (req) => req.tenantPool || pool;
+const { resolvePlanDeviceLimit, normalizePlan } = require('../config/planDeviceLimits');
 
 const buildValidationError = (message) => {
   const err = new Error(message);
@@ -11,7 +12,7 @@ const getBranches = async (req) => {
   const requestPool = getRequestPool(req);
   try {
     const result = await requestPool.query(
-      `SELECT id, name, location, created_at
+      `SELECT id, name, location, created_at, subscription_plan, max_devices_allowed
        FROM branches
        ORDER BY created_at DESC`
     );
@@ -30,6 +31,13 @@ const createBranch = async (req, payload = {}) => {
   const requestPool = getRequestPool(req);
   const name = String(payload.name || '').trim();
   const location = payload.location ? String(payload.location || '').trim() : null;
+  const planFromTenant = normalizePlan(req?.tenant?.plan_type || req?.subscription?.plan_name || 'basic');
+  const planLimit = resolvePlanDeviceLimit(planFromTenant);
+  const subscriptionPlan = normalizePlan(payload.subscription_plan || planFromTenant || 'basic');
+  const maxDevicesAllowedRaw = payload.max_devices_allowed;
+  const maxDevicesAllowed = Number.isFinite(Number(maxDevicesAllowedRaw))
+    ? Number(maxDevicesAllowedRaw)
+    : (planLimit === null ? null : planLimit);
 
   if (!name) {
     throw buildValidationError('name is required.');
@@ -37,10 +45,10 @@ const createBranch = async (req, payload = {}) => {
 
   try {
     const result = await requestPool.query(
-      `INSERT INTO branches (name, location)
-       VALUES ($1, $2)
-       RETURNING id, name, location, created_at`,
-      [name, location || null]
+      `INSERT INTO branches (name, location, subscription_plan, max_devices_allowed)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, name, location, created_at, subscription_plan, max_devices_allowed`,
+      [name, location || null, subscriptionPlan, maxDevicesAllowed]
     );
     return result.rows[0];
   } catch (error) {
@@ -56,15 +64,17 @@ const createBranch = async (req, payload = {}) => {
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         name TEXT NOT NULL,
         location TEXT,
+        subscription_plan TEXT DEFAULT 'basic',
+        max_devices_allowed INTEGER DEFAULT 1,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );`
     );
 
     const result = await requestPool.query(
-      `INSERT INTO branches (name, location)
-       VALUES ($1, $2)
-       RETURNING id, name, location, created_at`,
-      [name, location || null]
+      `INSERT INTO branches (name, location, subscription_plan, max_devices_allowed)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, name, location, created_at, subscription_plan, max_devices_allowed`,
+      [name, location || null, subscriptionPlan, maxDevicesAllowed]
     );
     return result.rows[0];
   }

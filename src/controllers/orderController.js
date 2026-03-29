@@ -1112,6 +1112,7 @@ const getAllOrders = async (req, res) => {
             const resolvedLimit = Math.min(Math.max(parseInt(req.query?.limit, 10) || 100, 1), 500);
               const ordersRes = await requestPool.query(
                   `SELECT o.id,
+                          o.branch_id,
                           o.total_price AS total_amount,
                           o.created_at,
                           o.order_status,
@@ -1162,6 +1163,7 @@ const getAllOrders = async (req, res) => {
                 }
                   return {
                       id: order.id,
+                      branch_id: order.branch_id || null,
                       products_summary: productsSummary || `${order.product_count || 0} items`,
                       product_names: productList,
                       product_count: Number(order.product_count || 0),
@@ -1273,6 +1275,7 @@ const getAllOrders = async (req, res) => {
           const ordersRes = await requestPool.query(
               `WITH base AS (
                  SELECT o.id,
+                        o.branch_id,
                         o.total_price AS total_amount,
                         o.created_at,
                         o.order_status,
@@ -1304,6 +1307,7 @@ const getAllOrders = async (req, res) => {
                  LIMIT $3 OFFSET $4
                )
                SELECT b.id,
+                      b.branch_id,
                       b.total_amount,
                       b.created_at,
                       b.order_status,
@@ -1361,6 +1365,7 @@ const getAllOrders = async (req, res) => {
             }
             return {
                 id: order.id,
+                branch_id: order.branch_id || null,
                 products_summary: productsSummary || `${order.product_count || 0} items`,
                 product_names: productList,
                 product_count: Number(order.product_count || 0),
@@ -1384,18 +1389,20 @@ const getAllOrders = async (req, res) => {
                  FROM orders o
                  LEFT JOIN customers c ON c.id = o.customer_id
                  WHERE o.created_at BETWEEN $1 AND $2
+                   AND ($4::uuid IS NULL OR o.branch_id = $4)
                    AND (
                      o.id::text ILIKE $3
                      OR c.name ILIKE $3
                      OR o.product_summary ILIKE $3
                    )`,
-                [start, end, searchValue]
+                [start, end, searchValue, branchId]
               )
             : await requestPool.query(
                 `SELECT COUNT(*)::int AS total_records
                  FROM orders o
-                 WHERE o.created_at BETWEEN $1 AND $2`,
-                [start, end]
+                 WHERE o.created_at BETWEEN $1 AND $2
+                   AND ($3::uuid IS NULL OR o.branch_id = $3)`,
+                [start, end, branchId]
               );
         const totalRecords = Number(totalCountRes.rows[0]?.total_records || 0);
         const totalPages = totalRecords === 0 ? 0 : Math.ceil(totalRecords / resolvedLimit);

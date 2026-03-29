@@ -8,6 +8,7 @@ const {
   setAuthCookie,
   clearAuthCookie
 } = require('../utils/jwt');
+const { ensureDeviceRegistration, sanitizeDeviceContext } = require('../utils/branchDeviceLicensing');
 require('dotenv').config();
 
 const resolveTenantFromRequest = async ({ email }) => {
@@ -73,6 +74,31 @@ const login = async (req, res) => {
       return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid email or password');
     }
 
+    const branchIdRaw = req.body?.branch_id || req.headers['x-branch-id'] || null;
+    const branchId = branchIdRaw && branchIdRaw !== 'all' ? branchIdRaw : null;
+    const { deviceId, deviceInfo } = sanitizeDeviceContext(req);
+    if (branchId && deviceId) {
+      const deviceResult = await ensureDeviceRegistration({
+        tenantPool,
+        branchId,
+        deviceId,
+        userId: user.id,
+        mode: 'register',
+        deviceInfo
+      });
+      if (!deviceResult.allowed) {
+        if (deviceResult.code === 'DEVICE_LIMIT_REACHED') {
+          return jsonError(
+            res,
+            403,
+            'DEVICE_LIMIT_REACHED',
+            'Device limit reached for this branch. Please remove an existing device or upgrade your plan.'
+          );
+        }
+        return jsonError(res, 403, 'DEVICE_NOT_ALLOWED', 'Access denied from this device');
+      }
+    }
+
     const token = signTenantToken({
       type: 'tenant',
       user_id: user.id,
@@ -111,6 +137,30 @@ const getLogin = async (req, res) => {
   if (!req.user) return jsonError(res, 401, 'UNAUTHORIZED', 'Not authenticated');
 
   try {
+    const branchIdRaw = req.headers['x-branch-id'] || null;
+    const branchId = branchIdRaw && branchIdRaw !== 'all' ? branchIdRaw : null;
+    const { deviceId, deviceInfo } = sanitizeDeviceContext(req);
+    if (branchId && deviceId) {
+      const deviceResult = await ensureDeviceRegistration({
+        tenantPool: req.tenantPool,
+        branchId,
+        deviceId,
+        userId: req.user?.user_id || req.user?.id,
+        mode: 'register',
+        deviceInfo
+      });
+      if (!deviceResult.allowed) {
+        if (deviceResult.code === 'DEVICE_LIMIT_REACHED') {
+          return jsonError(
+            res,
+            403,
+            'DEVICE_LIMIT_REACHED',
+            'Device limit reached for this branch. Please remove an existing device or upgrade your plan.'
+          );
+        }
+        return jsonError(res, 403, 'DEVICE_NOT_ALLOWED', 'Access denied from this device');
+      }
+    }
     return res.status(200).json({ success: true, user: req.user });
   } catch (error) {
     return jsonError(res, 403, 'UNAUTHORIZED', 'Invalid token');
