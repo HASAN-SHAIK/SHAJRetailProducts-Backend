@@ -9,6 +9,7 @@ const {
   searchProductsForPurchase,
   getProductByBarcodeForSale,
   getProductByBarcodeForPurchase,
+  getProductsPosLite,
   getProductById,
   getProductsCache,
   getProductsCacheDB,
@@ -22,7 +23,7 @@ const multer = require('multer');
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 }
+  limits: { fileSize: 25 * 1024 * 1024 }
 });
 
 router.get('/', getProducts);
@@ -31,6 +32,7 @@ router.get('/search/sale', searchProductsForSale);
 router.get('/search/purchase', searchProductsForPurchase);
 router.get('/cache', getProductsCache);
 router.get('/cache-db', getProductsCacheDB);
+router.get('/pos-lite', getProductsPosLite);
 router.get('/extra-details', getProductsExtraDetails);
 router.get('/barcode', getProductByBarcodeForSale);
 router.get('/barcode/:barcode', getProductByBarcodeForSale);

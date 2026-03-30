@@ -655,9 +655,13 @@ const searchProductsForSale = async (req, res) => {
     try {
         const requestPool = getRequestPool(req);
         const view = String(req.query?.view || '').toLowerCase();
-        const { name, barcode, q } = req.query;
+        const { name, barcode, q, category, limit, lite } = req.query;
         const term = (q || name || barcode || '').toString().trim();
-        if (!term) {
+        const useLite =
+            String(lite || '').toLowerCase() === 'true' ||
+            String(lite || '') === '1' ||
+            ((q || barcode || category || limit) && !name);
+        if (!term && !category) {
             return res.status(400).json({ error: "Product name is required for search." });
         }
         const barcodeEnabled = req.features?.enable_barcode === true;
@@ -670,8 +674,57 @@ const searchProductsForSale = async (req, res) => {
             const cacheKey = buildSearchKey(tenantId, branchId, term);
             const cached = cacheGet(cacheKey);
             if (cached) {
-                return res.status(200).json({ products: cached });
+                // Backward compatible: keep products at top-level while adding success/data wrapper.
+                return res.status(200).json({ success: true, data: { products: cached }, products: cached });
             }
+        }
+
+        if (useLite && view !== 'mobile') {
+            const resolvedLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 200);
+            const barcodeSelect = barcodeSupported ? 'barcode' : 'NULL::text AS barcode';
+            const conditions = [];
+            const values = [];
+            let idx = 1;
+
+            if (barcodeValue) {
+                conditions.push(`${barcodeSelect} = $${idx}`);
+                values.push(barcodeValue);
+                idx += 1;
+            } else if (term) {
+                conditions.push(`name ILIKE $${idx}`);
+                values.push(`%${term}%`);
+                idx += 1;
+            }
+            if (category) {
+                conditions.push(`category ILIKE $${idx}`);
+                values.push(`%${String(category).trim()}%`);
+                idx += 1;
+            }
+            if (branchId) {
+                conditions.push(`(branch_id = $${idx} OR branch_id IS NULL)`);
+                values.push(branchId);
+                idx += 1;
+            }
+
+            const whereClause = conditions.length ? `AND (${conditions.join(' AND ')})` : '';
+            const query = `
+                SELECT
+                    id,
+                    name,
+                    ${barcodeSelect},
+                    selling_price,
+                    gst_percentage AS gst_percent,
+                    category,
+                    is_batch_enabled AS batch_enabled
+                FROM products
+                WHERE is_deleted = FALSE
+                ${whereClause}
+                ORDER BY name ASC
+                LIMIT ${resolvedLimit}
+            `;
+            const { rows } = await requestPool.query(query, values);
+            // Backward compatible: keep products at top-level while adding success/data wrapper.
+            return res.status(200).json({ success: true, data: { products: rows }, products: rows });
         }
 
         if (view === 'mobile') {
@@ -696,7 +749,7 @@ const searchProductsForSale = async (req, res) => {
             `;
             const values = barcodeSupported ? [`%${term}%`, barcodeValue] : [`%${term}%`];
             const { rows } = await requestPool.query(query, values);
-            return res.status(200).json({ products: rows });
+            return res.status(200).json({ success: true, data: { products: rows }, products: rows });
         }
 
         let rows = [];
@@ -785,7 +838,7 @@ const searchProductsForSale = async (req, res) => {
             const cacheKey = buildSearchKey(tenantId, branchId, term);
             cacheSet(cacheKey, rows, DEFAULTS.searchTtlMs, { tenantId });
         }
-        return res.status(200).json({ products: rows });
+        return res.status(200).json({ success: true, data: { products: rows }, products: rows });
     } catch (error) {
         console.error("Error searching products:", error);
         return res.status(500).json({ error: "Internal Server Error" });
@@ -810,7 +863,7 @@ const searchProductsForPurchase = async (req, res) => {
             const cacheKey = buildSearchKey(tenantId, branchId, term);
             const cached = cacheGet(cacheKey);
             if (cached) {
-                return res.status(200).json({ products: cached });
+                return res.status(200).json({ success: true, data: { products: cached }, products: cached });
             }
         }
 
@@ -842,12 +895,44 @@ const searchProductsForPurchase = async (req, res) => {
             const cacheKey = buildSearchKey(tenantId, branchId, term);
             cacheSet(cacheKey, rows, DEFAULTS.searchTtlMs, { tenantId });
         }
-        return res.status(200).json({ products: rows });
+        // Backward compatible: keep products at top-level while adding success/data wrapper.
+        return res.status(200).json({ success: true, data: { products: rows }, products: rows });
     } catch (error) {
         console.error("Error searching products for purchase:", error);
         return res.status(500).json({ error: "Internal Server Error" });
     }
 }
+
+const getProductsPosLite = async (req, res) => {
+    try {
+        const requestPool = getRequestPool(req);
+        const branchId = resolveBranchIdFromRequest(req);
+        const barcodeSelect = (await hasBarcodeColumn(requestPool))
+            ? 'barcode'
+            : 'NULL::text AS barcode';
+        const rawLimit = parseInt(req.query?.limit, 10);
+        const limit = Math.min(Math.max(Number.isFinite(rawLimit) ? rawLimit : 2000, 1), 5000);
+        const query = `
+            SELECT
+                id,
+                name,
+                ${barcodeSelect},
+                selling_price,
+                gst_percentage AS gst_percent,
+                category
+            FROM products
+            WHERE is_deleted = FALSE
+              AND ($1::uuid IS NULL OR branch_id = $1 OR branch_id IS NULL)
+            ORDER BY name ASC
+            LIMIT $2
+        `;
+        const { rows } = await requestPool.query(query, [branchId, limit]);
+        return res.status(200).json({ success: true, data: { products: rows }, products: rows });
+    } catch (error) {
+        console.error("Error loading POS lite products:", error);
+        return res.status(500).json({ error: "Internal Server Error" });
+    }
+};
 
 const getProductByBarcodeForSale = async (req, res) => {
     try {
@@ -1050,7 +1135,37 @@ const getProductsCacheDB = async (req, res) => {
                  FROM products
                  WHERE is_deleted = FALSE`
               );
-          return res.status(200).json({ products: attachGstList(result.rows) });
+        const batchesRes = branchId
+            ? await requestPool.query(
+                `SELECT id,
+                        product_id,
+                        branch_id,
+                        batch_number,
+                        expiry_date,
+                        purchase_price,
+                        selling_price,
+                        quantity,
+                        created_at
+                 FROM batches
+                 WHERE branch_id = $1`,
+                [branchId]
+              )
+            : await requestPool.query(
+                `SELECT id,
+                        product_id,
+                        branch_id,
+                        batch_number,
+                        expiry_date,
+                        purchase_price,
+                        selling_price,
+                        quantity,
+                        created_at
+                 FROM batches`
+              );
+          return res.status(200).json({
+              products: attachGstList(result.rows),
+              batches: batchesRes.rows || []
+          });
     } catch (error) {
         console.error('Error fetching cacheDB products:', error);
         return res.status(500).json({ error: 'Database error' });
@@ -1299,6 +1414,7 @@ module.exports = {
     searchProductsForPurchase,
     getProductByBarcodeForSale,
     getProductByBarcodeForPurchase,
+    getProductsPosLite,
     getProductsCache,
     getProductsCacheDB,
     getProductsExtraDetails
