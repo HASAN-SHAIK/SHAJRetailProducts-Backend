@@ -26,6 +26,9 @@ const HEADER_MAP = {
   purchaseprice: 'purchase_price',
   rate: 'purchase_price',
   'Purchase Price': 'purchase_price',
+  company: 'company',
+  company_name: 'company',
+  brand: 'company',
   quantity: 'stock_quantity',
   qty: 'stock_quantity',
   stock: 'stock_quantity',
@@ -215,6 +218,7 @@ const importProducts = async (req, file) => {
       const rowNumber = index + 2;
       const name = String(raw.name || '').trim();
       const barcode = raw.barcode ? String(raw.barcode).trim() : null;
+      const company = raw.company ? String(raw.company).trim() : null;
       const category = raw.category ? String(raw.category).trim() : null;
       const mrp = normalizeNumber(raw.mrp);
       const purchase_price = normalizeNumber(raw.purchase_price);
@@ -257,22 +261,24 @@ const importProducts = async (req, file) => {
             `UPDATE products p
                SET
                  name = $1,
-                 category = COALESCE($2, p.category),
-                 purchase_price = COALESCE($3, p.purchase_price),
-                 mrp = COALESCE($4, p.mrp),
-                 hsn_code = COALESCE($5, p.hsn_code),
-                 gst_percentage = COALESCE($6, p.gst_percentage),
-                 barcode = COALESCE($7, p.barcode),
-                 stock_quantity = p.stock_quantity + COALESCE($8, 0),
-                 expiry_date = COALESCE($9, p.expiry_date),
-                 is_batch_enabled = CASE WHEN $10 THEN TRUE ELSE p.is_batch_enabled END,
-                 branch_id = COALESCE(p.branch_id, $11)
-             WHERE p.barcode = $7
+                 company = COALESCE($2, p.company),
+                 category = COALESCE($3, p.category),
+                 purchase_price = COALESCE($4, p.purchase_price),
+                 mrp = COALESCE($5, p.mrp),
+                 hsn_code = COALESCE($6, p.hsn_code),
+                 gst_percentage = COALESCE($7, p.gst_percentage),
+                 barcode = COALESCE($8, p.barcode),
+                 stock_quantity = p.stock_quantity + COALESCE($9, 0),
+                 expiry_date = COALESCE($10, p.expiry_date),
+                 is_batch_enabled = CASE WHEN $11 THEN TRUE ELSE p.is_batch_enabled END,
+                 branch_id = COALESCE(p.branch_id, $12)
+             WHERE p.barcode = $8
                AND p.is_deleted = FALSE
-               AND ($11::uuid IS NULL OR p.branch_id = $11)
+               AND ($12::uuid IS NULL OR p.branch_id = $12)
              RETURNING p.id`,
             [
               name,
+              company,
               category,
               purchase_price,
               mrp,
@@ -307,11 +313,12 @@ const importProducts = async (req, file) => {
             // Fallback: if barcode existed in the pre-query but got deleted, insert.
             const insertRes = await client.query(
               `INSERT INTO products
-                (name, category, selling_price, purchase_price, mrp, hsn_code, gst_percentage, barcode, stock_quantity, expiry_date, is_batch_enabled, branch_id)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                (name, company, category, selling_price, purchase_price, mrp, hsn_code, gst_percentage, barcode, stock_quantity, expiry_date, is_batch_enabled, branch_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                RETURNING id`,
               [
                 name,
+                company,
                 category,
                 selling_price,
                 resolvedPurchasePrice,
@@ -346,11 +353,12 @@ const importProducts = async (req, file) => {
         } else {
           const insertRes = await client.query(
             `INSERT INTO products
-              (name, category, selling_price, purchase_price, mrp, hsn_code, gst_percentage, barcode, stock_quantity, expiry_date, is_batch_enabled, branch_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+              (name, company, category, selling_price, purchase_price, mrp, hsn_code, gst_percentage, barcode, stock_quantity, expiry_date, is_batch_enabled, branch_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
              RETURNING id`,
             [
               name,
+              company,
               category,
               selling_price,
               resolvedPurchasePrice,
@@ -445,6 +453,7 @@ const importProductsFromRows = async (req, rows = []) => {
       const rowNumber = index + 1;
       const name = String(raw.name || '').trim();
       const barcode = raw.barcode ? String(raw.barcode).trim() : null;
+      const company = raw.company ? String(raw.company).trim() : null;
       const category = raw.category ? String(raw.category).trim() : null;
       const mrp = normalizeNumber(raw.mrp);
       const purchase_price = normalizeNumber(raw.purchase_price);
@@ -488,23 +497,25 @@ const importProductsFromRows = async (req, rows = []) => {
             `UPDATE products p
                SET
                  name = $1,
-                 category = COALESCE($2, p.category),
-                 selling_price = $3,
-                 purchase_price = COALESCE($4, p.purchase_price),
-                 mrp = COALESCE($5, p.mrp),
-                 hsn_code = COALESCE($6, p.hsn_code),
-                 gst_percentage = COALESCE($7, p.gst_percentage),
-                 barcode = COALESCE($8, p.barcode),
-                 stock_quantity = p.stock_quantity + COALESCE($9, 0),
-                 expiry_date = COALESCE($10, p.expiry_date),
-                 is_batch_enabled = CASE WHEN $11 THEN TRUE ELSE p.is_batch_enabled END,
-                 branch_id = COALESCE(p.branch_id, $12)
-             WHERE p.barcode = $8
+                 company = COALESCE($2, p.company),
+                 category = COALESCE($3, p.category),
+                 selling_price = $4,
+                 purchase_price = COALESCE($5, p.purchase_price),
+                 mrp = COALESCE($6, p.mrp),
+                 hsn_code = COALESCE($7, p.hsn_code),
+                 gst_percentage = COALESCE($8, p.gst_percentage),
+                 barcode = COALESCE($9, p.barcode),
+                 stock_quantity = p.stock_quantity + COALESCE($10, 0),
+                 expiry_date = COALESCE($11, p.expiry_date),
+                 is_batch_enabled = CASE WHEN $12 THEN TRUE ELSE p.is_batch_enabled END,
+                 branch_id = COALESCE(p.branch_id, $13)
+             WHERE p.barcode = $9
                AND p.is_deleted = FALSE
-               AND ($12::uuid IS NULL OR p.branch_id = $12)
+               AND ($13::uuid IS NULL OR p.branch_id = $13)
              RETURNING p.id`,
             [
               name,
+              company,
               category,
               selling_price,
               purchase_price,
@@ -539,11 +550,12 @@ const importProductsFromRows = async (req, rows = []) => {
           } else {
             const insertRes = await client.query(
               `INSERT INTO products
-                (name, category, selling_price, purchase_price, mrp, hsn_code, gst_percentage, barcode, stock_quantity, expiry_date, is_batch_enabled, branch_id)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                (name, company, category, selling_price, purchase_price, mrp, hsn_code, gst_percentage, barcode, stock_quantity, expiry_date, is_batch_enabled, branch_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                RETURNING id`,
               [
                 name,
+                company,
                 category,
                 selling_price,
                 purchase_price,
@@ -578,11 +590,12 @@ const importProductsFromRows = async (req, rows = []) => {
         } else {
           const insertRes = await client.query(
             `INSERT INTO products
-              (name, category, selling_price, purchase_price, mrp, hsn_code, gst_percentage, barcode, stock_quantity, expiry_date, is_batch_enabled, branch_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+              (name, company, category, selling_price, purchase_price, mrp, hsn_code, gst_percentage, barcode, stock_quantity, expiry_date, is_batch_enabled, branch_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
              RETURNING id`,
             [
               name,
+              company,
               category,
               selling_price,
               purchase_price,

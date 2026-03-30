@@ -713,6 +713,7 @@ const searchProductsForSale = async (req, res) => {
                     name,
                     ${barcodeSelect},
                     selling_price,
+                    mrp,
                     gst_percentage AS gst_percent,
                     category,
                     is_batch_enabled AS batch_enabled
@@ -818,6 +819,7 @@ const searchProductsForSale = async (req, res) => {
                     company,
                     selling_price,
                     purchase_price,
+                    mrp,
                     stock_quantity,
                     is_weight_based
                 FROM products
