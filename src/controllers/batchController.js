@@ -12,6 +12,7 @@ const normalizeBatchRow = (row) => ({
   purchase_price: row.purchase_price ?? null,
   selling_price: row.selling_price ?? null,
   quantity: row.quantity ?? 0,
+  quantity_remaining: row.quantity_remaining ?? row.quantity ?? 0,
   created_at: row.created_at ?? null,
 });
 
@@ -29,9 +30,11 @@ const getBatches = async (req, res) => {
                 purchase_price,
                 selling_price,
                 quantity,
+                quantity_remaining,
                 created_at
          FROM batches
-         WHERE branch_id = $1`
+         WHERE branch_id = $1
+           AND is_deleted = FALSE`
       : `SELECT id,
                 product_id,
                 branch_id,
@@ -40,8 +43,10 @@ const getBatches = async (req, res) => {
                 purchase_price,
                 selling_price,
                 quantity,
+                quantity_remaining,
                 created_at
-         FROM batches`;
+         FROM batches
+         WHERE is_deleted = FALSE`;
 
     const result = await requestPool.query(query, branchId ? [branchId] : []);
     const batches = Array.isArray(result.rows)

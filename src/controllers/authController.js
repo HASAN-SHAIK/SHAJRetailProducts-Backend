@@ -112,7 +112,8 @@ const login = async (req, res) => {
       tenant_mobile: tenant.mobile,
       tenant_plan: tenant.plan_type,
       tenant_active: tenant.is_active,
-      tenant_addons: tenant.addons || {}
+      tenant_addons: tenant.addons || {},
+      tenant_gst_mode: tenant.gst_mode || 'INCLUSIVE'
     });
 
     setAuthCookie(

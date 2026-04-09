@@ -16,9 +16,11 @@ const getBranchStock = async (req, productIdRaw) => {
 
   const result = await requestPool.query(
     `WITH batch_totals AS (
-        SELECT branch_id, COALESCE(SUM(quantity), 0)::numeric AS qty
+        SELECT branch_id, COALESCE(SUM(COALESCE(quantity_remaining, quantity)), 0)::numeric AS qty
         FROM batches
         WHERE product_id = $1
+          AND is_deleted = FALSE
+          AND (expiry_date IS NULL OR expiry_date >= CURRENT_DATE)
         GROUP BY branch_id
      )
      SELECT b.id,

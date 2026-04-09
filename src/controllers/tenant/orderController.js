@@ -1,5 +1,13 @@
 const { jsonError, jsonOk } = require('../../utils/responses');
 
+const GST_MODES = new Set(['INCLUSIVE', 'EXCLUSIVE']);
+
+const resolveGstMode = (req) => {
+  const raw = req?.tenant?.gst_mode || req?.tenant?.gstMode || null;
+  const mode = String(raw || 'INCLUSIVE').trim().toUpperCase();
+  return GST_MODES.has(mode) ? mode : 'INCLUSIVE';
+};
+
 const normalizePaymentModeValue = (value) => {
   const mode = (value || '').toLowerCase();
   if (mode === 'upi' || mode === 'online') return 'online';
@@ -40,23 +48,24 @@ const validateCustomer = (req) => {
 };
 
 const upsertCustomer = async (tenantPool, customer) => {
-  const { name, mobile, address, location } = customer;
+  const { name, mobile, phone, address, location } = customer;
+  const resolvedPhone = phone || mobile || null;
   const existing = await tenantPool.query(
-    'SELECT id FROM customers WHERE mobile = $1',
-    [mobile]
+    'SELECT id FROM customers WHERE COALESCE(phone, mobile) = $1',
+    [resolvedPhone]
   );
   if (existing.rowCount > 0) return existing.rows[0].id;
 
   const insertRes = await tenantPool.query(
-    'INSERT INTO customers (name, mobile, address, location) VALUES ($1, $2, $3, $4) RETURNING id',
-    [name || null, mobile || null, address || null, location || null]
+    'INSERT INTO customers (name, mobile, phone, address, location) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+    [name || null, mobile || resolvedPhone || null, resolvedPhone || null, address || null, location || null]
   );
   return insertRes.rows[0].id;
 };
 
 const createOrder = async (req, res) => {
   const { tenantPool, planFeatures } = req;
-  const { items, payment_mode, order_date, customer_id } = req.body;
+  const { items, payment_mode, order_date, customer_id, billing_type } = req.body;
   const resolvedLocation = resolveOrderLocation(req.body);
 
   if (!Array.isArray(items) || items.length === 0) {
@@ -82,6 +91,11 @@ const createOrder = async (req, res) => {
     const resolvedCustomer = buildCustomerPayload(req);
     if (!resolvedCustomerId && resolvedCustomer) {
       resolvedCustomerId = await upsertCustomer(client, resolvedCustomer);
+    }
+    const billingType = String(billing_type || 'retail').toLowerCase();
+    const resolvedPaymentMode = normalizePaymentModeValue(payment_mode);
+    if ((billingType === 'wholesale' || resolvedPaymentMode === 'credit') && !resolvedCustomerId) {
+      throw new Error('Customer is required for wholesale/credit billing');
     }
 
     let totalPrice = 0;
@@ -156,14 +170,21 @@ const createOrder = async (req, res) => {
       }
     }
 
-    const resolvedPaymentMode = normalizePaymentModeValue(payment_mode);
+    const discountTotal =
+      Number(req.body?.discount_total ?? req.body?.discount ?? req.body?.discount_amount ?? 0) || 0;
+    if (discountTotal > 0) {
+      totalPrice = Math.max(totalPrice - discountTotal, 0);
+      totalProfit = totalProfit - discountTotal;
+    }
+
     const isOnline = resolvedPaymentMode === 'online';
     const orderStatus = isOnline ? 'pending' : 'completed';
+    const gstMode = resolveGstMode(req);
     const orderRes = await client.query(
-      `INSERT INTO orders (customer_id, total_price, order_status, payment_mode, created_at, location, transaction_type)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO orders (customer_id, total_price, order_status, payment_mode, created_at, location, transaction_type, gst_mode, billing_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING id`,
-      [resolvedCustomerId, totalPrice, orderStatus, resolvedPaymentMode || null, order_date || new Date(), resolvedLocation, 'sale']
+      [resolvedCustomerId, totalPrice, orderStatus, resolvedPaymentMode || null, order_date || new Date(), resolvedLocation, 'sale', gstMode, billingType]
     );
     const orderId = orderRes.rows[0].id;
     const orderItemProductIds = preparedItems.map((item) => item.product_id);
@@ -228,8 +249,40 @@ const createOrder = async (req, res) => {
 
     if (!isOnline) {
       await client.query(
-        'INSERT INTO transactions (order_id, total_price, profit, payment_mode) VALUES ($1, $2, $3, $4)',
-        [orderId, totalPrice, totalProfit, resolvedPaymentMode || 'cash']
+        'INSERT INTO transactions (order_id, total_price, profit, payment_mode, amount, party_type, party_id, direction, txn_type, notes, branch_id) VALUES ($1, $2, $3, $4, $2, $5, $6, $7, $8, NULL, $9)',
+        [orderId, totalPrice, totalProfit, resolvedPaymentMode || 'cash', 'customer', resolvedCustomerId || null, 'in', 'sale', req.body?.branch_id || null]
+      );
+    }
+
+    const payments = Array.isArray(req.body?.payments) ? req.body.payments : [];
+    const paidTotal = payments.reduce((sum, payment) => {
+      const amount = Number(payment?.amount_paid ?? payment?.amount ?? 0);
+      return Number.isFinite(amount) ? sum + amount : sum;
+    }, 0);
+    const outstanding = Math.max(Number(totalPrice || 0) - paidTotal, 0);
+
+    if (outstanding > 0) {
+      if (!resolvedCustomerId) {
+        throw new Error('Customer is required for partial/credit billing');
+      }
+      const creditRes = await client.query(
+        'SELECT credit_limit, current_balance FROM customers WHERE id = $1 FOR UPDATE',
+        [resolvedCustomerId]
+      );
+      if (creditRes.rowCount === 0) {
+        throw new Error('Customer not found for credit billing');
+      }
+      const creditLimit = Number(creditRes.rows[0]?.credit_limit || 0);
+      const currentBalance = Number(creditRes.rows[0]?.current_balance || 0);
+      if (creditLimit <= 0) {
+        throw new Error('Credit not allowed for this customer');
+      }
+      if (currentBalance + outstanding > creditLimit) {
+        throw new Error('Customer credit limit exceeded');
+      }
+      await client.query(
+        'UPDATE customers SET current_balance = COALESCE(current_balance, 0) + $1, updated_at = NOW() WHERE id = $2',
+        [outstanding, resolvedCustomerId]
       );
     }
 

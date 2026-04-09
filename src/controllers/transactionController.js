@@ -14,26 +14,38 @@ const createTransaction = async (req, res) => {
         const { order_id, payment_method, payment_mode, amount_paid } = req.body;
         
         // 🔍 Check if order exists and fetch total selling_price
-        const orderQuery = `SELECT total_price, returned_amount, order_status FROM orders WHERE id = $1 FOR UPDATE`;
+        const orderQuery = `SELECT total_price, returned_amount, order_status, total_paid, customer_id, payment_mode, branch_id FROM orders WHERE id = $1 FOR UPDATE`;
         const orderRes = await client.query(orderQuery, [order_id]);
 
         if (orderRes.rows.length === 0) {
             throw new Error(`Order ID ${order_id} not found`);
         }
 
-        const { total_price, returned_amount, order_status } = orderRes.rows[0];
+        const { total_price, returned_amount, order_status, total_paid, customer_id, payment_mode: orderPaymentMode, branch_id } = orderRes.rows[0];
 
         // 🚨 Prevent duplicate payments or processing canceled orders
-        if (['completed', 'partially_returned', 'fully_returned'].includes(order_status)) {
+        const netTotal = Number(total_price || 0) - Number(returned_amount || 0);
+        const alreadyPaid = Number(total_paid || 0);
+        const remaining = Math.max(netTotal - alreadyPaid, 0);
+
+        if (['partially_returned', 'fully_returned'].includes(order_status) && remaining <= 0) {
+            throw new Error(`Order ID ${order_id} is already settled`);
+        }
+        if (order_status === 'completed' && remaining <= 0) {
             throw new Error(`Order ID ${order_id} is already paid`);
         } else if (order_status === 'canceled') {
             throw new Error("Cannot process payment for a canceled order");
         }
 
-        // 🔍 Validate amount paid
-        const netTotal = Number(total_price || 0) - Number(returned_amount || 0);
-        if (amount_paid !== netTotal) {
-            throw new Error(`Amount paid (${amount_paid}) does not match order total (${netTotal})`);
+        // 🔍 Validate amount paid (allow partial payments)
+        const resolvedAmountPaid = amount_paid === undefined || amount_paid === null || amount_paid === ''
+            ? remaining
+            : Number(amount_paid);
+        if (!Number.isFinite(resolvedAmountPaid) || resolvedAmountPaid <= 0) {
+            throw new Error('amount_paid must be > 0');
+        }
+        if (resolvedAmountPaid > remaining) {
+            throw new Error(`Amount paid (${resolvedAmountPaid}) exceeds remaining balance (${remaining})`);
         }
 
         // 💾 Insert transaction
@@ -48,22 +60,37 @@ const createTransaction = async (req, res) => {
              WHERE oi.order_id = $1`,
             [order_id]
         );
-        const resolvedProfit = Number(profitRes.rows[0]?.profit || 0);
+        const totalProfit = Number(profitRes.rows[0]?.profit || 0);
+        const ratio = netTotal > 0 ? resolvedAmountPaid / netTotal : 0;
+        const resolvedProfit = totalProfit * ratio;
 
         const transactionQuery = `
-            INSERT INTO transactions (order_id, total_price, profit, payment_mode, created_at)
-            VALUES ($1, $2, $3, $4, now()) RETURNING id;
+            INSERT INTO transactions (order_id, total_price, profit, payment_mode, created_at, amount, party_type, party_id, direction, txn_type, notes, branch_id)
+            VALUES ($1, $2, $3, $4, now(), $2, 'customer', $5, 'in', 'sale', NULL, $6) RETURNING id;
         `;
         const resolvedPaymentModeRaw = (payment_mode || payment_method || 'cash').toLowerCase();
         const resolvedPaymentMode = resolvedPaymentModeRaw === 'upi' || resolvedPaymentModeRaw === 'online'
             ? 'online'
             : 'cash';
-        const transactionRes = await client.query(transactionQuery, [order_id, total_price, resolvedProfit, resolvedPaymentMode]);
+        const transactionRes = await client.query(transactionQuery, [order_id, resolvedAmountPaid, resolvedProfit, resolvedPaymentMode, customer_id || null, branch_id || null]);
         const transactionId = transactionRes.rows[0].id;
 
-        // ✅ Mark order as completed
-        const updateOrderQuery = `UPDATE orders SET order_status = 'completed', payment_mode = $2 WHERE id = $1;`;
-        await client.query(updateOrderQuery, [order_id, resolvedPaymentMode]);
+        const newTotalPaid = alreadyPaid + resolvedAmountPaid;
+        const completed = netTotal > 0 ? newTotalPaid >= netTotal : true;
+        const updateOrderQuery = `UPDATE orders SET order_status = $2, payment_mode = COALESCE(payment_mode, $3) WHERE id = $1;`;
+        await client.query(updateOrderQuery, [order_id, completed ? 'completed' : 'pending', resolvedPaymentMode]);
+
+        if (String(orderPaymentMode || '').toLowerCase() === 'credit' && customer_id) {
+            if (resolvedPaymentMode !== 'credit') {
+                await client.query(
+                    `UPDATE customers
+                     SET current_balance = COALESCE(current_balance, 0) - $1,
+                         updated_at = NOW()
+                     WHERE id = $2`,
+                    [resolvedAmountPaid, customer_id]
+                );
+            }
+        }
 
         await client.query('COMMIT'); // Commit transaction
         res.status(201).json({ message: 'Payment successful', transactionId });

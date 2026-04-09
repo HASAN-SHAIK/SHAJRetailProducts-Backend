@@ -47,9 +47,15 @@ exports.initiatePayment = async (req, res) => {
 const updateTransactionStatus = async (transactionId, status) => {
     try {
       const {profit, total_price} = await getProfitByOrderId(transactionId);
+      const orderRes = await pool.query(
+        `SELECT customer_id, branch_id FROM orders WHERE id = $1`,
+        [transactionId]
+      );
+      const orderRow = orderRes.rows[0] || {};
       await pool.query(
-        `INSERT INTO transactions (order_id, total_price, profit, payment_mode) VALUES($1, $2, $3, 'online')`,
-        [transactionId, total_price, profit]
+        `INSERT INTO transactions (order_id, total_price, profit, payment_mode, amount, party_type, party_id, direction, txn_type, notes, branch_id)
+         VALUES($1, $2, $3, 'online', $2, 'customer', $4, 'in', 'sale', NULL, $5)`,
+        [transactionId, total_price, profit, orderRow.customer_id || null, orderRow.branch_id || null]
       );
   
       // Optionally update order status too:

@@ -1,5 +1,8 @@
 const xlsx = require('xlsx');
-const pdfParse = require('pdf-parse');
+const loadPdfParse = async () => {
+  const mod = await import('pdf-parse');
+  return mod.default || mod;
+};
 const { resolveGstPercentage, upsertHsnGst } = require('./hsnGst.service');
 const pool = require('../db');
 const { resolveBranchIdFromRequest } = require('../utils/branch');
@@ -102,6 +105,7 @@ const parseExcel = (buffer) => {
 const parsePdf = async (buffer) => {
   let data;
   try {
+    const pdfParse = await loadPdfParse();
     data = await pdfParse(buffer);
   } catch (err) {
     const error = new Error('Unsupported or corrupted PDF');

@@ -24,7 +24,7 @@ const loadTenant = async (tenantId) => {
   if (cached) return cached;
 
   const tenantRes = await masterPool.query(
-    `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.plan_type, t.is_active, t.addons
+    `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.plan_type, t.is_active, t.addons, t.gst_mode
      FROM tenants t
      WHERE t.id = $1`,
     [tenantId]
@@ -49,7 +49,8 @@ const resolveTenantContextFromToken = (payload) => {
     mobile: payload.tenant_mobile || null,
     plan_type: payload.tenant_plan || null,
     is_active: payload.tenant_active !== undefined ? payload.tenant_active : null,
-    addons: payload.tenant_addons || {}
+    addons: payload.tenant_addons || {},
+    gst_mode: payload.tenant_gst_mode || null
   };
 
   const tenantPool = getTenantPool(databaseName);

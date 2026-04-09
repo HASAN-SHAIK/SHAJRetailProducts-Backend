@@ -3,6 +3,19 @@ const { resolveMaxProducts, fetchActiveProductCount } = require('../../utils/pro
 const { upsertProductInCache } = require('../../services/tenantProductCache');
 const { invalidateProductCaches } = require('../../services/smartCache');
 
+const normalizeDateOnly = (value) => {
+  if (value === null || value === undefined || value === '') return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return undefined;
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+};
+const isExpiryBeforeBatchDate = (expiryValue, batchDate = new Date()) => {
+  const expiryDate = normalizeDateOnly(expiryValue);
+  if (!expiryDate) return false;
+  const batchDateOnly = normalizeDateOnly(batchDate);
+  return Boolean(batchDateOnly && expiryDate < batchDateOnly);
+};
+
 const allowedSorts = new Set([
   'id',
   'name',
@@ -52,6 +65,15 @@ const createProduct = async (req, res) => {
 
     if (!name || !selling_price || stock_quantity === undefined) {
       return jsonError(res, 400, 'VALIDATION_ERROR', 'Missing required fields');
+    }
+    if (expiry_date !== undefined) {
+      const normalizedExpiry = normalizeDateOnly(expiry_date);
+      if (expiry_date !== null && expiry_date !== '' && normalizedExpiry === undefined) {
+        return jsonError(res, 400, 'VALIDATION_ERROR', 'Invalid expiry_date');
+      }
+      if (normalizedExpiry && isExpiryBeforeBatchDate(normalizedExpiry)) {
+        return jsonError(res, 400, 'VALIDATION_ERROR', 'Expiry date must be on or after batch date.');
+      }
     }
     const maxProducts = resolveMaxProducts(req.features);
     if (maxProducts !== null) {

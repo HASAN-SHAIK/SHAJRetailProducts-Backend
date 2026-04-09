@@ -60,6 +60,7 @@ const getTenantMe = async (req, res) => {
     return jsonOk(res, {
       id: tenant.id,
       shop_name: tenant.shop_name,
+      gst_mode: tenant.gst_mode || 'INCLUSIVE',
       subscription,
       features: req.featureFlags || {}
     });

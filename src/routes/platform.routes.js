@@ -24,7 +24,8 @@ const {
   upgradeTenantPlan,
   renewTenantPlan,
   getTenantBranches,
-  createTenantBranch
+  createTenantBranch,
+  updateTenantBranch
 } = require('../controllers/platformController');
 const {
   getSupportCasesAdmin,
@@ -59,6 +60,7 @@ router.post('/tenants/:tenant_id/users', createTenantUser);
 router.get('/tenants/:tenant_id/users', getTenantUsers);
 router.get('/tenants/:tenant_id/branches', getTenantBranches);
 router.post('/tenants/:tenant_id/branches', createTenantBranch);
+router.patch('/tenants/:tenant_id/branches/:branch_id', updateTenantBranch);
 router.post('/tenants/:tenant_id/upgrade-plan', upgradeTenantPlan);
 router.post('/tenants/:tenant_id/renew-plan', renewTenantPlan);
 router.patch('/users/:id/role', updateTenantUserRole);

@@ -24,9 +24,19 @@ CREATE TABLE IF NOT EXISTS customers (
   id SERIAL PRIMARY KEY,
   name VARCHAR(255),
   mobile VARCHAR(15),
+  phone TEXT,
+  type TEXT CHECK (type IN ('retail','wholesale')) DEFAULT 'retail',
+  email TEXT,
   location VARCHAR(100),
   address TEXT,
-  created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC')
+  shop_name TEXT,
+  gst_number TEXT,
+  credit_limit NUMERIC DEFAULT 0,
+  current_balance NUMERIC DEFAULT 0,
+  notes TEXT,
+  is_active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC'),
+  updated_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC')
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -56,11 +66,54 @@ CREATE TABLE IF NOT EXISTS products (
   time_for_delivery INT DEFAULT 0,
   is_deleted BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC'),
+  updated_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC'),
   expiry_date DATE
 );
 
 ALTER TABLE IF EXISTS products
   ADD COLUMN IF NOT EXISTS branch_id UUID;
+ALTER TABLE IF EXISTS products
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC');
+ALTER TABLE IF EXISTS products
+  ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT FALSE;
+
+-- Suppliers (Purchase Management)
+CREATE TABLE IF NOT EXISTS suppliers (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  mobile VARCHAR(15),
+  email TEXT,
+  address TEXT,
+  gst_number TEXT,
+  credit_limit NUMERIC DEFAULT 0,
+  current_balance NUMERIC DEFAULT 0,
+  branch_id UUID,
+  is_active BOOLEAN DEFAULT TRUE,
+  is_deleted BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMP DEFAULT NOW(),
+  updated_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC')
+);
+
+CREATE TABLE IF NOT EXISTS supplier_payments (
+  id SERIAL PRIMARY KEY,
+  supplier_id INT REFERENCES suppliers(id) ON DELETE CASCADE,
+  amount NUMERIC NOT NULL,
+  payment_mode TEXT,
+  notes TEXT,
+  created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC')
+);
+
+ALTER TABLE IF EXISTS suppliers
+  ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT FALSE;
+ALTER TABLE IF EXISTS suppliers
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC');
+
+CREATE INDEX IF NOT EXISTS idx_suppliers_branch
+  ON suppliers (branch_id);
+CREATE INDEX IF NOT EXISTS idx_suppliers_name_lower
+  ON suppliers (LOWER(name));
+CREATE INDEX IF NOT EXISTS idx_supplier_payments_supplier
+  ON supplier_payments (supplier_id);
 
 CREATE TABLE IF NOT EXISTS orders (
   id SERIAL PRIMARY KEY,
@@ -72,24 +125,48 @@ CREATE TABLE IF NOT EXISTS orders (
   total_paid DECIMAL(12,2) DEFAULT 0,
   order_status VARCHAR(50) DEFAULT 'pending',
   transaction_type VARCHAR(10) DEFAULT 'sale' CHECK (transaction_type IN ('sale', 'purchase', 'personal')),
+  billing_type TEXT DEFAULT 'retail',
   location VARCHAR(255),
   product_summary TEXT,
   product_count INT DEFAULT 0,
   customer_name_snapshot TEXT,
   customer_mobile_snapshot TEXT,
   created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC'),
+  updated_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC'),
+  is_deleted BOOLEAN DEFAULT FALSE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
   FOREIGN KEY (customer_id) REFERENCES customers(id),
-  payment_mode VARCHAR(10) CHECK (payment_mode IN ('cash', 'online')),
-  is_gst_enabled BOOLEAN DEFAULT TRUE
+  payment_mode VARCHAR(10) CHECK (payment_mode IN ('cash', 'online', 'credit')),
+  is_gst_enabled BOOLEAN DEFAULT TRUE,
+  gst_mode VARCHAR(20) DEFAULT 'INCLUSIVE'
 
 );
+
+ALTER TABLE orders
+  DROP CONSTRAINT IF EXISTS orders_payment_mode_check;
+
+ALTER TABLE orders
+  ADD CONSTRAINT orders_payment_mode_check
+  CHECK (payment_mode IN ('cash', 'online', 'credit'));
 
 ALTER TABLE orders
   ADD COLUMN IF NOT EXISTS customer_phone TEXT;
 
 ALTER TABLE orders
   ADD COLUMN IF NOT EXISTS branch_id UUID;
+
+ALTER TABLE orders
+  ADD COLUMN IF NOT EXISTS gst_mode VARCHAR(20) DEFAULT 'INCLUSIVE';
+
+ALTER TABLE orders
+  ADD COLUMN IF NOT EXISTS supplier_id INT REFERENCES suppliers(id);
+
+ALTER TABLE orders
+  ADD COLUMN IF NOT EXISTS invoice_number TEXT;
+ALTER TABLE IF EXISTS orders
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC');
+ALTER TABLE IF EXISTS orders
+  ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT FALSE;
 
 CREATE TABLE IF NOT EXISTS order_items (
   id SERIAL PRIMARY KEY,
@@ -102,9 +179,13 @@ CREATE TABLE IF NOT EXISTS order_items (
   gst_percent DECIMAL(5,2) DEFAULT 0,
   profit DECIMAL(10,2) DEFAULT 0,
   margin_percent DECIMAL(10,2) DEFAULT 0,
+  updated_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC'),
   FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
   FOREIGN KEY (product_id) REFERENCES products(id)
 );
+
+ALTER TABLE IF EXISTS order_items
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC');
 
 CREATE TABLE IF NOT EXISTS transactions (
   id SERIAL PRIMARY KEY,
@@ -112,9 +193,53 @@ CREATE TABLE IF NOT EXISTS transactions (
   total_price DECIMAL(12,2),
   profit DECIMAL(12,2),
   payment_mode VARCHAR(50),
+  amount NUMERIC,
+  party_type TEXT,
+  party_id INT,
+  direction TEXT,
+  txn_type TEXT,
+  notes TEXT,
+  branch_id UUID,
   created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC'),
   FOREIGN KEY (order_id) REFERENCES orders(id)
 );
+
+CREATE TABLE IF NOT EXISTS customer_payments (
+  id SERIAL PRIMARY KEY,
+  customer_id INT REFERENCES customers(id) ON DELETE CASCADE,
+  amount NUMERIC NOT NULL,
+  payment_mode TEXT,
+  notes TEXT,
+  created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC')
+);
+
+CREATE OR REPLACE FUNCTION set_updated_at() RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = (NOW() AT TIME ZONE 'UTC');
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_products_updated_at ON products;
+CREATE TRIGGER trg_products_updated_at
+BEFORE UPDATE ON products
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+
+DROP TRIGGER IF EXISTS trg_orders_updated_at ON orders;
+CREATE TRIGGER trg_orders_updated_at
+BEFORE UPDATE ON orders
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_order_items_updated_at ON order_items;
+CREATE TRIGGER trg_order_items_updated_at
+BEFORE UPDATE ON order_items
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_suppliers_updated_at ON suppliers;
+CREATE TRIGGER trg_suppliers_updated_at
+BEFORE UPDATE ON suppliers
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 CREATE OR REPLACE FUNCTION refresh_order_summary(p_order_id INT) RETURNS VOID AS $$
 DECLARE
@@ -601,6 +726,9 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 CREATE INDEX IF NOT EXISTS idx_orders_type_loc_created
   ON orders (transaction_type, location, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_orders_supplier_created
+  ON orders (supplier_id, created_at DESC)
+  WHERE transaction_type = 'purchase';
 CREATE INDEX IF NOT EXISTS idx_orders_status_created
   ON orders (order_status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_orders_customer_created
@@ -709,13 +837,67 @@ CREATE TABLE IF NOT EXISTS expenses (
   name TEXT,
   amount NUMERIC,
   description TEXT,
+  category TEXT,
+  staff_id UUID,
+  payment_method TEXT,
+  notes TEXT,
   date DATE DEFAULT CURRENT_DATE,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC'),
   branch_id UUID
 );
 
 ALTER TABLE IF EXISTS expenses
   ADD COLUMN IF NOT EXISTS branch_id UUID;
+ALTER TABLE IF EXISTS expenses
+  ADD COLUMN IF NOT EXISTS category TEXT;
+ALTER TABLE IF EXISTS expenses
+  ADD COLUMN IF NOT EXISTS staff_id UUID;
+ALTER TABLE IF EXISTS expenses
+  ADD COLUMN IF NOT EXISTS payment_method TEXT;
+ALTER TABLE IF EXISTS expenses
+  ADD COLUMN IF NOT EXISTS notes TEXT;
+ALTER TABLE IF EXISTS expenses
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC');
+
+CREATE TABLE IF NOT EXISTS staff (
+  id UUID PRIMARY KEY,
+  name TEXT NOT NULL,
+  phone TEXT,
+  role TEXT,
+  salary NUMERIC,
+  join_date DATE,
+  status TEXT DEFAULT 'active',
+  created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC'),
+  updated_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC'),
+  branch_id UUID
+);
+
+CREATE INDEX IF NOT EXISTS idx_staff_name
+  ON staff (name);
+CREATE INDEX IF NOT EXISTS idx_staff_branch
+  ON staff (branch_id);
+
+CREATE TABLE IF NOT EXISTS salaries (
+  id UUID PRIMARY KEY,
+  staff_id UUID REFERENCES staff(id) ON DELETE SET NULL,
+  month TEXT,
+  base_salary NUMERIC,
+  bonus NUMERIC,
+  deductions NUMERIC,
+  net_salary NUMERIC,
+  paid_amount NUMERIC,
+  pending_amount NUMERIC,
+  payment_status TEXT,
+  created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC'),
+  updated_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC'),
+  branch_id UUID
+);
+
+CREATE INDEX IF NOT EXISTS idx_salaries_staff_month
+  ON salaries (staff_id, month);
+CREATE INDEX IF NOT EXISTS idx_salaries_branch
+  ON salaries (branch_id);
 
 CREATE TABLE IF NOT EXISTS hsn_gst (
   hsn_code TEXT PRIMARY KEY,
@@ -743,6 +925,8 @@ CREATE INDEX IF NOT EXISTS idx_expenses_type_date
   ON expenses (type, date DESC);
 CREATE INDEX IF NOT EXISTS idx_expenses_branch_date
   ON expenses (branch_id, date DESC);
+CREATE INDEX IF NOT EXISTS idx_expenses_staff_date
+  ON expenses (staff_id, date DESC);
 CREATE INDEX IF NOT EXISTS idx_billing_order_items_order_id
   ON billing_order_items (order_id);
 
@@ -796,16 +980,61 @@ CREATE TABLE IF NOT EXISTS batches (
   purchase_price NUMERIC,
   selling_price NUMERIC,
   quantity NUMERIC NOT NULL DEFAULT 0,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  quantity_remaining NUMERIC,
+  purchase_order_id INT REFERENCES orders(id),
+  is_deleted BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC')
 );
 
 ALTER TABLE batches
   ADD COLUMN IF NOT EXISTS branch_id UUID;
 
+ALTER TABLE batches
+  ADD COLUMN IF NOT EXISTS quantity_remaining NUMERIC;
+
+ALTER TABLE batches
+  ADD COLUMN IF NOT EXISTS purchase_order_id INT REFERENCES orders(id);
+ALTER TABLE IF EXISTS batches
+  ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT FALSE;
+ALTER TABLE IF EXISTS batches
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC');
+
+DROP TRIGGER IF EXISTS trg_batches_updated_at ON batches;
+CREATE TRIGGER trg_batches_updated_at
+BEFORE UPDATE ON batches
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+UPDATE batches
+  SET quantity_remaining = quantity
+  WHERE quantity_remaining IS NULL;
+
+UPDATE products
+  SET updated_at = COALESCE(updated_at, created_at, (NOW() AT TIME ZONE 'UTC'));
+UPDATE suppliers
+  SET updated_at = COALESCE(updated_at, created_at, (NOW() AT TIME ZONE 'UTC'));
+UPDATE orders
+  SET updated_at = COALESCE(updated_at, created_at, (NOW() AT TIME ZONE 'UTC'));
+UPDATE order_items
+  SET updated_at = COALESCE(updated_at, (NOW() AT TIME ZONE 'UTC'));
+UPDATE batches
+  SET updated_at = COALESCE(updated_at, created_at, (NOW() AT TIME ZONE 'UTC'));
+
+UPDATE products
+  SET is_deleted = COALESCE(is_deleted, FALSE);
+UPDATE suppliers
+  SET is_deleted = COALESCE(is_deleted, FALSE);
+UPDATE orders
+  SET is_deleted = COALESCE(is_deleted, FALSE);
+UPDATE batches
+  SET is_deleted = COALESCE(is_deleted, FALSE);
+
 CREATE INDEX IF NOT EXISTS idx_batches_product_branch
   ON batches (product_id, branch_id);
 CREATE INDEX IF NOT EXISTS idx_batches_expiry
   ON batches (expiry_date ASC);
+CREATE INDEX IF NOT EXISTS idx_batches_purchase_order
+  ON batches (purchase_order_id);
 
 ALTER TABLE orders
   ADD COLUMN IF NOT EXISTS returned_amount DECIMAL(12,2) DEFAULT 0;
@@ -816,6 +1045,27 @@ ALTER TABLE transactions
 ALTER TABLE transactions
   ADD COLUMN IF NOT EXISTS reference_id INT;
 
+ALTER TABLE transactions
+  ADD COLUMN IF NOT EXISTS amount NUMERIC;
+
+ALTER TABLE transactions
+  ADD COLUMN IF NOT EXISTS party_type TEXT;
+
+ALTER TABLE transactions
+  ADD COLUMN IF NOT EXISTS party_id INT;
+
+ALTER TABLE transactions
+  ADD COLUMN IF NOT EXISTS direction TEXT;
+
+ALTER TABLE transactions
+  ADD COLUMN IF NOT EXISTS txn_type TEXT;
+
+ALTER TABLE transactions
+  ADD COLUMN IF NOT EXISTS notes TEXT;
+
+ALTER TABLE transactions
+  ADD COLUMN IF NOT EXISTS branch_id UUID;
+
 CREATE TABLE IF NOT EXISTS order_returns (
   id SERIAL PRIMARY KEY,
   order_id INT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
@@ -824,24 +1074,150 @@ CREATE TABLE IF NOT EXISTS order_returns (
   refund_mode TEXT NOT NULL,
   reason TEXT,
   created_by INT,
+  created_at TIMESTAMP DEFAULT NOW(),
+  return_uuid UUID UNIQUE,
+  tax_reversed NUMERIC,
+  updated_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC')
+);
+
+-- Purchase returns (separate from sales returns)
+CREATE TABLE IF NOT EXISTS purchase_returns (
+  id SERIAL PRIMARY KEY,
+  purchase_id INT REFERENCES orders(id),
+  supplier_id INT REFERENCES suppliers(id),
+  total_amount NUMERIC,
+  reason TEXT,
   created_at TIMESTAMP DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS purchase_return_items (
+  id SERIAL PRIMARY KEY,
+  purchase_return_id INT REFERENCES purchase_returns(id),
+  batch_id UUID REFERENCES batches(id),
+  product_id INT,
+  quantity NUMERIC,
+  amount NUMERIC
+);
+
+CREATE INDEX IF NOT EXISTS idx_purchase_returns_purchase
+  ON purchase_returns (purchase_id);
+CREATE INDEX IF NOT EXISTS idx_purchase_returns_supplier
+  ON purchase_returns (supplier_id);
+CREATE INDEX IF NOT EXISTS idx_purchase_return_items_return
+  ON purchase_return_items (purchase_return_id);
+
+-- Purchase Requests (supplier email workflow)
+CREATE TABLE IF NOT EXISTS purchase_requests (
+  id SERIAL PRIMARY KEY,
+  supplier_id INT REFERENCES suppliers(id),
+  branch_id UUID,
+  status TEXT DEFAULT 'DRAFT' CHECK (status IN ('DRAFT', 'SENT', 'COMPLETED')),
+  expected_date DATE,
+  notes TEXT,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS purchase_request_items (
+  id SERIAL PRIMARY KEY,
+  purchase_request_id INT REFERENCES purchase_requests(id) ON DELETE CASCADE,
+  product_id INT REFERENCES products(id),
+  quantity NUMERIC NOT NULL,
+  last_purchase_price NUMERIC
+);
+
+CREATE INDEX IF NOT EXISTS idx_purchase_requests_supplier
+  ON purchase_requests (supplier_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_purchase_requests_branch
+  ON purchase_requests (branch_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_purchase_request_items_request
+  ON purchase_request_items (purchase_request_id);
 
 CREATE TABLE IF NOT EXISTS order_return_items (
   id SERIAL PRIMARY KEY,
   return_id INT REFERENCES order_returns(id) ON DELETE CASCADE,
   product_id INT NOT NULL REFERENCES products(id),
+  batch_id UUID,
   quantity NUMERIC(10,2) NOT NULL,
   unit_price NUMERIC(10,2) NOT NULL,
   line_total NUMERIC(10,2) NOT NULL,
   gst_amount NUMERIC(10,2) DEFAULT 0
 );
 
+ALTER TABLE IF EXISTS order_return_items
+  ADD COLUMN IF NOT EXISTS batch_id UUID;
+
+ALTER TABLE IF EXISTS order_items
+  ADD COLUMN IF NOT EXISTS batch_id UUID;
+
+CREATE TABLE IF NOT EXISTS bill_corrections (
+  id UUID PRIMARY KEY,
+  bill_id INT REFERENCES orders(id) ON DELETE CASCADE,
+  type TEXT,
+  changes JSONB,
+  adjusted_amount NUMERIC,
+  tax_adjustment NUMERIC,
+  created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC'),
+  is_synced BOOLEAN DEFAULT FALSE
+);
+
+CREATE INDEX IF NOT EXISTS idx_bill_corrections_bill
+  ON bill_corrections (bill_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS gst_ledger (
+  id UUID PRIMARY KEY,
+  bill_id INT REFERENCES orders(id) ON DELETE CASCADE,
+  type TEXT,
+  taxable_amount NUMERIC,
+  cgst NUMERIC,
+  sgst NUMERIC,
+  igst NUMERIC,
+  total_tax NUMERIC,
+  date DATE,
+  is_synced BOOLEAN DEFAULT FALSE
+);
+
+CREATE INDEX IF NOT EXISTS idx_gst_ledger_bill
+  ON gst_ledger (bill_id, date DESC);
+
+CREATE TABLE IF NOT EXISTS eway_bills (
+  id UUID PRIMARY KEY,
+  bill_id INT REFERENCES orders(id) ON DELETE CASCADE,
+  transport_details TEXT,
+  distance NUMERIC,
+  gstin TEXT,
+  generated_number TEXT,
+  status TEXT,
+  created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC'),
+  updated_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC'),
+  is_synced BOOLEAN DEFAULT FALSE
+);
+
+CREATE INDEX IF NOT EXISTS idx_eway_bill
+  ON eway_bills (bill_id, created_at DESC);
+
 CREATE INDEX IF NOT EXISTS idx_order_returns_order
   ON order_returns (order_id);
 
 CREATE INDEX IF NOT EXISTS idx_order_return_items_product
   ON order_return_items (product_id);
+
+CREATE INDEX IF NOT EXISTS idx_products_barcode
+  ON products (barcode);
+
+CREATE INDEX IF NOT EXISTS idx_products_name_lower
+  ON products (LOWER(name));
+
+CREATE INDEX IF NOT EXISTS idx_customers_name_lower
+  ON customers (LOWER(name));
+
+CREATE INDEX IF NOT EXISTS idx_customers_mobile
+  ON customers (mobile);
+
+CREATE INDEX IF NOT EXISTS idx_orders_created_at
+  ON orders (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_orders_branch_id
+  ON orders (branch_id);
 
   INSERT INTO hsn_gst (hsn_code, gst_percentage) VALUES
 -- Food & Grocery

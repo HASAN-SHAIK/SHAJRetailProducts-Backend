@@ -14,12 +14,16 @@ CREATE TABLE IF NOT EXISTS tenants (
   database_name VARCHAR(255) UNIQUE NOT NULL,
   plan_type VARCHAR(20) NOT NULL DEFAULT 'basic',
   addons JSONB DEFAULT '{}'::jsonb,
+  gst_mode VARCHAR(20) DEFAULT 'INCLUSIVE',
   is_active BOOLEAN DEFAULT TRUE,
   shop_type_id INT REFERENCES shop_types(id) ON DELETE SET NULL,
   created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC')
 );
 
 
+
+ALTER TABLE IF EXISTS tenants
+  ADD COLUMN IF NOT EXISTS gst_mode VARCHAR(20) DEFAULT 'INCLUSIVE';
 
 CREATE TABLE IF NOT EXISTS tenant_config (
   tenant_id INT PRIMARY KEY,

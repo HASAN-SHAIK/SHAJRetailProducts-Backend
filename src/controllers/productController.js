@@ -63,6 +63,18 @@ const {
 const { resolveBranchIdFromRequest } = require('../utils/branch');
 
 const getTenantId = (req) => req.tenant_id || req.tenant?.id || null;
+const normalizeDateOnly = (value) => {
+    if (value === null || value === undefined || value === '') return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return undefined;
+    return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+};
+const isExpiryBeforeBatchDate = (expiryValue, batchDate = new Date()) => {
+    const expiryDate = normalizeDateOnly(expiryValue);
+    if (!expiryDate) return false;
+    const batchDateOnly = normalizeDateOnly(batchDate);
+    return Boolean(batchDateOnly && expiryDate < batchDateOnly);
+};
 
 
 // ✅ Get all products (search, filter, sort, pagination)
@@ -111,9 +123,11 @@ const getProducts = async (req, res) => {
         if (branchId) {
             productsRes = await requestPool.query(
                 `WITH branch_stock AS (
-                    SELECT bt.product_id, COALESCE(SUM(bt.quantity), 0)::numeric AS stock_quantity
+                    SELECT bt.product_id, COALESCE(SUM(COALESCE(bt.quantity_remaining, bt.quantity)), 0)::numeric AS stock_quantity
                     FROM batches bt
-                    WHERE bt.branch_id = $1
+                      WHERE bt.branch_id = $1
+                        AND bt.is_deleted = FALSE
+                        AND (bt.expiry_date IS NULL OR bt.expiry_date >= CURRENT_DATE)
                     GROUP BY bt.product_id
                 )
                 SELECT p.id,
@@ -148,7 +162,9 @@ const getProducts = async (req, res) => {
                 `WITH branch_stock AS (
                     SELECT bt.product_id
                     FROM batches bt
-                    WHERE bt.branch_id = $1
+                      WHERE bt.branch_id = $1
+                        AND bt.is_deleted = FALSE
+                        AND (bt.expiry_date IS NULL OR bt.expiry_date >= CURRENT_DATE)
                     GROUP BY bt.product_id
                 )
                 SELECT COUNT(*)::int AS total_records
@@ -287,6 +303,15 @@ const addProduct = async (req, res) => {
     if (stock_quantity === undefined) {
       return res.status(400).json({ message: 'Stock quantity is required.' });
     }
+    if (expiry_date !== undefined) {
+      const normalizedExpiry = normalizeDateOnly(expiry_date);
+      if (expiry_date !== null && expiry_date !== '' && normalizedExpiry === undefined) {
+        return res.status(400).json({ message: 'Invalid expiry_date.' });
+      }
+      if (normalizedExpiry && isExpiryBeforeBatchDate(normalizedExpiry)) {
+        return res.status(400).json({ message: 'Expiry date must be on or after batch date.' });
+      }
+    }
     const requestPool = getRequestPool(req);
     let gst_percentage = gstInput;
     if (Number.isNaN(gst_percentage)) gst_percentage = null;
@@ -297,7 +322,9 @@ const addProduct = async (req, res) => {
       await upsertHsnGst(requestPool, hsn_code, gst_percentage);
     }
     const barcodeEnabled = req.features?.enable_barcode === true;
-    if (barcodeEnabled && barcodeProvided && barcode) {
+    const barcodeSupported = await hasBarcodeColumn(requestPool);
+    const shouldStoreBarcode = barcodeSupported && barcodeProvided;
+    if (shouldStoreBarcode && barcode) {
       const dupRes = await requestPool.query(
         'SELECT id FROM products WHERE barcode = $1 AND is_deleted = FALSE LIMIT 1',
         [barcode]
@@ -316,7 +343,7 @@ const addProduct = async (req, res) => {
       // 2. Product exists: update stock and prices
       const existingProduct = existing.rows[0];
       const resolvedBarcode =
-        barcodeEnabled && barcodeProvided ? barcode : existingProduct.barcode ?? null;
+        shouldStoreBarcode ? barcode : existingProduct.barcode ?? null;
 
       const updated = await requestPool.query(
         `UPDATE products
@@ -352,8 +379,8 @@ const addProduct = async (req, res) => {
         const batchPurchase = normalizedPurchasePrice ?? purchase_price ?? existingProduct.purchase_price ?? existingProduct.purchase_price ?? null;
         await requestPool.query(
           `INSERT INTO batches
-            (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity, quantity_remaining)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
           [
             existingProduct.id,
             branchId,
@@ -365,7 +392,7 @@ const addProduct = async (req, res) => {
           ]
         );
       }
-      if (barcodeEnabled && barcodeProvided && resolvedBarcode) {
+      if (barcodeEnabled && shouldStoreBarcode && resolvedBarcode) {
         try {
           await upsertGlobalProduct({
             barcode: resolvedBarcode,
@@ -441,7 +468,7 @@ const addProduct = async (req, res) => {
         columns.push('mrp');
         values.push(normalizedMrp);
       }
-      if (barcodeEnabled && barcodeProvided) {
+      if (shouldStoreBarcode) {
         columns.push('barcode');
         values.push(barcode);
       }
@@ -464,8 +491,8 @@ const addProduct = async (req, res) => {
         const batchPurchase = normalizedPurchasePrice ?? null;
         await requestPool.query(
           `INSERT INTO batches
-            (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity, quantity_remaining)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
           [
             result.rows[0]?.id,
             branchId,
@@ -477,7 +504,7 @@ const addProduct = async (req, res) => {
           ]
         );
       }
-      if (barcodeEnabled && barcodeProvided && barcode) {
+      if (barcodeEnabled && shouldStoreBarcode && barcode) {
         try {
           await upsertGlobalProduct({
             barcode,
@@ -538,7 +565,9 @@ const updateProduct = async (req, res) => {
     try {
         const requestPool = getRequestPool(req);
         const barcodeEnabled = req.features?.enable_barcode === true;
-        if (barcodeEnabled && barcodeProvided && barcode) {
+        const barcodeSupported = await hasBarcodeColumn(requestPool);
+        const shouldStoreBarcode = barcodeSupported && barcodeProvided;
+        if (shouldStoreBarcode && barcode) {
             const dupRes = await requestPool.query(
                 'SELECT id FROM products WHERE barcode = $1 AND id <> $2 AND is_deleted = FALSE LIMIT 1',
                 [barcode, id]
@@ -591,7 +620,7 @@ const updateProduct = async (req, res) => {
             updateFields.push(`expiry_date = $${updateValues.length + 1}`);
             updateValues.push(normalizedExpiryDate);
         }
-        if (barcodeEnabled && barcodeProvided) {
+        if (shouldStoreBarcode) {
             updateFields.push(`barcode = $${updateValues.length + 1}`);
             updateValues.push(barcode);
         }
@@ -604,7 +633,7 @@ const updateProduct = async (req, res) => {
             `UPDATE products SET ${updateFields.join(', ')} WHERE id = $${updateValues.length} RETURNING *`,
             updateValues
         );
-        if (barcodeEnabled && barcodeProvided && barcode) {
+        if (barcodeEnabled && shouldStoreBarcode && barcode) {
             try {
                 await upsertGlobalProduct({
                     barcode,
@@ -757,8 +786,10 @@ const searchProductsForSale = async (req, res) => {
         if (branchId) {
             const query = `
                 WITH stock_by_branch AS (
-                    SELECT bt.product_id, bt.branch_id, COALESCE(SUM(bt.quantity), 0)::numeric AS qty
+                    SELECT bt.product_id, bt.branch_id, COALESCE(SUM(COALESCE(bt.quantity_remaining, bt.quantity)), 0)::numeric AS qty
                     FROM batches bt
+                      WHERE bt.is_deleted = FALSE
+                        AND (bt.expiry_date IS NULL OR bt.expiry_date >= CURRENT_DATE)
                     GROUP BY bt.product_id, bt.branch_id
                 ),
                 current_branch AS (
@@ -954,8 +985,10 @@ const getProductByBarcodeForSale = async (req, res) => {
         if (branchId) {
             const result = await requestPool.query(
                 `WITH stock_by_branch AS (
-                    SELECT bt.product_id, bt.branch_id, COALESCE(SUM(bt.quantity), 0)::numeric AS qty
+                    SELECT bt.product_id, bt.branch_id, COALESCE(SUM(COALESCE(bt.quantity_remaining, bt.quantity)), 0)::numeric AS qty
                     FROM batches bt
+                      WHERE bt.is_deleted = FALSE
+                        AND (bt.expiry_date IS NULL OR bt.expiry_date >= CURRENT_DATE)
                     GROUP BY bt.product_id, bt.branch_id
                 ),
                 current_branch AS (
@@ -1090,9 +1123,11 @@ const getProductsCacheDB = async (req, res) => {
         const result = branchId
             ? await requestPool.query(
                 `WITH branch_stock AS (
-                    SELECT product_id, COALESCE(SUM(quantity), 0)::numeric AS stock_quantity
+                    SELECT product_id, COALESCE(SUM(COALESCE(quantity_remaining, quantity)), 0)::numeric AS stock_quantity
                     FROM batches
                     WHERE branch_id = $1
+                      AND is_deleted = FALSE
+                      AND (expiry_date IS NULL OR expiry_date >= CURRENT_DATE)
                     GROUP BY product_id
                 )
                 SELECT p.id,
@@ -1147,9 +1182,11 @@ const getProductsCacheDB = async (req, res) => {
                         purchase_price,
                         selling_price,
                         quantity,
+                        quantity_remaining,
                         created_at
                  FROM batches
-                 WHERE branch_id = $1`,
+                 WHERE branch_id = $1
+                   AND is_deleted = FALSE`,
                 [branchId]
               )
             : await requestPool.query(
@@ -1161,8 +1198,10 @@ const getProductsCacheDB = async (req, res) => {
                         purchase_price,
                         selling_price,
                         quantity,
+                        quantity_remaining,
                         created_at
-                 FROM batches`
+                 FROM batches
+                 WHERE is_deleted = FALSE`
               );
           return res.status(200).json({
               products: attachGstList(result.rows),

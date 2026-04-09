@@ -35,7 +35,8 @@ const provisionTenant = async (payload) => {
     pincode,
     subscription_status = 'paid',
     subscription_end_date,
-    subscription_amount = 0
+    subscription_amount = 0,
+    gst_mode
   } = payload;
 
   const dbName = `shaj_tenant_${Date.now()}`;
@@ -59,10 +60,10 @@ const provisionTenant = async (payload) => {
 
     const normalizedDomain = domain?.toString().trim().toLowerCase();
     const tenantRes = await masterClient.query(
-      `INSERT INTO tenants (shop_name, owner_name, email, mobile, domain, database_name, plan_type, is_active)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
+      `INSERT INTO tenants (shop_name, owner_name, email, mobile, domain, database_name, plan_type, gst_mode, is_active)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)
        RETURNING id, database_name`,
-      [shop_name, owner_name, email, mobile, normalizedDomain, dbName, plan_type]
+      [shop_name, owner_name, email, mobile, normalizedDomain, dbName, plan_type, gst_mode || 'INCLUSIVE']
     );
     tenantId = tenantRes.rows[0].id;
 

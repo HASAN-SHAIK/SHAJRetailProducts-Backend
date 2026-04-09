@@ -16,6 +16,18 @@ const {
 const { resolveBranchIdFromRequest } = require('../utils/branch');
 
 const getTenantId = (req) => req.tenant_id || req.tenant?.id || null;
+const normalizeDateOnly = (value) => {
+  if (value === null || value === undefined || value === '') return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return undefined;
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+};
+const isExpiryBeforeBatchDate = (expiryValue, batchDate = new Date()) => {
+  const expiryDate = normalizeDateOnly(expiryValue);
+  if (!expiryDate) return false;
+  const batchDateOnly = normalizeDateOnly(batchDate);
+  return Boolean(batchDateOnly && expiryDate < batchDateOnly);
+};
 
 const refreshCacheForProducts = async (tenantId, requestPool, productIds, branchId = null) => {
   if (!tenantId || !productIds || productIds.length === 0) return [];
@@ -87,6 +99,9 @@ const resolveIsGstEnabled = (req, payload) => {
   if (payload && payload.is_gst_enabled !== undefined) {
     return Boolean(payload.is_gst_enabled);
   }
+  if (payload && payload.gst_enabled !== undefined) {
+    return Boolean(payload.gst_enabled);
+  }
   if (req?.planFeatures?.GST_invoice_enabled !== undefined) {
     return Boolean(req.planFeatures.GST_invoice_enabled);
   }
@@ -97,6 +112,14 @@ const resolveIsGstEnabled = (req, payload) => {
     return Boolean(req.planFeatures.enable_gst);
   }
   return true;
+};
+
+const GST_MODES = new Set(['INCLUSIVE', 'EXCLUSIVE']);
+
+const resolveGstMode = (req) => {
+  const raw = req?.tenant?.gst_mode || req?.tenant?.gstMode || null;
+  const mode = String(raw || 'INCLUSIVE').trim().toUpperCase();
+  return GST_MODES.has(mode) ? mode : 'INCLUSIVE';
 };
 
 const resolveOrderLocation = (payload) => {
@@ -143,16 +166,45 @@ const validateCustomer = (req) => {
 };
 
 const upsertCustomer = async (tenantPool, customer) => {
-  const { name, mobile, address, location } = customer;
+  const { name, mobile, phone, address, location } = customer;
+  const resolvedPhone = phone || mobile || null;
   const existing = await tenantPool.query(
-    'SELECT id FROM customers WHERE mobile = $1',
-    [mobile]
+    'SELECT id FROM customers WHERE COALESCE(phone, mobile) = $1',
+    [resolvedPhone]
   );
-  if (existing.rowCount > 0) return existing.rows[0].id;
+  if (existing.rowCount > 0) {
+    const customerId = existing.rows[0].id;
+    const hasUpdates =
+      name !== undefined ||
+      mobile !== undefined ||
+      phone !== undefined ||
+      address !== undefined ||
+      location !== undefined;
+    if (hasUpdates) {
+      await tenantPool.query(
+        `UPDATE customers
+         SET name = COALESCE($1, name),
+             mobile = COALESCE($2, mobile),
+             phone = COALESCE($3, phone),
+             address = COALESCE($4, address),
+             location = COALESCE($5, location)
+         WHERE id = $6`,
+        [
+          name ?? null,
+          mobile ?? null,
+          resolvedPhone ?? null,
+          address ?? null,
+          location ?? null,
+          customerId
+        ]
+      );
+    }
+    return customerId;
+  }
 
   const insertRes = await tenantPool.query(
-    'INSERT INTO customers (name, mobile, address, location) VALUES ($1, $2, $3, $4) RETURNING id',
-    [name || null, mobile || null, address || null, location || null]
+    'INSERT INTO customers (name, mobile, phone, address, location) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+    [name || null, mobile || resolvedPhone || null, resolvedPhone || null, address || null, location || null]
   );
   return insertRes.rows[0].id;
 };
@@ -268,9 +320,13 @@ const normalizeNumber = (value) => {
 
   const allocateBatchStock = async (client, productId, branchId, quantity) => {
     const batchesRes = await client.query(
-      `SELECT id, quantity
-       FROM batches
-       WHERE product_id = $1 AND branch_id = $2 AND quantity > 0
+      `SELECT id, quantity, quantity_remaining
+        FROM batches
+        WHERE product_id = $1
+          AND branch_id = $2
+          AND is_deleted = FALSE
+          AND COALESCE(quantity_remaining, quantity) > 0
+          AND (expiry_date IS NULL OR expiry_date >= CURRENT_DATE)
        ORDER BY expiry_date ASC NULLS LAST, created_at ASC
        FOR UPDATE`,
       [productId, branchId]
@@ -302,7 +358,7 @@ const normalizeNumber = (value) => {
     const updates = [];
     for (const batch of batchesRes.rows) {
       if (remaining <= 0) break;
-      const available = Number(batch.quantity || 0);
+      const available = Number(batch.quantity_remaining ?? batch.quantity ?? 0);
       if (available <= 0) continue;
       const deduct = Math.min(available, remaining);
       remaining -= deduct;
@@ -315,7 +371,7 @@ const normalizeNumber = (value) => {
 
     for (const update of updates) {
       await client.query(
-        'UPDATE batches SET quantity = $1 WHERE id = $2',
+        'UPDATE batches SET quantity_remaining = $1 WHERE id = $2',
         [update.remaining, update.id]
       );
     }
@@ -427,7 +483,12 @@ const processOrderItems = async (client, orderId, items) => {
       const client = await requestPool.connect();
       try {
           await client.query("BEGIN");
-          const { products, payment_method, payment_mode } = req.body;
+          const { payment_method, payment_mode } = req.body;
+          const products = Array.isArray(req.body?.products)
+            ? req.body.products
+            : Array.isArray(req.body?.items)
+              ? req.body.items
+              : [];
             const branchId = await resolveBranchId(client, req.body?.branch_id);
           const resolvedLocation = resolveOrderLocation(req.body);
           if (!products || products.length === 0) {
@@ -456,6 +517,7 @@ const processOrderItems = async (client, orderId, items) => {
         const requestedQtyByProduct = new Map();
         const preparedItems = [];
         const isGstEnabled = resolveIsGstEnabled(req, req.body);
+        const gstMode = resolveGstMode(req);
         let total_price = 0;
         let total_profit = 0;
 
@@ -479,7 +541,7 @@ const processOrderItems = async (client, orderId, items) => {
             }
             const purchasePriceSnapshot = normalizeNumber(product.purchase_price);
             const discountAmount = normalizeNumber(item.discount_amount ?? item.discount) || 0;
-            const gstPercent = normalizeNumber(product.gst_percentage) || 0;
+            const gstPercent = normalizeNumber(item.gst_percent ?? item.gst_percentage ?? product.gst_percentage) || 0;
             const metrics = computeLineMetrics({
               sellingPrice,
               purchasePrice: purchasePriceSnapshot,
@@ -510,6 +572,7 @@ const processOrderItems = async (client, orderId, items) => {
           }
 
         const resolvedPaymentMode = normalizePaymentModeValue(payment_mode || payment_method);
+        const billingType = String(req.body?.billing_type || req.body?.billingType || 'retail').toLowerCase();
         const orderStatus = 'pending';
 
         let resolvedCustomerId = req.body?.customer_id || null;
@@ -517,11 +580,25 @@ const processOrderItems = async (client, orderId, items) => {
         if (!resolvedCustomerId && resolvedCustomer) {
             resolvedCustomerId = await upsertCustomer(client, resolvedCustomer);
         }
+        if (billingType === 'wholesale' && !resolvedCustomerId) {
+            throw buildValidationError('Customer is required for wholesale billing.');
+        }
+        if (resolvedPaymentMode === 'credit' && !resolvedCustomerId) {
+            throw buildValidationError('Customer is required for credit billing.');
+        }
         const resolvedCustomerPhone = resolvedCustomer?.mobile || req.body?.customer_phone || null;
 
+          const discountTotal = normalizeNumber(
+            req.body?.discount_total ?? req.body?.discount ?? req.body?.discount_amount
+          ) || 0;
+          if (discountTotal > 0) {
+            total_price = Math.max(total_price - discountTotal, 0);
+            total_profit = total_profit - discountTotal;
+          }
+
           const orderResult = await client.query(
-              "INSERT INTO orders (user_id, customer_id, customer_phone, branch_id, total_price, order_status, payment_mode, location, transaction_type, is_gst_enabled) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
-              [req.user?.user_id || null, resolvedCustomerId, resolvedCustomerPhone, branchId, total_price, orderStatus, resolvedPaymentMode || null, resolvedLocation, 'sale', isGstEnabled]
+              "INSERT INTO orders (user_id, customer_id, customer_phone, branch_id, total_price, order_status, payment_mode, location, transaction_type, is_gst_enabled, gst_mode, billing_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id",
+              [req.user?.user_id || null, resolvedCustomerId, resolvedCustomerPhone, branchId, total_price, orderStatus, resolvedPaymentMode || null, resolvedLocation, 'sale', isGstEnabled, gstMode, billingType]
           );
         const order_id = orderResult.rows[0].id;
 
@@ -585,6 +662,37 @@ const processOrderItems = async (client, orderId, items) => {
               [stockProductIds, stockQuantities]
           );
 
+        const payments = Array.isArray(req.body?.payments) ? req.body.payments : [];
+        const paidTotal = payments.reduce((sum, payment) => {
+          const amount = normalizeNumber(payment?.amount_paid ?? payment?.amount);
+          return Number.isFinite(amount) ? sum + amount : sum;
+        }, 0);
+        const outstanding = Math.max(Number(total_price || 0) - paidTotal, 0);
+        if (outstanding > 0) {
+          if (!resolvedCustomerId) {
+            throw new Error('Customer is required for partial/credit billing');
+          }
+          const creditRes = await client.query(
+            'SELECT credit_limit, current_balance FROM customers WHERE id = $1 FOR UPDATE',
+            [resolvedCustomerId]
+          );
+          if (creditRes.rowCount === 0) {
+            throw new Error('Customer not found for credit billing');
+          }
+          const creditLimit = Number(creditRes.rows[0]?.credit_limit || 0);
+          const currentBalance = Number(creditRes.rows[0]?.current_balance || 0);
+          if (creditLimit <= 0) {
+            throw new Error('Credit not allowed for this customer');
+          }
+          if (currentBalance + outstanding > creditLimit) {
+            throw new Error('Customer credit limit exceeded');
+          }
+          await client.query(
+            'UPDATE customers SET current_balance = COALESCE(current_balance, 0) + $1, updated_at = NOW() WHERE id = $2',
+            [outstanding, resolvedCustomerId]
+          );
+        }
+
         // Payment should be recorded only when payment is actually made (mark paid).
         await client.query("COMMIT");
 
@@ -605,7 +713,14 @@ const processOrderItems = async (client, orderId, items) => {
           invalidateOrderCaches(tenantId, branchId);
         }
 
+        // Backward compatible: keep old fields at top-level while adding success/data wrapper.
         res.status(201).json({
+          success: true,
+          data: {
+            order_id,
+            payment_mode: resolvedPaymentMode,
+            updated_products: updatedProducts
+          },
           message: "Order created successfully",
           order_id,
           payment_mode: resolvedPaymentMode,
@@ -643,11 +758,12 @@ const processOrderItems = async (client, orderId, items) => {
         // Step 1: Create the order entry
         const resolvedPaymentMode = normalizePaymentModeValue(payment_mode);
         const orderStatus = 'pending';
+          const gstMode = resolveGstMode(req);
           const orderQuery = `
-              INSERT INTO orders (customer_phone, branch_id, total_price, order_status, payment_mode, location, transaction_type, is_gst_enabled)
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id;
+              INSERT INTO orders (customer_phone, branch_id, total_price, order_status, payment_mode, location, transaction_type, is_gst_enabled, gst_mode)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id;
           `;
-          const orderResult = await client.query(orderQuery, [null, resolvedBranchId, total_amount, orderStatus, resolvedPaymentMode || null, resolvedLocation, 'purchase', false]);
+          const orderResult = await client.query(orderQuery, [null, resolvedBranchId, total_amount, orderStatus, resolvedPaymentMode || null, resolvedLocation, 'purchase', false, gstMode]);
           const orderId = orderResult.rows[0].id;
           // Step 2: Process each item in the purchase order
           const touchedProductIds = new Set();
@@ -656,6 +772,11 @@ const processOrderItems = async (client, orderId, items) => {
               const expiryDate = expiry_date ? new Date(expiry_date) : null;
               if (expiryDate && Number.isNaN(expiryDate.getTime())) {
                   const err = new Error('Invalid expiry_date');
+                  err.status = 400;
+                  throw err;
+              }
+              if (expiryDate && isExpiryBeforeBatchDate(expiryDate)) {
+                  const err = new Error('Expiry date must be on or after batch date.');
                   err.status = 400;
                   throw err;
               }
@@ -685,8 +806,8 @@ const processOrderItems = async (client, orderId, items) => {
                   await client.query(updateProductQuery, [newQuantity, newPurchasePrice, resolvedSellingPrice, existingProduct.id]);
                   touchedProductIds.add(existingProduct.id);
                   await client.query(
-                    `INSERT INTO batches (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                    `INSERT INTO batches (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity, quantity_remaining)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
                     [existingProduct.id, resolvedBranchId, batch_number || null, expiryDate, purchase_price, resolvedSellingPrice, quantity]
                   );
               } else {
@@ -709,8 +830,8 @@ const processOrderItems = async (client, orderId, items) => {
                       touchedProductIds.add(inserted.rows[0].id);
                       newProductsAdded += 1;
                       await client.query(
-                        `INSERT INTO batches (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity)
-                         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                        `INSERT INTO batches (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity, quantity_remaining)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
                         [inserted.rows[0].id, resolvedBranchId, batch_number || null, expiryDate, purchase_price, selling_price, quantity]
                       );
                   }
@@ -788,14 +909,15 @@ const createPersonalOrder = async (req, res) => {
 
     const resolvedPaymentMode = normalizePaymentModeValue(payment_mode || payment_method);
     const orderStatus = 'pending';
+    const gstMode = resolveGstMode(req);
 
     const orderQuery = `
-      INSERT INTO orders (customer_phone, total_price, order_status, payment_mode, location, transaction_type, is_gst_enabled)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      INSERT INTO orders (customer_phone, total_price, order_status, payment_mode, location, transaction_type, is_gst_enabled, gst_mode)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       RETURNING id;
     `;
 
-    const orderResult = await client.query(orderQuery, [null, total_amount, orderStatus, resolvedPaymentMode || null, resolvedLocation, 'personal', false]);
+    const orderResult = await client.query(orderQuery, [null, total_amount, orderStatus, resolvedPaymentMode || null, resolvedLocation, 'personal', false, gstMode]);
 
     const orderId = orderResult.rows[0].id;
 
@@ -830,7 +952,12 @@ const createPersonalOrder = async (req, res) => {
 
 // 🟢 Create Order
 const createOrder = async (req, res) => {
-    const { transaction_type } = req.body;
+    const { transaction_type: transactionTypeRaw } = req.body;
+    const inferredType =
+        Array.isArray(req.body?.items) || Array.isArray(req.body?.products)
+            ? 'sale'
+            : null;
+    const transaction_type = transactionTypeRaw || inferredType;
     if(!transaction_type)
         return res.status(400).json({ error: "transaction type should be provided"});
     if(transaction_type === 'sale') 
@@ -1460,9 +1587,9 @@ const deleteOrder = async (req, res) => {
         );
       }
 
-      await client.query('DELETE FROM order_items WHERE order_id = $1', [order_id]);
-      await client.query('DELETE FROM transactions WHERE order_id = $1', [order_id]);
-      await client.query('DELETE FROM orders WHERE id = $1', [order_id]);
+        await client.query('DELETE FROM order_items WHERE order_id = $1', [order_id]);
+        await client.query('DELETE FROM transactions WHERE order_id = $1', [order_id]);
+        await client.query('UPDATE orders SET is_deleted = TRUE WHERE id = $1', [order_id]);
 
       await client.query('COMMIT');
       const tenantId = getTenantId(req);
@@ -1774,7 +1901,7 @@ const processOrderReturn = async (req, res) => {
     try {
         await client.query('BEGIN');
 
-        const orderId = Number(req.params.orderId || req.params.id);
+        const orderId = Number(req.params.orderId || req.params.id || req.body?.originalBillId || req.body?.order_id);
         if (!Number.isFinite(orderId)) {
             throw buildValidationError('Invalid order id.');
         }
@@ -1799,7 +1926,8 @@ const processOrderReturn = async (req, res) => {
                     returned_amount,
                     is_gst_enabled,
                     branch_id,
-                    customer_id
+                    customer_id,
+                    payment_mode
              FROM orders
              WHERE id = $1
              FOR UPDATE`,
@@ -1808,8 +1936,17 @@ const processOrderReturn = async (req, res) => {
         if (orderRes.rowCount == 0) {
             throw buildValidationError('Order not found.');
         }
-
-        const order = orderRes.rows[0];
+        const totalPaidRes = await client.query(
+            `SELECT COALESCE(SUM(total_price), 0)::numeric AS total_paid
+             FROM transactions
+             WHERE order_id = $1
+               AND (transaction_type IS NULL OR transaction_type <> 'refund')`,
+            [orderId]
+        );
+        const order = {
+            ...orderRes.rows[0],
+            total_paid: totalPaidRes.rows[0]?.total_paid || 0
+        };
         if (!['completed', 'partially_returned'].includes(order.order_status)) {
             throw buildValidationError('Only completed orders can be returned.');
         }
@@ -1818,9 +1955,11 @@ const processOrderReturn = async (req, res) => {
             `SELECT oi.product_id,
                     oi.quantity,
                     oi.selling_price,
+                    oi.discount_amount,
                     p.is_weight_based,
                     oi.purchase_price_snapshot,
-                    oi.gst_percent
+                    oi.gst_percent,
+                    oi.batch_id
              FROM order_items oi
              JOIN products p ON p.id = oi.product_id
              WHERE oi.order_id = $1`,
@@ -1833,6 +1972,18 @@ const processOrderReturn = async (req, res) => {
         const orderItemsByProduct = new Map(
             orderItemsRes.rows.map((row) => [Number(row.product_id), row])
         );
+        const totals = orderItemsRes.rows.reduce(
+            (acc, row) => {
+                const qty = Number(row.quantity || 0);
+                const lineTotal = (Number(row.selling_price || 0) * qty) - Number(row.discount_amount || 0);
+                acc.totalQty += qty;
+                acc.lineTotal += lineTotal;
+                return acc;
+            },
+            { totalQty: 0, lineTotal: 0 }
+        );
+        const extraOrderDiscount = Math.max(Number(totals.lineTotal || 0) - Number(order.total_price || 0), 0);
+        const discountPerUnit = totals.totalQty > 0 ? extraOrderDiscount / totals.totalQty : 0;
 
         const returnedRes = await client.query(
             `SELECT ori.product_id,
@@ -1865,11 +2016,11 @@ const processOrderReturn = async (req, res) => {
             if (qty > remaining + 0.0001) {
                 throw buildValidationError(`Return quantity exceeds remaining quantity for product ${productId}.`);
             }
-            const resolvedUnitPrice = normalizeNumber(item.unitPrice ?? item.unit_price ?? orderItem.selling_price);
-            const unitPrice = Number.isFinite(resolvedUnitPrice) && resolvedUnitPrice > 0
-                ? resolvedUnitPrice
-                : Number(orderItem.selling_price || 0);
-            const lineTotal = unitPrice * qty;
+            const baseLineTotal = (Number(orderItem.selling_price || 0) * soldQty) - Number(orderItem.discount_amount || 0);
+            const unitPrice = soldQty > 0 ? baseLineTotal / soldQty : Number(orderItem.selling_price || 0);
+            const lineBase = unitPrice * qty;
+            const discountAdjust = discountPerUnit * qty;
+            const lineTotal = Math.max(lineBase - discountAdjust, 0);
             const gstPercent = order.is_gst_enabled ? Number(orderItem.gst_percent || 0) : 0;
             const gstAmount = order.is_gst_enabled ? (lineTotal * gstPercent) / 100 : 0;
             prepared.push({
@@ -1878,7 +2029,8 @@ const processOrderReturn = async (req, res) => {
                 unit_price: unitPrice,
                 line_total: lineTotal,
                 gst_amount: gstAmount,
-                purchase_price: normalizeNumber(orderItem.purchase_price_snapshot) || 0
+                purchase_price: normalizeNumber(orderItem.purchase_price_snapshot) || 0,
+                batch_id: item.batchId || item.batch_id || orderItem.batch_id || null
             });
         }
 
@@ -1891,17 +2043,21 @@ const processOrderReturn = async (req, res) => {
             throw buildValidationError('Refund total must be > 0.');
         }
 
+        const returnUuid = payload.returnId || payload.return_id || null;
+        const taxReversed = prepared.reduce((sum, row) => sum + Number(row.gst_amount || 0), 0);
         const returnRes = await client.query(
-            `INSERT INTO order_returns (order_id, customer_id, refund_total, refund_mode, reason, created_by)
-             VALUES ($1, $2, $3, $4, $5, $6)
-             RETURNING id, created_at`,
+            `INSERT INTO order_returns (order_id, customer_id, refund_total, refund_mode, reason, created_by, return_uuid, tax_reversed)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             RETURNING id, created_at, return_uuid`,
             [
                 orderId,
                 order.customer_id || null,
                 refundTotal,
                 refundMode,
                 reason || null,
-                req.user?.user_id || null
+                req.user?.user_id || null,
+                returnUuid,
+                taxReversed
             ]
         );
         const returnId = returnRes.rows[0].id;
@@ -1911,16 +2067,18 @@ const processOrderReturn = async (req, res) => {
         const unitPrices = prepared.map((row) => row.unit_price);
         const lineTotals = prepared.map((row) => row.line_total);
         const gstAmounts = prepared.map((row) => row.gst_amount);
+        const batchIds = prepared.map((row) => row.batch_id);
 
         await client.query(
-            `INSERT INTO order_return_items (return_id, product_id, quantity, unit_price, line_total, gst_amount)
+            `INSERT INTO order_return_items (return_id, product_id, batch_id, quantity, unit_price, line_total, gst_amount)
              SELECT $1,
                     unnest($2::int[]),
-                    unnest($3::numeric[]),
+                    unnest($3::uuid[]),
                     unnest($4::numeric[]),
                     unnest($5::numeric[]),
-                    unnest($6::numeric[])`,
-            [returnId, productIds, quantities, unitPrices, lineTotals, gstAmounts]
+                    unnest($6::numeric[]),
+                    unnest($7::numeric[])`,
+            [returnId, productIds, batchIds, quantities, unitPrices, lineTotals, gstAmounts]
         );
 
         await client.query(
@@ -1933,30 +2091,39 @@ const processOrderReturn = async (req, res) => {
             [productIds, quantities]
         );
 
-        if (order.branch_id) {
-            const purchasePrices = prepared.map((row) => row.purchase_price);
+        const batchMap = prepared.filter((row) => row.batch_id);
+        if (batchMap.length) {
+            const batchIdsOnly = batchMap.map((row) => row.batch_id);
+            const batchQtys = batchMap.map((row) => row.qty);
             await client.query(
-                `INSERT INTO batches (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity)
-                 SELECT unnest($1::int[]),
-                        $2::uuid,
-                        NULL::text,
-                        NULL::date,
-                        unnest($3::numeric[]),
-                        unnest($4::numeric[]),
-                        unnest($5::numeric[])`,
-                [productIds, order.branch_id, purchasePrices, unitPrices, quantities]
+                `UPDATE batches b
+                 SET quantity_remaining = COALESCE(b.quantity_remaining, 0) + u.qty,
+                     quantity = COALESCE(b.quantity, 0) + u.qty
+                 FROM (
+                   SELECT unnest($1::uuid[]) AS batch_id, unnest($2::numeric[]) AS qty
+                 ) AS u
+                 WHERE b.id = u.batch_id`,
+                [batchIdsOnly, batchQtys]
             );
         }
 
         const refundProfit = prepared.reduce(
-            (sum, row) => sum + ((Number(row.unit_price || 0) - Number(row.purchase_price || 0)) * Number(row.qty || 0)),
+            (sum, row) => sum + (Number(row.line_total || 0) - (Number(row.purchase_price || 0) * Number(row.qty || 0))),
             0
         );
 
         await client.query(
-            `INSERT INTO transactions (order_id, total_price, profit, payment_mode, transaction_type, reference_id, created_at)
-             VALUES ($1, $2, $3, $4, 'refund', $5, NOW())`,
-            [orderId, -refundTotal, -refundProfit, refundMode, returnId]
+            `INSERT INTO transactions (order_id, total_price, profit, payment_mode, transaction_type, reference_id, created_at, amount, party_type, party_id, direction, txn_type, notes, branch_id)
+             VALUES ($1, $2, $3, $4, 'refund', $5, NOW(), $6, 'customer', $7, 'out', 'refund', NULL, $8)`,
+            [orderId, -refundTotal, -refundProfit, refundMode, returnId, refundTotal, order.customer_id || null, order.branch_id || null]
+        );
+
+        const cgst = taxReversed > 0 ? taxReversed / 2 : 0;
+        const sgst = taxReversed > 0 ? taxReversed / 2 : 0;
+        await client.query(
+            `INSERT INTO gst_ledger (id, bill_id, type, taxable_amount, cgst, sgst, igst, total_tax, date, is_synced)
+             VALUES (gen_random_uuid(), $1, 'RETURN', $2, $3, $4, 0, $5, CURRENT_DATE, FALSE)`,
+            [orderId, refundTotal, cgst, sgst, taxReversed]
         );
 
         const previousReturned = Number(order.returned_amount || 0);
@@ -1972,6 +2139,20 @@ const processOrderReturn = async (req, res) => {
             [nextReturned, nextStatus, orderId]
         );
 
+        const totalPaid = Number(order.total_paid || 0);
+        const outstandingBefore = Math.max(totalPrice - totalPaid - previousReturned, 0);
+        const outstandingAfter = Math.max(totalPrice - totalPaid - nextReturned, 0);
+        const creditReduction = Math.max(outstandingBefore - outstandingAfter, 0);
+        if (order.customer_id && creditReduction > 0) {
+            await client.query(
+                `UPDATE customers
+                 SET current_balance = GREATEST(COALESCE(current_balance, 0) - $1, 0),
+                     updated_at = NOW()
+                 WHERE id = $2`,
+                [creditReduction, order.customer_id]
+            );
+        }
+
         await client.query('COMMIT');
 
         const tenantId = getTenantId(req);
@@ -1984,6 +2165,7 @@ const processOrderReturn = async (req, res) => {
 
         return res.status(201).json({
             return_id: returnId,
+            return_uuid: returnRes.rows[0]?.return_uuid || null,
             refund_total: refundTotal,
             returned_amount: nextReturned,
             order_status: nextStatus
@@ -2002,50 +2184,84 @@ const markOrderAsPaid = async (req, res) => {
     const client = await requestPool.connect();
     try {
         await client.query("BEGIN");
-        const { order_id, payment_mode } = req.body;
+        const { order_id, payment_mode, amount_paid, amount } = req.body;
         const resolvedPaymentMode = normalizePaymentModeValue(payment_mode || 'cash') || 'cash';
+        const requestedAmount = Number(amount_paid ?? amount);
 
-        const result = await client.query(
-            `WITH order_row AS (
-               SELECT id, total_price
-               FROM orders
-               WHERE id = $1
-               FOR UPDATE
-             ),
-             calc AS (
-               SELECT
-                 COALESCE(SUM(oi.quantity * oi.selling_price - COALESCE(oi.discount_amount, 0)), 0)::numeric AS items_total,
-                 COALESCE(SUM(
-                   CASE
-                     WHEN oi.profit IS NOT NULL THEN oi.profit
-                     ELSE (oi.selling_price - COALESCE(oi.purchase_price_snapshot, 0)) * oi.quantity
-                   END
-                 ), 0)::numeric AS profit
-               FROM order_items oi
-               WHERE oi.order_id = $1
-             ),
-             ins AS (
-               INSERT INTO transactions (order_id, total_price, profit, payment_mode)
-               SELECT order_row.id,
-                      COALESCE(NULLIF(calc.items_total, 0), order_row.total_price, 0) AS paid_amount,
-                      calc.profit,
-                      $2
-               FROM order_row, calc
-               RETURNING order_id, total_price
-             )
-             UPDATE orders
-             SET order_status = 'completed',
-                 payment_mode = $2,
-                 total_paid = COALESCE(ins.total_price, 0)
-             FROM ins
-             WHERE orders.id = ins.order_id
-             RETURNING id;`,
-            [order_id, resolvedPaymentMode]
+        const orderRes = await client.query(
+            `SELECT id, total_price, total_paid, returned_amount, customer_id, payment_mode, branch_id
+             FROM orders
+             WHERE id = $1
+             FOR UPDATE`,
+            [order_id]
         );
 
-        if (result.rowCount === 0) {
+        if (orderRes.rowCount === 0) {
             await client.query("ROLLBACK");
             return res.status(404).json({ error: "Order not found" });
+        }
+
+        const orderRow = orderRes.rows[0];
+        const calcRes = await client.query(
+            `SELECT
+               COALESCE(SUM(oi.quantity * oi.selling_price - COALESCE(oi.discount_amount, 0)), 0)::numeric AS items_total,
+               COALESCE(SUM(
+                 CASE
+                   WHEN oi.profit IS NOT NULL THEN oi.profit
+                   ELSE (oi.selling_price - COALESCE(oi.purchase_price_snapshot, 0)) * oi.quantity
+                 END
+               ), 0)::numeric AS profit
+             FROM order_items oi
+             WHERE oi.order_id = $1`,
+            [order_id]
+        );
+
+        const itemsTotal = Number(calcRes.rows[0]?.items_total || 0);
+        const totalProfit = Number(calcRes.rows[0]?.profit || 0);
+        const orderTotal = itemsTotal > 0 ? itemsTotal : Number(orderRow.total_price || 0);
+        const totalPaid = Number(orderRow.total_paid || 0);
+        const returnedAmount = Number(orderRow.returned_amount || 0);
+        const outstanding = Math.max(orderTotal - totalPaid - returnedAmount, 0);
+
+        if (outstanding <= 0) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({ error: "Order is already fully paid." });
+        }
+
+        const normalizedRequested = Number.isFinite(requestedAmount) && requestedAmount > 0
+            ? requestedAmount
+            : outstanding;
+        const payAmount = Math.min(normalizedRequested, outstanding);
+        const profitPaid =
+            orderTotal > 0 ? (totalProfit * (payAmount / orderTotal)) : 0;
+
+        await client.query(
+            `INSERT INTO transactions (order_id, total_price, profit, payment_mode, amount, party_type, party_id, direction, txn_type, notes, branch_id)
+             VALUES ($1, $2, $3, $4, $5, 'customer', $6, 'in', 'sale', NULL, $7)`,
+            [orderRow.id, payAmount, profitPaid, resolvedPaymentMode, payAmount, orderRow.customer_id, orderRow.branch_id]
+        );
+
+        const nextTotalPaid = totalPaid + payAmount;
+
+        await client.query(
+            `UPDATE orders
+             SET order_status = 'completed',
+                 payment_mode = COALESCE(orders.payment_mode, $2),
+                 total_paid = $3
+             WHERE id = $1`,
+            [orderRow.id, resolvedPaymentMode, nextTotalPaid]
+        );
+
+        if (String(orderRow.payment_mode || '').toLowerCase() === 'credit' && orderRow.customer_id) {
+            if (resolvedPaymentMode !== 'credit') {
+                await client.query(
+                    `UPDATE customers
+                     SET current_balance = GREATEST(COALESCE(current_balance, 0) - $1, 0),
+                         updated_at = NOW()
+                     WHERE id = $2`,
+                    [payAmount, orderRow.customer_id]
+                );
+            }
         }
 
         await client.query("COMMIT");
@@ -2054,7 +2270,12 @@ const markOrderAsPaid = async (req, res) => {
         if (tenantId) {
             invalidateOrderCaches(tenantId, branchId);
         }
-        res.status(200).json({ message: "Order marked as paid successfully" });
+        res.status(200).json({
+            message: "Order payment saved.",
+            paid_amount: payAmount,
+            total_paid: nextTotalPaid,
+            balance: Math.max(orderTotal - nextTotalPaid - returnedAmount, 0)
+        });
     } catch (error) {
         await client.query("ROLLBACK");
         console.error("Error marking order as paid:", error);
@@ -2085,19 +2306,31 @@ const validateOfflineOrder = (order) => {
 
   const type = order.transaction_type;
   const paymentMode = normalizePaymentMode(order);
+  const items = Array.isArray(order.products)
+    ? order.products
+    : Array.isArray(order.items)
+      ? order.items
+      : [];
 
-    if (type === 'sale') {
-      if (!Array.isArray(order.products) || order.products.length === 0) return 'products are required for sale.';
+  if (type === 'sale') {
+      if (!Array.isArray(items) || items.length === 0) return 'products are required for sale.';
       if (!paymentMode) return 'payment_mode is required for sale.';
-        for (const item of order.products) {
+      const billingType = String(order.billing_type || order.billingType || 'retail').toLowerCase();
+      if (billingType === 'wholesale' && !order.customer_id && !order.customer_name) {
+        return 'customer is required for wholesale billing.';
+      }
+      if (paymentMode === 'credit' && !order.customer_id && !order.customer_name) {
+        return 'customer is required for credit billing.';
+      }
+        for (const item of items) {
         if (!item.product_id) return 'product_id is required for sale items.';
         if (!item.quantity || item.quantity <= 0) return 'quantity must be > 0 for sale items.';
       }
     } else if (type === 'purchase') {
-      if (!Array.isArray(order.products) || order.products.length === 0) return 'products are required for purchase.';
+      if (!Array.isArray(items) || items.length === 0) return 'products are required for purchase.';
       if (!paymentMode) return 'payment_mode is required for purchase.';
       if (order.total_amount === undefined || order.total_amount === null) return 'total_amount is required for purchase.';
-        for (const item of order.products) {
+        for (const item of items) {
         if (!item.product_name) return 'product_name is required for purchase items.';
         if (!item.company) return 'company is required for purchase items.';
       if (!item.quantity || item.quantity <= 0) return 'quantity must be > 0 for purchase items.';
@@ -2170,7 +2403,7 @@ const syncOfflineOrders = async (req, res) => {
               : null;
         let orderId = null;
         let orderStatus = 'pending';
-        let resolvedCustomerId = null;
+        let resolvedCustomerId = order.customer_id || null;
         const resolvedCustomer = buildCustomerPayloadFromOrder(order);
         if (resolvedCustomer && (resolvedCustomer.name || resolvedCustomer.mobile)) {
           resolvedCustomerId = await upsertCustomer(client, resolvedCustomer);
@@ -2181,7 +2414,11 @@ const syncOfflineOrders = async (req, res) => {
       let orderTotal = 0;
       let orderProfit = 0;
       if (type === 'sale') {
-        const items = order.products;
+        const items = Array.isArray(order.products)
+          ? order.products
+          : Array.isArray(order.items)
+            ? order.items
+            : [];
         let totalPrice = 0;
         let totalProfit = 0;
 
@@ -2219,11 +2456,20 @@ const syncOfflineOrders = async (req, res) => {
           orderTotal = totalPrice;
           orderProfit = totalProfit;
 
+          const orderDiscount =
+            normalizeNumber(order.discount_total ?? order.discount ?? order.discount_amount) || 0;
+          if (orderDiscount > 0) {
+            orderTotal = Math.max(orderTotal - orderDiscount, 0);
+            orderProfit = orderProfit - orderDiscount;
+          }
+
           const orderDate = order.client_created_at ? new Date(order.client_created_at) : new Date();
           const isGstEnabled = resolveIsGstEnabled(req, order);
+          const gstMode = resolveGstMode(req);
+          const billingType = String(order.billing_type || order.billingType || 'retail').toLowerCase();
           const orderResult = await client.query(
-            'INSERT INTO orders (customer_id, customer_phone, branch_id, total_price, order_status, payment_mode, created_at, location, transaction_type, is_gst_enabled) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id',
-            [resolvedCustomerId, resolvedCustomerPhone, branchId, totalPrice, 'pending', paymentMode || null, orderDate, resolvedLocation, 'sale', isGstEnabled]
+            'INSERT INTO orders (customer_id, customer_phone, branch_id, total_price, order_status, payment_mode, created_at, location, transaction_type, is_gst_enabled, gst_mode, billing_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id',
+            [resolvedCustomerId, resolvedCustomerPhone, branchId, orderTotal, 'pending', paymentMode || null, orderDate, resolvedLocation, 'sale', isGstEnabled, gstMode, billingType]
           );
 
           orderId = orderResult.rows[0].id;
@@ -2286,13 +2532,18 @@ const syncOfflineOrders = async (req, res) => {
 
         orderStatus = 'pending';
       } else if (type === 'purchase') {
-        const items = order.products;
+        const items = Array.isArray(order.products)
+          ? order.products
+          : Array.isArray(order.items)
+            ? order.items
+            : [];
         const totalAmount = order.total_amount;
         orderTotal = normalizeNumber(totalAmount) || 0;
           const orderDate = order.client_created_at ? new Date(order.client_created_at) : new Date();
+          const gstMode = resolveGstMode(req);
           const orderResult = await client.query(
-            'INSERT INTO orders (customer_id, customer_phone, branch_id, total_price, order_status, payment_mode, created_at, location, transaction_type, is_gst_enabled) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id',
-            [resolvedCustomerId, resolvedCustomerPhone, branchId, totalAmount, 'pending', paymentMode || null, orderDate, resolvedLocation, 'purchase', false]
+            'INSERT INTO orders (customer_id, customer_phone, branch_id, total_price, order_status, payment_mode, created_at, location, transaction_type, is_gst_enabled, gst_mode, billing_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id',
+            [resolvedCustomerId, resolvedCustomerPhone, branchId, totalAmount, 'pending', paymentMode || null, orderDate, resolvedLocation, 'purchase', false, gstMode, 'purchase']
           );
 
         orderId = orderResult.rows[0].id;
@@ -2302,6 +2553,11 @@ const syncOfflineOrders = async (req, res) => {
             const expiryDate = expiry_date ? new Date(expiry_date) : null;
             if (expiryDate && Number.isNaN(expiryDate.getTime())) {
               throw new Error('Invalid expiry_date');
+            }
+            if (expiryDate && isExpiryBeforeBatchDate(expiryDate)) {
+              const err = new Error('Expiry date must be on or after batch date.');
+              err.status = 400;
+              throw err;
             }
             const productQuery = 'SELECT * FROM products WHERE name ILIKE $1 AND company ILIKE $2;';
             const productResult = await client.query(productQuery, [product_name, company]);
@@ -2318,8 +2574,8 @@ const syncOfflineOrders = async (req, res) => {
               );
               touchedProductIds.add(existingProduct.id);
               await client.query(
-                `INSERT INTO batches (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                `INSERT INTO batches (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity, quantity_remaining)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
                 [existingProduct.id, branchId, batch_number || null, expiryDate, purchase_price, selling_price, quantity]
               );
             } else {
@@ -2330,8 +2586,8 @@ const syncOfflineOrders = async (req, res) => {
               if (insertRes.rowCount > 0) {
                 touchedProductIds.add(insertRes.rows[0].id);
                 await client.query(
-                  `INSERT INTO batches (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                  `INSERT INTO batches (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity, quantity_remaining)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
                   [insertRes.rows[0].id, branchId, batch_number || null, expiryDate, purchase_price, selling_price, quantity]
                 );
               }
@@ -2343,9 +2599,10 @@ const syncOfflineOrders = async (req, res) => {
         const totalAmount = order.total_amount;
         orderTotal = normalizeNumber(totalAmount) || 0;
           const orderDate = order.client_created_at ? new Date(order.client_created_at) : new Date();
+          const gstMode = resolveGstMode(req);
           const orderResult = await client.query(
-            'INSERT INTO orders (customer_id, customer_phone, total_price, order_status, payment_mode, created_at, location, transaction_type, is_gst_enabled) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id',
-            [resolvedCustomerId, resolvedCustomerPhone, totalAmount, 'pending', paymentMode || null, orderDate, resolvedLocation, 'personal', false]
+            'INSERT INTO orders (customer_id, customer_phone, total_price, order_status, payment_mode, created_at, location, transaction_type, is_gst_enabled, gst_mode, billing_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id',
+            [resolvedCustomerId, resolvedCustomerPhone, totalAmount, 'pending', paymentMode || null, orderDate, resolvedLocation, 'personal', false, gstMode, 'personal']
           );
 
         orderId = orderResult.rows[0].id;
@@ -2366,10 +2623,10 @@ const syncOfflineOrders = async (req, res) => {
           const profit = type === 'sale' ? orderProfit * ratio : 0;
           const createdAt = payment?.created_at ? new Date(payment.created_at) : new Date();
           const txRes = await client.query(
-            `INSERT INTO transactions (order_id, total_price, profit, payment_mode, created_at)
-             VALUES ($1, $2, $3, $4, $5)
+            `INSERT INTO transactions (order_id, total_price, profit, payment_mode, created_at, amount, party_type, party_id, direction, txn_type, notes, branch_id)
+             VALUES ($1, $2, $3, $4, $5, $2, 'customer', $6, 'in', 'sale', NULL, $7)
              RETURNING id, order_id, total_price, payment_mode, created_at`,
-            [orderId, amount, profit, resolvedPaymentMode, createdAt]
+            [orderId, amount, profit, resolvedPaymentMode, createdAt, resolvedCustomerId || null, order?.branch_id || null]
           );
           if (txRes.rowCount > 0) {
             insertedTransactions.push(txRes.rows[0]);
@@ -2388,6 +2645,32 @@ const syncOfflineOrders = async (req, res) => {
           [totalPaid, completed ? 'completed' : 'pending', orderId]
         );
         orderStatus = completed ? 'completed' : 'pending';
+      }
+
+      const outstanding = Math.max(Number(orderTotal || 0) - Number(totalPaid || 0), 0);
+      if (outstanding > 0) {
+        if (!resolvedCustomerId) {
+          throw new Error('Customer is required for partial/credit billing');
+        }
+        const creditRes = await client.query(
+          'SELECT credit_limit, current_balance FROM customers WHERE id = $1 FOR UPDATE',
+          [resolvedCustomerId]
+        );
+        if (creditRes.rowCount === 0) {
+          throw new Error('Customer not found for credit billing');
+        }
+        const creditLimit = Number(creditRes.rows[0]?.credit_limit || 0);
+        const currentBalance = Number(creditRes.rows[0]?.current_balance || 0);
+        if (creditLimit <= 0) {
+          throw new Error('Credit not allowed for this customer');
+        }
+        if (currentBalance + outstanding > creditLimit) {
+          throw new Error('Customer credit limit exceeded');
+        }
+        await client.query(
+          'UPDATE customers SET current_balance = COALESCE(current_balance, 0) + $1, updated_at = NOW() WHERE id = $2',
+          [outstanding, resolvedCustomerId]
+        );
       }
 
       await client.query('COMMIT');
@@ -2422,7 +2705,17 @@ const syncOfflineOrders = async (req, res) => {
     }
   }
 
-  res.status(200).json({ sync_id: sync_id || null, results });
+  const synced = results.filter((r) => r.status === 'created').map((r) => r.order_id);
+  const failed = results.filter((r) => r.status === 'failed').map((r) => r.client_order_id || r.order_id);
+  // Backward compatible: keep sync_id/results while adding success/data wrapper.
+  res.status(200).json({
+    success: true,
+    data: { sync_id: sync_id || null, synced, failed, results },
+    sync_id: sync_id || null,
+    results,
+    synced,
+    failed
+  });
 };
 
 module.exports = {

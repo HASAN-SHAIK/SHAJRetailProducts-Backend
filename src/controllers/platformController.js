@@ -18,6 +18,14 @@ const { resolvePlanDeviceLimit, normalizePlan } = require('../config/planDeviceL
 const { resolveFeatures } = require('../utils/resolveFeatures');
 const { sanitizeAddons } = require('../utils/addons');
 
+const GST_MODES = new Set(['INCLUSIVE', 'EXCLUSIVE']);
+
+const normalizeGstMode = (value, fallback = 'INCLUSIVE') => {
+  if (value === undefined || value === null || value === '') return fallback;
+  const mode = String(value).trim().toUpperCase();
+  return GST_MODES.has(mode) ? mode : null;
+};
+
 const logAdminAction = async (adminId, action, entityType, entityId, metadata) => {
   if (!adminId) return;
   if (!(await hasMasterTable('platform_activity_logs'))) {
@@ -96,7 +104,8 @@ const createTenantHandler = async (req, res) => {
         state,
         pincode,
         subscription_end_date,
-        subscription_amount
+        subscription_amount,
+        gst_mode
       } = req.body;
 
     const forbiddenFeatureFields = [
@@ -125,6 +134,11 @@ const createTenantHandler = async (req, res) => {
       return jsonError(res, 400, 'VALIDATION_ERROR', 'Missing required tenant fields');
     }
 
+    const resolvedGstMode = normalizeGstMode(gst_mode);
+    if (gst_mode !== undefined && gst_mode !== null && !resolvedGstMode) {
+      return jsonError(res, 400, 'VALIDATION_ERROR', 'gst_mode must be INCLUSIVE or EXCLUSIVE');
+    }
+
       const result = await createTenant({
         shop_name,
         domain,
@@ -138,7 +152,8 @@ const createTenantHandler = async (req, res) => {
         state,
         pincode,
         subscription_end_date,
-        subscription_amount
+        subscription_amount,
+        gst_mode: resolvedGstMode || 'INCLUSIVE'
       });
 
     await logAdminAction(req.admin?.admin_id, 'TENANT_CREATED', 'tenant', result.tenant_id, {
@@ -360,7 +375,7 @@ const getTenantById = async (req, res) => {
     }
 
     const tenantRes = await masterPool.query(
-      `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.domain, t.plan_type, t.is_active, t.created_at, t.addons
+      `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.domain, t.plan_type, t.is_active, t.created_at, t.addons, t.gst_mode
        FROM tenants t
        WHERE t.id = $1`,
       [tenantId]
@@ -502,7 +517,8 @@ const updateTenant = async (req, res) => {
     address_line,
     city,
     state,
-    pincode
+    pincode,
+    gst_mode
   } = req.body || {};
     if (!tenant_id) {
       return jsonError(res, 400, 'VALIDATION_ERROR', 'Missing tenant_id');
@@ -524,6 +540,13 @@ const updateTenant = async (req, res) => {
     addField('mobile', mobile);
     addField('plan_type', plan_type);
     addField('is_active', is_active);
+    if (gst_mode !== undefined) {
+      const resolvedGstMode = normalizeGstMode(gst_mode, null);
+      if (!resolvedGstMode) {
+        return jsonError(res, 400, 'VALIDATION_ERROR', 'gst_mode must be INCLUSIVE or EXCLUSIVE');
+      }
+      addField('gst_mode', resolvedGstMode);
+    }
 
     const hasShopDetailsUpdate =
       gst_number !== undefined ||
@@ -541,7 +564,7 @@ const updateTenant = async (req, res) => {
       values.push(tenant_id);
       result = await masterPool.query(
         `UPDATE tenants SET ${updates.join(', ')} WHERE id = $${values.length}
-         RETURNING id, shop_name, owner_name, email, mobile, plan_type, is_active, created_at`,
+         RETURNING id, shop_name, owner_name, email, mobile, plan_type, is_active, gst_mode, created_at`,
         values
       );
     }
@@ -744,6 +767,7 @@ const updateTenantPlanAndFlags = async (req, res) => {
       'city',
       'state',
       'pincode',
+      'gst_mode',
       'shop_name',
       'owner_name',
       'email',
@@ -770,6 +794,7 @@ const updateTenantPlanAndFlags = async (req, res) => {
       'city',
       'state',
       'pincode',
+      'gst_mode',
       'shop_name',
       'owner_name',
       'email',
@@ -1047,7 +1072,7 @@ const upgradeTenantPlan = async (req, res) => {
       });
 
         const tenantRes = await client.query(
-          `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.domain, t.plan_type, t.is_active, t.created_at, t.addons
+          `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.domain, t.plan_type, t.is_active, t.created_at, t.addons, t.gst_mode
            FROM tenants t
            WHERE t.id = $1`,
           [tenantId]
@@ -1437,6 +1462,7 @@ const getPlatformConfig = async (req, res) => {
     const payload = {
       id: tenantId,
       shop_name: req.tenant?.shop_name ?? null,
+      gst_mode: req.tenant?.gst_mode || 'INCLUSIVE',
       plan_features: req.featureFlags || {}
     };
 
@@ -1622,8 +1648,9 @@ const importProductsFromGoogleSheet = async (req, res) => {
       const headers = rows[0].map((h) => normalizeHeader(h));
       const nameIdx = resolveHeaderIndex(headers, headerAliases.name);
       const categoryIdx = resolveHeaderIndex(headers, headerAliases.category);
-        const stockIdx = resolveHeaderIndex(headers, headerAliases.stock_quantity);
-        const purchaseIdx = resolveHeaderIndex(headers, headerAliases.purchase_price);
+      const sellingIdx = resolveHeaderIndex(headers, headerAliases.selling_price);
+      const stockIdx = resolveHeaderIndex(headers, headerAliases.stock_quantity);
+      const purchaseIdx = resolveHeaderIndex(headers, headerAliases.purchase_price);
       const companyIdx = resolveHeaderIndex(headers, headerAliases.company);
       const deliveryIdx = resolveHeaderIndex(headers, headerAliases.time_for_delivery);
       const weightIdx = resolveHeaderIndex(headers, headerAliases.is_weight_based);
@@ -1654,8 +1681,9 @@ const importProductsFromGoogleSheet = async (req, res) => {
         const name = row[nameIdx]?.toString().trim();
         const categoryRaw = categoryIdx >= 0 ? row[categoryIdx]?.toString().trim() : '';
         const category = categoryRaw ? categoryRaw : sheetName;
-          const stockQuantity = parseNumber(row[stockIdx]);
-          const purchasePriceRaw = purchaseIdx >= 0 ? parseNumber(row[purchaseIdx]) : null;
+        const sellingPriceRaw = sellingIdx >= 0 ? parseNumber(row[sellingIdx]) : null;
+        const stockQuantity = parseNumber(row[stockIdx]);
+        const purchasePriceRaw = purchaseIdx >= 0 ? parseNumber(row[purchaseIdx]) : null;
         const company = companyIdx >= 0 ? row[companyIdx]?.toString().trim() : null;
         const timeForDelivery = deliveryIdx >= 0 ? parseNumber(row[deliveryIdx]) : null;
         const isWeightBased =
@@ -1688,7 +1716,7 @@ const importProductsFromGoogleSheet = async (req, res) => {
             const insertValues = [
               name,
               category,
-              0,
+              sellingPriceRaw ?? 0,
               stockQuantity,
               purchasePriceRaw,
               company || null,
@@ -1951,6 +1979,48 @@ const createTenantBranch = async (req, res) => {
   }
 };
 
+const updateTenantBranch = async (req, res) => {
+  try {
+    const tenantId = String(req.params.tenant_id || '').trim();
+    const branchId = String(req.params.branch_id || '').trim();
+    if (!tenantId || !branchId) {
+      return jsonError(res, 400, 'VALIDATION_ERROR', 'Invalid tenant or branch id');
+    }
+
+    const context = await resolveTenantContext(tenantId);
+    if (!context) {
+      return jsonError(res, 404, 'TENANT_NOT_FOUND', 'Tenant not found');
+    }
+
+    const maxDevicesRaw = req.body?.max_devices_allowed;
+    const maxDevicesAllowed =
+      maxDevicesRaw === '' || maxDevicesRaw === null || maxDevicesRaw === undefined
+        ? null
+        : Number(maxDevicesRaw);
+
+    const result = await context.tenantPool.query(
+      `UPDATE branches
+       SET max_devices_allowed = $1
+       WHERE id = $2
+       RETURNING id, name, location, created_at, subscription_plan, max_devices_allowed`,
+      [Number.isFinite(maxDevicesAllowed) ? maxDevicesAllowed : null, branchId]
+    );
+
+    if (result.rowCount === 0) {
+      return jsonError(res, 404, 'BRANCH_NOT_FOUND', 'Branch not found');
+    }
+
+    await logAdminAction(req.admin?.admin_id, 'TENANT_BRANCH_UPDATED', 'branch', branchId, {
+      tenant_id: tenantId,
+      max_devices_allowed: Number.isFinite(maxDevicesAllowed) ? maxDevicesAllowed : null
+    });
+
+    return jsonOk(res, { branch: result.rows[0] }, 'Branch updated');
+  } catch (error) {
+    return jsonError(res, 500, 'TENANT_BRANCH_UPDATE_FAILED', error.message);
+  }
+};
+
 module.exports = {
   createTenantHandler,
   getDashboard: getDashboardHandler,
@@ -1978,6 +2048,7 @@ module.exports = {
   upgradeTenantPlan,
   renewTenantPlan,
   getTenantBranches,
-  createTenantBranch
+  createTenantBranch,
+  updateTenantBranch
 };
 
