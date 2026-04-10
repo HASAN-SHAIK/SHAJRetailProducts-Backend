@@ -1490,6 +1490,13 @@ async function bulkUpdateProducts(req, res) {
                     addField('gst_percentage', gstValue);
                 }
             }
+            if (item.hasOwnProperty('stock_quantity')) {
+                const stockQuantity = Number(item.stock_quantity);
+                if (!Number.isFinite(stockQuantity) || stockQuantity < 0) {
+                    throw new Error('stock_quantity must be >= 0');
+                }
+                addField('stock_quantity', stockQuantity);
+            }
 
             if (fields.length === 0) {
                 throw new Error(`No updatable fields provided for product ${id}`);
