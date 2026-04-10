@@ -28,6 +28,7 @@ const buildCustomerInput = (payload = {}) => {
     shop_name: payload.shop_name || payload.shopName || null,
     gst_number: payload.gst_number || payload.gstNumber || null,
     credit_limit: payload.credit_limit ?? payload.creditLimit ?? 0,
+    current_balance: payload.current_balance ?? payload.currentBalance ?? null,
     notes: payload.notes || null,
     is_active: payload.is_active !== undefined ? Boolean(payload.is_active) : true,
     location: resolvedLocation,
@@ -66,7 +67,7 @@ const createCustomer = async (pool, payload) => {
       input.shop_name,
       input.gst_number,
       Number(input.credit_limit || 0),
-      payload.current_balance ?? 0,
+      Number.isFinite(Number(input.current_balance)) ? Number(input.current_balance) : 0,
       input.notes,
       input.is_active,
       input.location,
@@ -88,12 +89,13 @@ const updateCustomer = async (pool, id, payload) => {
          shop_name = COALESCE($6, shop_name),
          gst_number = COALESCE($7, gst_number),
          credit_limit = COALESCE($8, credit_limit),
-         notes = COALESCE($9, notes),
-         is_active = COALESCE($10, is_active),
-         location = COALESCE($11, location),
-         address = COALESCE($12, address),
+         current_balance = COALESCE($9, current_balance),
+         notes = COALESCE($10, notes),
+         is_active = COALESCE($11, is_active),
+         location = COALESCE($12, location),
+         address = COALESCE($13, address),
          updated_at = NOW()
-     WHERE id = $13
+     WHERE id = $14
      RETURNING *`,
     [
       input.name,
@@ -104,6 +106,7 @@ const updateCustomer = async (pool, id, payload) => {
       input.shop_name,
       input.gst_number,
       Number.isFinite(Number(input.credit_limit)) ? Number(input.credit_limit) : null,
+      Number.isFinite(Number(input.current_balance)) ? Number(input.current_balance) : null,
       input.notes,
       payload.is_active !== undefined ? Boolean(payload.is_active) : null,
       input.location,
