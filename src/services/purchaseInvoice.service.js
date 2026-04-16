@@ -27,6 +27,51 @@ const normalizeNumber = (value) => {
   return Number.isFinite(numeric) ? numeric : null;
 };
 
+const normalizeOptionalText = (value) => {
+  if (value === null || value === undefined) return null;
+  const trimmed = String(value).trim();
+  return trimmed || null;
+};
+
+const toCompactTimestamp = (date = new Date()) => {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  const hours = String(date.getUTCHours()).padStart(2, '0');
+  const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+  const seconds = String(date.getUTCSeconds()).padStart(2, '0');
+  return `${year}${month}${day}${hours}${minutes}${seconds}`;
+};
+
+const buildAutoBatchNumber = (productId, index) =>
+  `PB-${productId}-${toCompactTimestamp()}-${index + 1}`;
+
+const ensureUniqueBatchNumber = async (client, productId, branchId, requestedBatchNumber) => {
+  let candidate = String(requestedBatchNumber || '').trim();
+  if (!candidate) return null;
+  let suffix = 1;
+  while (true) {
+    const duplicateRes = await client.query(
+      `SELECT id
+       FROM batches
+       WHERE product_id = $1
+         AND is_deleted = FALSE
+         AND batch_number = $2
+         AND (
+           ($3::uuid IS NULL AND branch_id IS NULL) OR
+           branch_id = $3::uuid
+         )
+       LIMIT 1`,
+      [productId, candidate, branchId || null]
+    );
+    if (duplicateRes.rowCount === 0) {
+      return candidate;
+    }
+    candidate = `${requestedBatchNumber}-${suffix}`;
+    suffix += 1;
+  }
+};
+
 const isUuid = (value) =>
   typeof value === 'string' &&
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
@@ -656,7 +701,7 @@ const savePurchase = async (req, payload = {}) => {
     error.status = 400;
     throw error;
   }
-  const invoiceNumber = payload.invoice_number || payload.invoiceNumber || null;
+  const invoiceNumber = normalizeOptionalText(payload.invoice_number || payload.invoiceNumber || null);
 
   const client = await requestPool.connect();
   try {
@@ -684,7 +729,7 @@ const savePurchase = async (req, payload = {}) => {
     }
     const results = [];
     const gstMode = resolveGstMode(req);
-    const paymentMode = payload.payment_mode || payload.paymentMode || null;
+    const paymentMode = normalizeOptionalText(payload.payment_mode || payload.paymentMode || null);
 
     const orderRes = await client.query(
       `INSERT INTO orders (supplier_id, branch_id, total_price, payment_mode, transaction_type, gst_mode, is_gst_enabled, invoice_number)
@@ -711,7 +756,7 @@ const savePurchase = async (req, payload = {}) => {
       } else if (hsn) {
         await upsertHsnGst(client, hsn, gst_percent);
       }
-      const batch_number = item.batch_number ? String(item.batch_number).trim() : `PO-${orderId}-${batchIndex}`;
+      const batch_number = item.batch_number ? String(item.batch_number).trim() : '';
       const expiry_date = item.expiry_date ? new Date(item.expiry_date) : null;
       const selling_price = normalizeNumber(item.selling_price);
 
@@ -765,13 +810,22 @@ const savePurchase = async (req, payload = {}) => {
         existingSelling = insertRes.rows[0].selling_price;
       }
 
-      await client.query(
+      const generatedBatch = buildAutoBatchNumber(productId, batchIndex);
+      const resolvedBatch = await ensureUniqueBatchNumber(
+        client,
+        productId,
+        branchId || null,
+        batch_number || generatedBatch
+      );
+
+      const batchInsertRes = await client.query(
         `INSERT INTO batches (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity, quantity_remaining, purchase_order_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8)
+         RETURNING id`,
         [
           productId,
           branchId || null,
-          batch_number,
+          resolvedBatch,
           expiry_date && !Number.isNaN(expiry_date.getTime()) ? expiry_date : null,
           purchase_price,
           selling_price || existingSelling || null,
@@ -781,9 +835,17 @@ const savePurchase = async (req, payload = {}) => {
       );
 
       await client.query(
-        `INSERT INTO order_items (order_id, product_id, quantity, selling_price, purchase_price_snapshot, gst_percent)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [orderId, productId, qty, selling_price || existingSelling || null, purchase_price, gst_percent || 0]
+        `INSERT INTO order_items (order_id, product_id, batch_id, quantity, selling_price, purchase_price_snapshot, gst_percent)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          orderId,
+          productId,
+          batchInsertRes.rows[0].id,
+          qty,
+          selling_price || existingSelling || null,
+          purchase_price,
+          gst_percent || 0
+        ]
       );
 
       const updateValues = [qty, purchase_price, productId];

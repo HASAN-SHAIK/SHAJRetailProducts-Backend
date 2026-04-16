@@ -279,78 +279,83 @@ const getLedger = async (req, query = {}) => {
 const getOutstanding = async (req, query = {}) => {
   const requestPool = getRequestPool(req);
   const partyType = String(query.party_type || query.partyType || '').toLowerCase();
-  const partyId = query.party_id || query.partyId || null;
-  const branchId = resolveBranchIdFromRequest(req);
+  const partyIdRaw = query.party_id || query.partyId || null;
+  const partyId = normalizeNumber(partyIdRaw);
 
   if (partyType && !['customer', 'supplier'].includes(partyType)) {
     throw buildValidationError('party_type must be customer or supplier.');
   }
-
-  const baseParams = [];
-  let idx = 1;
-  const partyFilter = [];
-  if (partyId) {
-    partyFilter.push(`t.party_id = $${idx}`);
-    baseParams.push(partyId);
-    idx += 1;
+  if (partyIdRaw !== null && partyIdRaw !== undefined && partyIdRaw !== '' && !Number.isFinite(partyId)) {
+    throw buildValidationError('party_id is invalid.');
   }
-  if (partyType) {
-    partyFilter.push(`t.party_type = $${idx}`);
-    baseParams.push(partyType);
-    idx += 1;
-  }
-  const partyClause = partyFilter.length ? `AND ${partyFilter.join(' AND ')}` : '';
 
-  const branchClause = `AND ($${idx}::uuid IS NULL OR COALESCE(t.branch_id, o.branch_id) = $${idx})`;
-  baseParams.push(branchId);
+  const includeCustomers = !partyType || partyType === 'customer';
+  const includeSuppliers = !partyType || partyType === 'supplier';
+  const rows = [];
 
-  const queryText = `
-    SELECT t.party_type,
-           t.party_id,
-           COALESCE(c.name, s.name) AS party_name,
-           SUM(CASE WHEN t.txn_type = 'sale' THEN COALESCE(t.amount, t.total_price, 0) ELSE 0 END) AS total_debit,
-           SUM(CASE WHEN t.txn_type = 'receipt' THEN COALESCE(t.amount, t.total_price, 0) ELSE 0 END) AS total_credit,
-           SUM(CASE WHEN t.txn_type = 'purchase' THEN COALESCE(t.amount, t.total_price, 0) ELSE 0 END) AS total_payable,
-           SUM(CASE WHEN t.txn_type = 'payment' THEN COALESCE(t.amount, t.total_price, 0) ELSE 0 END) AS total_payment
-    FROM transactions t
-    LEFT JOIN orders o ON o.id = t.order_id
-    LEFT JOIN customers c ON c.id = t.party_id AND t.party_type = 'customer'
-    LEFT JOIN suppliers s ON s.id = t.party_id AND t.party_type = 'supplier'
-    WHERE 1=1
-      ${partyClause}
-      ${branchClause}
-    GROUP BY t.party_type, t.party_id, party_name
-    ORDER BY party_name ASC;
-  `;
-
-  const result = await requestPool.query(queryText, baseParams);
-  const rows = result.rows.map((row) => {
-    const debit = Number(row.total_debit || 0);
-    const credit = Number(row.total_credit || 0);
-    const payable = Number(row.total_payable || 0);
-    const payment = Number(row.total_payment || 0);
-    if (row.party_type === 'supplier') {
-      const outstanding = payable - payment;
-      return {
-        party_type: row.party_type,
+  if (includeCustomers) {
+    const params = [];
+    let idx = 1;
+    const where = [];
+    if (Number.isFinite(partyId)) {
+      where.push(`id = $${idx}`);
+      params.push(partyId);
+      idx += 1;
+    }
+    const customerWhere = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const customerRes = await requestPool.query(
+      `SELECT id AS party_id,
+              name AS party_name,
+              COALESCE(current_balance, 0)::numeric AS outstanding
+       FROM customers
+       ${customerWhere}
+       ORDER BY name ASC`,
+      params
+    );
+    rows.push(
+      ...customerRes.rows.map((row) => ({
+        party_type: 'customer',
         party_id: row.party_id,
         party_name: row.party_name,
-        total_debit: payment,
-        total_credit: payable,
-        outstanding,
-      };
-    }
-    const outstanding = debit - credit;
-    return {
-      party_type: row.party_type,
-      party_id: row.party_id,
-      party_name: row.party_name,
-      total_debit: debit,
-      total_credit: credit,
-      outstanding,
-    };
-  });
+        total_debit: Number(row.outstanding || 0),
+        total_credit: 0,
+        outstanding: Number(row.outstanding || 0),
+      }))
+    );
+  }
 
+  if (includeSuppliers) {
+    const params = [];
+    let idx = 1;
+    const where = [];
+    if (Number.isFinite(partyId)) {
+      where.push(`id = $${idx}`);
+      params.push(partyId);
+      idx += 1;
+    }
+    const supplierWhere = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const supplierRes = await requestPool.query(
+      `SELECT id AS party_id,
+              name AS party_name,
+              COALESCE(current_balance, 0)::numeric AS outstanding
+       FROM suppliers
+       ${supplierWhere}
+       ORDER BY name ASC`,
+      params
+    );
+    rows.push(
+      ...supplierRes.rows.map((row) => ({
+        party_type: 'supplier',
+        party_id: row.party_id,
+        party_name: row.party_name,
+        total_debit: 0,
+        total_credit: Number(row.outstanding || 0),
+        outstanding: Number(row.outstanding || 0),
+      }))
+    );
+  }
+
+  rows.sort((a, b) => String(a.party_name || '').localeCompare(String(b.party_name || '')));
   return { rows };
 };
 

@@ -1,4 +1,5 @@
 const pool = require('../db');
+const { setStockAuditContext } = require('./stockAuditService');
 const getRequestPool = (req) => req.tenantPool || pool;
 
 const buildValidationError = (message) => {
@@ -18,6 +19,45 @@ const normalizeDateOnly = (value) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return undefined;
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+};
+
+const toCompactTimestamp = (date = new Date()) => {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  const hours = String(date.getUTCHours()).padStart(2, '0');
+  const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+  const seconds = String(date.getUTCSeconds()).padStart(2, '0');
+  return `${year}${month}${day}${hours}${minutes}${seconds}`;
+};
+
+const buildAutoBatchNumber = (productId, index) =>
+  `PB-${productId}-${toCompactTimestamp()}-${index + 1}`;
+
+const ensureUniqueBatchNumber = async (client, productId, branchId, requestedBatchNumber) => {
+  let candidate = String(requestedBatchNumber || '').trim();
+  if (!candidate) return null;
+  let suffix = 1;
+  while (true) {
+    const duplicateRes = await client.query(
+      `SELECT id
+       FROM batches
+       WHERE product_id = $1
+         AND is_deleted = FALSE
+         AND batch_number = $2
+         AND (
+           ($3::uuid IS NULL AND branch_id IS NULL) OR
+           branch_id = $3::uuid
+         )
+       LIMIT 1`,
+      [productId, candidate, branchId || null]
+    );
+    if (duplicateRes.rowCount === 0) {
+      return candidate;
+    }
+    candidate = `${requestedBatchNumber}-${suffix}`;
+    suffix += 1;
+  }
 };
 
 const isUuid = (value) =>
@@ -53,6 +93,12 @@ const resolveGstMode = (req) => {
   const raw = req?.tenant?.gst_mode || req?.tenant?.gstMode || null;
   const mode = String(raw || 'INCLUSIVE').trim().toUpperCase();
   return mode === 'EXCLUSIVE' ? 'EXCLUSIVE' : 'INCLUSIVE';
+};
+
+const normalizeOptionalText = (value) => {
+  if (value === null || value === undefined) return null;
+  const trimmed = String(value).trim();
+  return trimmed || null;
 };
 
 const calculateTotal = (items, gstMode) => {
@@ -95,13 +141,14 @@ const createPurchase = async (req, payload = {}) => {
   const client = await requestPool.connect();
   try {
     await client.query('BEGIN');
+    await setStockAuditContext(client, req, { reason: 'purchase', source: 'purchase', reference: payload.invoice_number || null });
     const branchId = await resolveBranchId(client, payload.branch_id);
     await ensureSupplier(client, supplierId, branchId);
 
     const gstMode = resolveGstMode(req);
     const totalPrice = calculateTotal(items, gstMode);
-    const paymentMode = payload.payment_mode || payload.paymentMode || null;
-    const invoiceNumber = payload.invoice_number || payload.invoiceNumber || null;
+    const paymentMode = normalizeOptionalText(payload.payment_mode || payload.paymentMode || null);
+    const invoiceNumber = normalizeOptionalText(payload.invoice_number || payload.invoiceNumber || null);
 
     const orderRes = await client.query(
       `INSERT INTO orders (supplier_id, branch_id, total_price, payment_mode, transaction_type, gst_mode, is_gst_enabled, invoice_number)
@@ -206,14 +253,24 @@ const createPurchase = async (req, payload = {}) => {
       }
 
       const productRes = await client.query(
-        'SELECT id FROM products WHERE id = $1 AND is_deleted = FALSE FOR UPDATE',
+        `SELECT id, stock_quantity, purchase_price, selling_price
+         FROM products
+         WHERE id = $1 AND is_deleted = FALSE
+         FOR UPDATE`,
         [productId]
       );
       if (productRes.rowCount === 0) {
         throw buildValidationError(`Product ID ${productId} not found or deleted.`);
       }
 
-      const batchNumber = item.batch_number ? String(item.batch_number).trim() : `PO-${orderId}-${index + 1}`;
+      const batchNumberInput = item.batch_number ? String(item.batch_number).trim() : '';
+      const generatedBatch = buildAutoBatchNumber(productId, index);
+      const resolvedBatchNumber = await ensureUniqueBatchNumber(
+        client,
+        productId,
+        branchId,
+        batchNumberInput || generatedBatch
+      );
       const batchRes = await client.query(
         `INSERT INTO batches (
             product_id,
@@ -228,15 +285,26 @@ const createPurchase = async (req, payload = {}) => {
           )
          VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8)
          RETURNING id, product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity, quantity_remaining, created_at`,
-        [productId, branchId, batchNumber, expiryDate, purchasePrice, Number.isFinite(sellingPrice) ? sellingPrice : null, quantity, orderId]
+        [
+          productId,
+          branchId,
+          resolvedBatchNumber,
+          expiryDate,
+          purchasePrice,
+          Number.isFinite(sellingPrice) ? sellingPrice : null,
+          quantity,
+          orderId
+        ]
       );
+      const createdBatch = batchRes.rows[0];
 
       await client.query(
-        `INSERT INTO order_items (order_id, product_id, quantity, selling_price, purchase_price_snapshot, gst_percent)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
+        `INSERT INTO order_items (order_id, product_id, batch_id, quantity, selling_price, purchase_price_snapshot, gst_percent)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [
           orderId,
           productId,
+          createdBatch.id,
           quantity,
           Number.isFinite(sellingPrice) ? sellingPrice : null,
           purchasePrice,
@@ -264,7 +332,7 @@ const createPurchase = async (req, payload = {}) => {
         ]
       );
 
-      createdBatches.push(batchRes.rows[0]);
+      createdBatches.push(createdBatch);
     }
 
     if (String(paymentMode || '').toLowerCase() === 'credit') {
@@ -336,6 +404,10 @@ const listPurchases = async (req, query = {}) => {
 
 const getPurchaseDetail = async (req, purchaseId) => {
   const requestPool = getRequestPool(req);
+  const numericPurchaseId = Number(purchaseId);
+  if (!Number.isFinite(numericPurchaseId)) {
+    throw buildValidationError('purchase id must be a number.');
+  }
   const orderRes = await requestPool.query(
     `SELECT o.*,
             s.name AS supplier_name,
@@ -344,12 +416,14 @@ const getPurchaseDetail = async (req, purchaseId) => {
      FROM orders o
      LEFT JOIN suppliers s ON s.id = o.supplier_id
      WHERE o.id = $1 AND o.transaction_type = 'purchase'`,
-    [purchaseId]
+    [numericPurchaseId]
   );
   if (orderRes.rowCount === 0) return null;
   const itemsRes = await requestPool.query(
     `SELECT oi.id,
             oi.product_id,
+            oi.batch_id,
+            b.batch_number,
             p.name AS product_name,
             oi.quantity,
             oi.purchase_price_snapshot,
@@ -357,8 +431,9 @@ const getPurchaseDetail = async (req, purchaseId) => {
             oi.gst_percent
      FROM order_items oi
      JOIN products p ON p.id = oi.product_id
+     LEFT JOIN batches b ON b.id = oi.batch_id
      WHERE oi.order_id = $1`,
-    [purchaseId]
+    [numericPurchaseId]
   );
   const batchesRes = await requestPool.query(
     `SELECT id,
@@ -374,7 +449,7 @@ const getPurchaseDetail = async (req, purchaseId) => {
      FROM batches
      WHERE purchase_order_id = $1
      ORDER BY created_at ASC`,
-    [purchaseId]
+    [numericPurchaseId]
   );
   return {
     order: orderRes.rows[0],

@@ -33,7 +33,8 @@ const getPurchaseDetail = async (req, res) => {
     }
     return res.status(200).json({ success: true, data: detail });
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message || 'Failed to fetch purchase' });
+    const status = error.status || 500;
+    return res.status(status).json({ success: false, message: error.message || 'Failed to fetch purchase' });
   }
 };
 

@@ -1,18 +1,16 @@
 const { jsonError } = require('../utils/responses');
-const { resolveFeatures } = require('../utils/resolveFeatures');
+const { resolveEntitlements } = require('../utils/entitlements');
 
 const mergeFeatureFlags = (req, res, next) => {
   try {
-    const subscriptionPlan = req.subscription?.plan_name;
     const tenant = req.tenant || {};
-    const resolvedFeatures = resolveFeatures({
-      ...tenant,
-      plan_type: subscriptionPlan || tenant.plan_type
-    });
+    const entitlements = resolveEntitlements(tenant, req.subscription || null);
+    const resolvedFeatures = entitlements.features;
 
     req.planFeatures = { ...resolvedFeatures };
     req.featureFlags = { ...resolvedFeatures };
     req.features = { ...resolvedFeatures };
+    req.entitlements = entitlements;
     return next();
   } catch (error) {
     return jsonError(res, 500, 'FEATURE_FLAGS_FAILED', 'Failed to resolve feature flags');

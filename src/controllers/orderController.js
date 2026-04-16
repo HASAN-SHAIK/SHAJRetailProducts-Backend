@@ -318,25 +318,52 @@ const normalizeNumber = (value) => {
     throw buildValidationError('branch_id is required.');
   };
 
-  const allocateBatchStock = async (client, productId, branchId, quantity) => {
+  const fetchBatchAllocations = async (client, productId, branchId, quantity) => {
     const batchesRes = await client.query(
-      `SELECT id, quantity, quantity_remaining
+      `SELECT id,
+              quantity,
+              quantity_remaining,
+              purchase_price,
+              selling_price
         FROM batches
         WHERE product_id = $1
           AND branch_id = $2
           AND is_deleted = FALSE
           AND COALESCE(quantity_remaining, quantity) > 0
           AND (expiry_date IS NULL OR expiry_date >= CURRENT_DATE)
-       ORDER BY expiry_date ASC NULLS LAST, created_at ASC
+       ORDER BY created_at ASC
        FOR UPDATE`,
       [productId, branchId]
     );
 
-    if (batchesRes.rowCount === 0) {
+    let remaining = quantity;
+    const allocations = [];
+    for (const batch of batchesRes.rows) {
+      if (remaining <= 0) break;
+      const available = Number(batch.quantity_remaining ?? batch.quantity ?? 0);
+      if (available <= 0) continue;
+      const deduct = Math.min(available, remaining);
+      remaining -= deduct;
+      allocations.push({
+        batch_id: batch.id,
+        quantity: deduct,
+        purchase_price: batch.purchase_price ?? null,
+        selling_price: batch.selling_price ?? null,
+      });
+    }
+
+    if (remaining > 0) {
+      // Fallback for non-batch products: consume from products.stock_quantity.
       const productRes = await client.query(
-        `SELECT stock_quantity, branch_id
+        `SELECT id,
+                branch_id,
+                is_batch_enabled,
+                stock_quantity,
+                purchase_price,
+                selling_price
          FROM products
-         WHERE id = $1 AND is_deleted = FALSE
+         WHERE id = $1
+           AND is_deleted = FALSE
          FOR UPDATE`,
         [productId]
       );
@@ -344,37 +371,67 @@ const normalizeNumber = (value) => {
         throw buildValidationError(`Product ID ${productId} not found or deleted.`);
       }
       const product = productRes.rows[0];
-      if (product.branch_id && product.branch_id !== branchId) {
-        throw buildValidationError(`Product ID ${productId} not available in selected branch.`);
-      }
-      const stock = normalizeNumber(product.stock_quantity);
-      if (!Number.isFinite(stock) || stock < quantity) {
+      if (branchId && product.branch_id && String(product.branch_id) !== String(branchId)) {
         throw buildValidationError(`Insufficient stock for Product ID ${productId} in selected branch.`);
       }
-      return;
+      const isBatchEnabled = Number(product.is_batch_enabled) === 1;
+      if (isBatchEnabled) {
+        throw buildValidationError(`Insufficient stock for Product ID ${productId} in selected branch.`);
+      }
+      const productStock = Number(product.stock_quantity ?? 0);
+      if (!Number.isFinite(productStock) || productStock < remaining) {
+        throw buildValidationError(`Insufficient stock for Product ID ${productId} in selected branch.`);
+      }
+      allocations.push({
+        batch_id: null,
+        product_id: productId,
+        quantity: remaining,
+        purchase_price: product.purchase_price ?? null,
+        selling_price: product.selling_price ?? null,
+      });
+      remaining = 0;
     }
 
-    let remaining = quantity;
-    const updates = [];
-    for (const batch of batchesRes.rows) {
-      if (remaining <= 0) break;
-      const available = Number(batch.quantity_remaining ?? batch.quantity ?? 0);
-      if (available <= 0) continue;
-      const deduct = Math.min(available, remaining);
-      remaining -= deduct;
-      updates.push({ id: batch.id, remaining: available - deduct });
-    }
+    return allocations;
+  };
 
-    if (remaining > 0) {
-      throw buildValidationError(`Insufficient stock for Product ID ${productId} in selected branch.`);
+  const fetchSpecificBatchAllocation = async (client, batchId, productId, branchId, quantity) => {
+    const batchRes = await client.query(
+      `SELECT id,
+              product_id,
+              branch_id,
+              quantity,
+              quantity_remaining,
+              purchase_price,
+              selling_price
+       FROM batches
+       WHERE id = $1
+         AND is_deleted = FALSE
+       FOR UPDATE`,
+      [batchId]
+    );
+    if (batchRes.rowCount === 0) {
+      throw buildValidationError(`Batch ID ${batchId} not found or deleted.`);
     }
-
-    for (const update of updates) {
-      await client.query(
-        'UPDATE batches SET quantity_remaining = $1 WHERE id = $2',
-        [update.remaining, update.id]
-      );
+    const batch = batchRes.rows[0];
+    if (productId && Number(batch.product_id) !== Number(productId)) {
+      throw buildValidationError(`Batch ID ${batchId} does not belong to product ${productId}.`);
     }
+    if (branchId && batch.branch_id && String(batch.branch_id) !== String(branchId)) {
+      throw buildValidationError(`Batch ID ${batchId} not available in selected branch.`);
+    }
+    const available = Number(batch.quantity_remaining ?? batch.quantity ?? 0);
+    if (!Number.isFinite(available) || available < quantity) {
+      throw buildValidationError(`Insufficient stock for Batch ID ${batchId}.`);
+    }
+    return [
+      {
+        batch_id: batch.id,
+        quantity,
+        purchase_price: batch.purchase_price ?? null,
+        selling_price: batch.selling_price ?? null,
+      }
+    ];
   };
 
 const validateQuantityForProduct = (quantity, product, productIdForMessage) => {
@@ -385,12 +442,6 @@ const validateQuantityForProduct = (quantity, product, productIdForMessage) => {
   const isWeightBased = Number(product.is_weight_based) === 1;
   if (!isWeightBased && !Number.isInteger(quantity)) {
     throw buildValidationError('Non-integer quantity not allowed for piece based items');
-  }
-
-  const stock = normalizeNumber(product.stock_quantity);
-  if (!Number.isFinite(stock) || stock < quantity) {
-    const productId = productIdForMessage ?? product.id ?? product.product_id;
-    throw buildValidationError(`Insufficient stock for Product ID ${productId}. Available: ${product.stock_quantity}`);
   }
 };
 
@@ -503,7 +554,7 @@ const processOrderItems = async (client, orderId, items) => {
 
         const productIds = [...new Set(products.map((item) => item.product_id))];
         const productRes = await client.query(
-            "SELECT id, selling_price, purchase_price, stock_quantity, is_weight_based FROM products WHERE id = ANY($1) AND is_deleted = FALSE FOR UPDATE",
+            "SELECT id, gst_percentage, is_weight_based FROM products WHERE id = ANY($1) AND is_deleted = FALSE FOR UPDATE",
             [productIds]
         );
 
@@ -514,8 +565,8 @@ const processOrderItems = async (client, orderId, items) => {
         }
 
         const productById = new Map(productRes.rows.map((row) => [row.id, row]));
-        const requestedQtyByProduct = new Map();
         const preparedItems = [];
+        const batchUpdates = [];
         const isGstEnabled = resolveIsGstEnabled(req, req.body);
         const gstMode = resolveGstMode(req);
         let total_price = 0;
@@ -532,44 +583,48 @@ const processOrderItems = async (client, orderId, items) => {
                 throw buildValidationError('Non-integer quantity not allowed for piece based items');
             }
 
-            const sellingPrice = normalizeNumber(item.selling_price ?? item.price ?? item.unit_price ?? product.selling_price);
-            if (!Number.isFinite(sellingPrice) || sellingPrice <= 0) {
-              throw new Error('selling_price must be > 0');
-            }
-            if (!Number.isFinite(sellingPrice) || sellingPrice <= 0) {
-              throw buildValidationError('selling_price must be > 0');
-            }
-            const purchasePriceSnapshot = normalizeNumber(product.purchase_price);
-            const discountAmount = normalizeNumber(item.discount_amount ?? item.discount) || 0;
+            const batchId = item.batch_id ?? item.batchId ?? null;
+            const allocations = batchId
+              ? await fetchSpecificBatchAllocation(client, batchId, item.product_id, branchId, qty)
+              : await fetchBatchAllocations(client, item.product_id, branchId, qty);
+
+            const rawDiscount = normalizeNumber(item.discount_amount ?? item.discount) || 0;
+            const perUnitDiscount = qty > 0 ? rawDiscount / qty : 0;
             const gstPercent = normalizeNumber(item.gst_percent ?? item.gst_percentage ?? product.gst_percentage) || 0;
-            const metrics = computeLineMetrics({
-              sellingPrice,
-              purchasePrice: purchasePriceSnapshot,
-              quantity: qty,
-              discountAmount,
-              gstPercent,
-              isGstEnabled
-            });
-            total_price += metrics.line_total - metrics.discount_amount;
-            total_profit += metrics.profit;
-            preparedItems.push({
-              product_id: item.product_id,
-              qty,
-              sellingPrice,
-              purchasePriceSnapshot,
-              discountAmount: metrics.discount_amount,
-              gstPercent,
-              profit: metrics.profit,
-              marginPercent: metrics.margin_percent
-            });
+            const overridePrice = item.selling_price ?? item.price ?? item.unit_price;
 
-            const prevQty = requestedQtyByProduct.get(item.product_id) || 0;
-            requestedQtyByProduct.set(item.product_id, prevQty + qty);
+            for (const alloc of allocations) {
+              const allocQty = normalizeNumber(alloc.quantity);
+              const sellingPrice = normalizeNumber(overridePrice ?? alloc.selling_price);
+              if (!Number.isFinite(sellingPrice) || sellingPrice <= 0) {
+                throw buildValidationError('selling_price must be > 0');
+              }
+              const purchasePriceSnapshot = normalizeNumber(alloc.purchase_price);
+              const discountAmount = perUnitDiscount * allocQty;
+              const metrics = computeLineMetrics({
+                sellingPrice,
+                purchasePrice: purchasePriceSnapshot,
+                quantity: allocQty,
+                discountAmount,
+                gstPercent,
+                isGstEnabled
+              });
+              total_price += metrics.line_total - metrics.discount_amount;
+              total_profit += metrics.profit;
+              preparedItems.push({
+                product_id: item.product_id,
+                batch_id: alloc.batch_id,
+                qty: allocQty,
+                sellingPrice,
+                purchasePriceSnapshot,
+                discountAmount: metrics.discount_amount,
+                gstPercent,
+                profit: metrics.profit,
+                marginPercent: metrics.margin_percent
+              });
+              batchUpdates.push({ batch_id: alloc.batch_id, product_id: item.product_id, quantity: allocQty });
+            }
         }
-
-          for (const [productId, totalQty] of requestedQtyByProduct.entries()) {
-              await allocateBatchStock(client, productId, branchId, totalQty);
-          }
 
         const resolvedPaymentMode = normalizePaymentModeValue(payment_mode || payment_method);
         const billingType = String(req.body?.billing_type || req.body?.billingType || 'retail').toLowerCase();
@@ -603,6 +658,7 @@ const processOrderItems = async (client, orderId, items) => {
         const order_id = orderResult.rows[0].id;
 
         const orderItemProductIds = preparedItems.map((item) => item.product_id);
+        const orderItemBatchIds = preparedItems.map((item) => item.batch_id);
         const orderItemQuantities = preparedItems.map((item) => item.qty);
         const orderItemPrices = preparedItems.map((item) => item.sellingPrice);
         const orderItemPurchaseSnapshots = preparedItems.map((item) => item.purchasePriceSnapshot);
@@ -612,55 +668,60 @@ const processOrderItems = async (client, orderId, items) => {
         const orderItemMargins = preparedItems.map((item) => item.marginPercent);
 
         await client.query(
-            `INSERT INTO order_items (
-                order_id,
-                product_id,
-                quantity,
-                selling_price,
-                purchase_price_snapshot,
-                discount_amount,
-                gst_percent,
-                profit,
-                margin_percent
-             )
-             SELECT $1,
-                    unnest($2::int[]),
-                    unnest($3::numeric[]),
-                    unnest($4::numeric[]),
-                    unnest($5::numeric[]),
-                    unnest($6::numeric[]),
-                    unnest($7::numeric[]),
-                    unnest($8::numeric[]),
-                    unnest($9::numeric[])`,
-            [
+          `INSERT INTO order_items (
               order_id,
-              orderItemProductIds,
-              orderItemQuantities,
-              orderItemPrices,
-              orderItemPurchaseSnapshots,
-              orderItemDiscounts,
-              orderItemGstPercents,
-              orderItemProfits,
-              orderItemMargins
-            ]
+              product_id,
+              batch_id,
+              quantity,
+              selling_price,
+              purchase_price_snapshot,
+              discount_amount,
+              gst_percent,
+              profit,
+              margin_percent
+          )
+          SELECT $1,
+                 unnest($2::int[]),
+                 unnest($3::uuid[]),
+                 unnest($4::numeric[]),
+                 unnest($5::numeric[]),
+                 unnest($6::numeric[]),
+                 unnest($7::numeric[]),
+                 unnest($8::numeric[]),
+                 unnest($9::numeric[]),
+                 unnest($10::numeric[])`,
+          [
+            order_id,
+            orderItemProductIds,
+            orderItemBatchIds,
+            orderItemQuantities,
+            orderItemPrices,
+            orderItemPurchaseSnapshots,
+            orderItemDiscounts,
+            orderItemGstPercents,
+            orderItemProfits,
+            orderItemMargins
+          ]
         );
 
-        const stockProductIds = [];
-        const stockQuantities = [];
-        for (const [productId, totalQty] of requestedQtyByProduct.entries()) {
-            stockProductIds.push(productId);
-            stockQuantities.push(totalQty);
+        for (const update of batchUpdates) {
+          if (update.batch_id) {
+            await client.query(
+              `UPDATE batches
+               SET quantity_remaining = quantity_remaining - $1
+               WHERE id = $2`,
+              [update.quantity, update.batch_id]
+            );
+          } else {
+            await client.query(
+              `UPDATE products
+               SET stock_quantity = stock_quantity - $1
+               WHERE id = $2
+                 AND is_deleted = FALSE`,
+              [update.quantity, update.product_id]
+            );
+          }
         }
-
-          await client.query(
-              `UPDATE products p
-               SET stock_quantity = p.stock_quantity - u.qty
-               FROM (
-                 SELECT unnest($1::int[]) AS product_id, unnest($2::numeric[]) AS qty
-               ) AS u
-               WHERE p.id = u.product_id`,
-              [stockProductIds, stockQuantities]
-          );
 
         const payments = Array.isArray(req.body?.payments) ? req.body.payments : [];
         const paidTotal = payments.reduce((sum, payment) => {
@@ -784,26 +845,16 @@ const processOrderItems = async (client, orderId, items) => {
               const productQuery = `SELECT * FROM products WHERE name ilike $1 AND company ilike $2;`;
               const productResult = await client.query(productQuery, [product_name, company]);
               if (productResult.rows.length > 0) {
-                // Product exists: only update quantity + prices
+                // Product exists: update metadata only (stock is batch-based)
                 const existingProduct = productResult.rows[0];
-                const existingQty = normalizeNumber(existingProduct.stock_quantity);
-                const incomingQty = normalizeNumber(quantity);
-                const newQuantity = existingQty + incomingQty;
-
-                const existingPurchasePrice = normalizeNumber(existingProduct.purchase_price);
-                const incomingPurchasePrice = normalizeNumber(purchase_price);
-                const newPurchasePrice = Number.isFinite(incomingPurchasePrice)
-                  ? (existingPurchasePrice * existingQty + incomingPurchasePrice * incomingQty) / newQuantity
-                  : existingPurchasePrice;
-
                 const resolvedSellingPrice = selling_price ?? existingProduct.selling_price;
 
                   const updateProductQuery = `
                       UPDATE products
-                      SET stock_quantity = $1, purchase_price = $2, selling_price = $3
-                      WHERE id = $4;
+                      SET purchase_price = $1, selling_price = $2
+                      WHERE id = $3;
                   `;
-                  await client.query(updateProductQuery, [newQuantity, newPurchasePrice, resolvedSellingPrice, existingProduct.id]);
+                  await client.query(updateProductQuery, [purchase_price, resolvedSellingPrice, existingProduct.id]);
                   touchedProductIds.add(existingProduct.id);
                   await client.query(
                     `INSERT INTO batches (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity, quantity_remaining)
@@ -825,7 +876,7 @@ const processOrderItems = async (client, orderId, items) => {
                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                       RETURNING id;
                   `;
-                  const inserted = await client.query(insertProductQuery, [product_name, company, quantity, purchase_price, selling_price, category, time_for_delivery, is_weight_based ?? 0]);
+                  const inserted = await client.query(insertProductQuery, [product_name, company, 0, purchase_price, selling_price, category, time_for_delivery, is_weight_based ?? 0]);
                   if (inserted.rowCount > 0) {
                       touchedProductIds.add(inserted.rows[0].id);
                       newProductsAdded += 1;
@@ -1238,14 +1289,15 @@ const getAllOrders = async (req, res) => {
             }
             const resolvedLimit = Math.min(Math.max(parseInt(req.query?.limit, 10) || 100, 1), 500);
               const ordersRes = await requestPool.query(
-                  `SELECT o.id,
-                          o.branch_id,
-                          o.total_price AS total_amount,
-                          o.created_at,
-                          o.order_status,
-                          o.payment_mode,
-                          o.is_gst_enabled,
-                          o.returned_amount,
+              `SELECT o.id,
+                      o.branch_id,
+                      o.total_price AS total_amount,
+                      o.created_at,
+                      o.order_status,
+                      o.billing_type,
+                      o.payment_mode,
+                      o.is_gst_enabled,
+                      o.returned_amount,
                           c.name AS customer_name,
                           COALESCE(o.customer_phone, c.mobile) AS customer_phone,
                           COALESCE(o.product_count, 0)::int AS product_count,
@@ -1300,10 +1352,11 @@ const getAllOrders = async (req, res) => {
                       total_paid: totalPaid,
                       returned_amount: returnedAmount,
                       balance,
-                      payment_status: paymentStatus,
-                      payment_mode: order.payment_mode,
-                      payment_action: paymentAction,
-                      order_status: order.order_status,
+                  payment_status: paymentStatus,
+                  billing_type: String(order.billing_type || 'retail').toLowerCase(),
+                  payment_mode: order.payment_mode,
+                  payment_action: paymentAction,
+                  order_status: order.order_status,
                     is_gst_enabled: order.is_gst_enabled === true,
                     created_at: order.created_at
                 };
@@ -1406,6 +1459,7 @@ const getAllOrders = async (req, res) => {
                         o.total_price AS total_amount,
                         o.created_at,
                         o.order_status,
+                        o.billing_type,
                         o.payment_mode,
                         o.is_gst_enabled,
                         o.returned_amount,
@@ -1438,6 +1492,7 @@ const getAllOrders = async (req, res) => {
                       b.total_amount,
                       b.created_at,
                       b.order_status,
+                      b.billing_type,
                       b.payment_mode,
                       b.is_gst_enabled,
                       b.returned_amount,
@@ -1503,6 +1558,7 @@ const getAllOrders = async (req, res) => {
                     returned_amount: returnedAmount,
                     balance,
                 payment_status: paymentStatus,
+                billing_type: String(order.billing_type || 'retail').toLowerCase(),
                 payment_mode: order.payment_mode,
                 payment_action: paymentAction,
                 order_status: order.order_status,
@@ -2081,24 +2137,13 @@ const processOrderReturn = async (req, res) => {
             [returnId, productIds, batchIds, quantities, unitPrices, lineTotals, gstAmounts]
         );
 
-        await client.query(
-            `UPDATE products p
-             SET stock_quantity = p.stock_quantity + u.qty
-             FROM (
-               SELECT unnest($1::int[]) AS product_id, unnest($2::numeric[]) AS qty
-             ) AS u
-             WHERE p.id = u.product_id`,
-            [productIds, quantities]
-        );
-
         const batchMap = prepared.filter((row) => row.batch_id);
         if (batchMap.length) {
             const batchIdsOnly = batchMap.map((row) => row.batch_id);
             const batchQtys = batchMap.map((row) => row.qty);
             await client.query(
                 `UPDATE batches b
-                 SET quantity_remaining = COALESCE(b.quantity_remaining, 0) + u.qty,
-                     quantity = COALESCE(b.quantity, 0) + u.qty
+                 SET quantity_remaining = COALESCE(b.quantity_remaining, 0) + u.qty
                  FROM (
                    SELECT unnest($1::uuid[]) AS batch_id, unnest($2::numeric[]) AS qty
                  ) AS u
@@ -2363,6 +2408,20 @@ const syncOfflineOrders = async (req, res) => {
   }
 
   const requestPool = getRequestPool(req);
+  // Ensure idempotency storage exists for offline sync payloads.
+  try {
+    await requestPool.query(
+      `ALTER TABLE orders
+       ADD COLUMN IF NOT EXISTS client_order_id TEXT`
+    );
+    await requestPool.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS orders_client_order_id_uniq
+       ON orders (client_order_id)
+       WHERE client_order_id IS NOT NULL`
+    );
+  } catch (schemaError) {
+    console.error('Failed to ensure offline-sync idempotency schema:', schemaError);
+  }
   const results = [];
   const seen = new Set();
 
@@ -2394,6 +2453,29 @@ const syncOfflineOrders = async (req, res) => {
     try {
       await client.query('BEGIN');
 
+      if (clientOrderId) {
+        const existingOrderRes = await client.query(
+          `SELECT id, order_status, payment_mode
+           FROM orders
+           WHERE client_order_id = $1
+           LIMIT 1`,
+          [clientOrderId]
+        );
+        if (existingOrderRes.rowCount > 0) {
+          const existing = existingOrderRes.rows[0];
+          await client.query('ROLLBACK');
+          results.push({
+            client_order_id: clientOrderId,
+            status: 'duplicate',
+            order_id: existing.id,
+            order_status: existing.order_status || 'pending',
+            payment_mode: existing.payment_mode || null,
+            transactions: []
+          });
+          continue;
+        }
+      }
+
         const type = order.transaction_type;
         const paymentMode = normalizePaymentModeValue(normalizePaymentMode(order));
         const resolvedLocation = resolveOrderLocation(order);
@@ -2421,29 +2503,48 @@ const syncOfflineOrders = async (req, res) => {
             : [];
         let totalPrice = 0;
         let totalProfit = 0;
+        const preparedItems = [];
+        const batchUpdates = [];
 
-          for (const item of items) {
-            const { product_id, quantity } = item;
-            const productRes = await client.query(
-              'SELECT selling_price, purchase_price, stock_quantity, is_weight_based, gst_percentage FROM products WHERE id = $1 AND is_deleted = FALSE FOR UPDATE',
-              [product_id]
-            );
+        const productIds = [...new Set(items.map((item) => item.product_id))];
+        const productsRes = await client.query(
+          'SELECT id, gst_percentage, is_weight_based FROM products WHERE id = ANY($1) AND is_deleted = FALSE FOR UPDATE',
+          [productIds]
+        );
+        if (productsRes.rowCount !== productIds.length) {
+          const foundIds = new Set(productsRes.rows.map((row) => row.id));
+          const missingId = productIds.find((id) => !foundIds.has(id));
+          throw new Error(`Product ID ${missingId} not found or deleted.`);
+        }
+        const productById = new Map(productsRes.rows.map((row) => [row.id, row]));
 
-          if (productRes.rowCount === 0) {
-            throw new Error(`Product ID ${product_id} not found or deleted.`);
-          }
+        for (const item of items) {
+          const product = productById.get(item.product_id);
+          const qty = normalizeNumber(item.quantity);
+          validateQuantityForProduct(qty, product, item.product_id);
 
-            const product = productRes.rows[0];
-            const qty = normalizeNumber(quantity);
-            validateQuantityForProduct(qty, product, product_id);
-            const sellingPrice = normalizeNumber(item.selling_price ?? item.price ?? item.unit_price ?? product.selling_price);
+          const batchId = item.batch_id ?? item.batchId ?? null;
+          const allocations = batchId
+            ? await fetchSpecificBatchAllocation(client, batchId, item.product_id, branchId, qty)
+            : await fetchBatchAllocations(client, item.product_id, branchId, qty);
 
-            const discountAmount = normalizeNumber(item.discount_amount ?? item.discount) || 0;
-            const gstPercent = normalizeNumber(product.gst_percentage) || 0;
+          const rawDiscount = normalizeNumber(item.discount_amount ?? item.discount) || 0;
+          const perUnitDiscount = qty > 0 ? rawDiscount / qty : 0;
+          const gstPercent = normalizeNumber(product.gst_percentage) || 0;
+          const overridePrice = item.selling_price ?? item.price ?? item.unit_price;
+
+          for (const alloc of allocations) {
+            const allocQty = normalizeNumber(alloc.quantity);
+            const sellingPrice = normalizeNumber(overridePrice ?? alloc.selling_price);
+            if (!Number.isFinite(sellingPrice) || sellingPrice <= 0) {
+              throw new Error('selling_price must be > 0');
+            }
+            const purchasePriceSnapshot = normalizeNumber(alloc.purchase_price);
+            const discountAmount = perUnitDiscount * allocQty;
             const metrics = computeLineMetrics({
               sellingPrice,
-              purchasePrice: normalizeNumber(product.purchase_price),
-              quantity: qty,
+              purchasePrice: purchasePriceSnapshot,
+              quantity: allocQty,
               discountAmount,
               gstPercent,
               isGstEnabled: resolveIsGstEnabled(req, order)
@@ -2451,10 +2552,24 @@ const syncOfflineOrders = async (req, res) => {
 
             totalPrice += metrics.line_total - metrics.discount_amount;
             totalProfit += metrics.profit;
-            touchedProductIds.add(product_id);
+            preparedItems.push({
+              product_id: item.product_id,
+              batch_id: alloc.batch_id,
+              quantity: allocQty,
+              selling_price: sellingPrice,
+              purchase_price_snapshot: purchasePriceSnapshot,
+              discount_amount: metrics.discount_amount,
+              gst_percent: gstPercent,
+              profit: metrics.profit,
+              margin_percent: metrics.margin_percent
+            });
+            batchUpdates.push({ batch_id: alloc.batch_id, product_id: item.product_id, quantity: allocQty });
+            touchedProductIds.add(item.product_id);
           }
-          orderTotal = totalPrice;
-          orderProfit = totalProfit;
+        }
+
+        orderTotal = totalPrice;
+        orderProfit = totalProfit;
 
           const orderDiscount =
             normalizeNumber(order.discount_total ?? order.discount ?? order.discount_amount) || 0;
@@ -2468,40 +2583,27 @@ const syncOfflineOrders = async (req, res) => {
           const gstMode = resolveGstMode(req);
           const billingType = String(order.billing_type || order.billingType || 'retail').toLowerCase();
           const orderResult = await client.query(
-            'INSERT INTO orders (customer_id, customer_phone, branch_id, total_price, order_status, payment_mode, created_at, location, transaction_type, is_gst_enabled, gst_mode, billing_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id',
-            [resolvedCustomerId, resolvedCustomerPhone, branchId, orderTotal, 'pending', paymentMode || null, orderDate, resolvedLocation, 'sale', isGstEnabled, gstMode, billingType]
+            'INSERT INTO orders (client_order_id, customer_id, customer_phone, branch_id, total_price, order_status, payment_mode, created_at, location, transaction_type, is_gst_enabled, gst_mode, billing_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id',
+            [clientOrderId || null, resolvedCustomerId, resolvedCustomerPhone, branchId, orderTotal, 'pending', paymentMode || null, orderDate, resolvedLocation, 'sale', isGstEnabled, gstMode, billingType]
           );
 
           orderId = orderResult.rows[0].id;
+          if (preparedItems.length > 0) {
+            const orderItemProductIds = preparedItems.map((entry) => entry.product_id);
+            const orderItemBatchIds = preparedItems.map((entry) => entry.batch_id);
+            const orderItemQuantities = preparedItems.map((entry) => entry.quantity);
+            const orderItemPrices = preparedItems.map((entry) => entry.selling_price);
+            const orderItemPurchaseSnapshots = preparedItems.map((entry) => entry.purchase_price_snapshot);
+            const orderItemDiscounts = preparedItems.map((entry) => entry.discount_amount);
+            const orderItemGstPercents = preparedItems.map((entry) => entry.gst_percent);
+            const orderItemProfits = preparedItems.map((entry) => entry.profit);
+            const orderItemMargins = preparedItems.map((entry) => entry.margin_percent);
 
-          for (const item of items) {
-            const { product_id, quantity } = item;
-            const priceRes = await client.query(
-              'SELECT selling_price, purchase_price, gst_percentage FROM products WHERE id = $1',
-              [product_id]
-            );
-            const resolvedSellingPrice = normalizeNumber(item.selling_price ?? item.price ?? item.unit_price ?? priceRes.rows[0].selling_price);
-            if (!Number.isFinite(resolvedSellingPrice) || resolvedSellingPrice <= 0) {
-              throw new Error('selling_price must be > 0');
-            }
-            const qty = normalizeNumber(quantity);
-            const purchasePriceSnapshot = normalizeNumber(priceRes.rows[0]?.purchase_price);
-            const discountAmount = normalizeNumber(item.discount_amount ?? item.discount) || 0;
-            const gstPercent = normalizeNumber(priceRes.rows[0]?.gst_percentage) || 0;
-            const metrics = computeLineMetrics({
-              sellingPrice: resolvedSellingPrice,
-              purchasePrice: purchasePriceSnapshot,
-              quantity: qty,
-              discountAmount,
-              gstPercent,
-              isGstEnabled: resolveIsGstEnabled(req, order)
-            });
-
-            await allocateBatchStock(client, product_id, branchId, qty);
             await client.query(
               `INSERT INTO order_items (
                   order_id,
                   product_id,
+                  batch_id,
                   quantity,
                   selling_price,
                   purchase_price_snapshot,
@@ -2509,26 +2611,50 @@ const syncOfflineOrders = async (req, res) => {
                   gst_percent,
                   profit,
                   margin_percent
-               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+               )
+               SELECT $1,
+                      unnest($2::int[]),
+                      unnest($3::uuid[]),
+                      unnest($4::numeric[]),
+                      unnest($5::numeric[]),
+                      unnest($6::numeric[]),
+                      unnest($7::numeric[]),
+                      unnest($8::numeric[]),
+                      unnest($9::numeric[]),
+                      unnest($10::numeric[])`,
               [
                 orderId,
-                product_id,
-                qty,
-                resolvedSellingPrice,
-                purchasePriceSnapshot,
-                metrics.discount_amount,
-                gstPercent,
-                metrics.profit,
-                metrics.margin_percent
+                orderItemProductIds,
+                orderItemBatchIds,
+                orderItemQuantities,
+                orderItemPrices,
+                orderItemPurchaseSnapshots,
+                orderItemDiscounts,
+                orderItemGstPercents,
+                orderItemProfits,
+                orderItemMargins
               ]
             );
 
-          await client.query(
-            'UPDATE products SET stock_quantity = stock_quantity - $1 WHERE id = $2',
-            [qty, product_id]
-          );
-          touchedProductIds.add(product_id);
-        }
+            for (const update of batchUpdates) {
+              if (update.batch_id) {
+                await client.query(
+                  `UPDATE batches
+                   SET quantity_remaining = quantity_remaining - $1
+                   WHERE id = $2`,
+                  [update.quantity, update.batch_id]
+                );
+              } else {
+                await client.query(
+                  `UPDATE products
+                   SET stock_quantity = stock_quantity - $1
+                   WHERE id = $2
+                     AND is_deleted = FALSE`,
+                  [update.quantity, update.product_id]
+                );
+              }
+            }
+          }
 
         orderStatus = 'pending';
       } else if (type === 'purchase') {
@@ -2542,8 +2668,8 @@ const syncOfflineOrders = async (req, res) => {
           const orderDate = order.client_created_at ? new Date(order.client_created_at) : new Date();
           const gstMode = resolveGstMode(req);
           const orderResult = await client.query(
-            'INSERT INTO orders (customer_id, customer_phone, branch_id, total_price, order_status, payment_mode, created_at, location, transaction_type, is_gst_enabled, gst_mode, billing_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id',
-            [resolvedCustomerId, resolvedCustomerPhone, branchId, totalAmount, 'pending', paymentMode || null, orderDate, resolvedLocation, 'purchase', false, gstMode, 'purchase']
+            'INSERT INTO orders (client_order_id, customer_id, customer_phone, branch_id, total_price, order_status, payment_mode, created_at, location, transaction_type, is_gst_enabled, gst_mode, billing_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id',
+            [clientOrderId || null, resolvedCustomerId, resolvedCustomerPhone, branchId, totalAmount, 'pending', paymentMode || null, orderDate, resolvedLocation, 'purchase', false, gstMode, 'purchase']
           );
 
         orderId = orderResult.rows[0].id;
@@ -2564,13 +2690,9 @@ const syncOfflineOrders = async (req, res) => {
 
             if (productResult.rows.length > 0) {
               const existingProduct = productResult.rows[0];
-            const newQuantity = normalizeNumber(existingProduct.stock_quantity) + normalizeNumber(quantity);
-            const totalPurchasePrice = normalizeNumber(existingProduct.purchase_price) * normalizeNumber(existingProduct.stock_quantity) + normalizeNumber(purchase_price) * normalizeNumber(quantity);
-            const newPurchasePrice = normalizeNumber(totalPurchasePrice) / normalizeNumber(newQuantity);
-
               await client.query(
-                'UPDATE products SET stock_quantity = $1, purchase_price = $2, selling_price = $3, time_for_delivery = $4, is_weight_based = $5 WHERE id = $6',
-                [newQuantity, newPurchasePrice, selling_price, time_for_delivery, is_weight_based ?? existingProduct.is_weight_based ?? 0, existingProduct.id]
+                'UPDATE products SET purchase_price = $1, selling_price = $2, time_for_delivery = $3, is_weight_based = $4 WHERE id = $5',
+                [purchase_price, selling_price, time_for_delivery, is_weight_based ?? existingProduct.is_weight_based ?? 0, existingProduct.id]
               );
               touchedProductIds.add(existingProduct.id);
               await client.query(
@@ -2581,7 +2703,7 @@ const syncOfflineOrders = async (req, res) => {
             } else {
               const insertRes = await client.query(
                 'INSERT INTO products (name, company, stock_quantity, purchase_price, selling_price, category, time_for_delivery, is_weight_based) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id',
-                [product_name, company, quantity, purchase_price, selling_price, category, time_for_delivery, is_weight_based ?? 0]
+                [product_name, company, 0, purchase_price, selling_price, category, time_for_delivery, is_weight_based ?? 0]
               );
               if (insertRes.rowCount > 0) {
                 touchedProductIds.add(insertRes.rows[0].id);
@@ -2601,8 +2723,8 @@ const syncOfflineOrders = async (req, res) => {
           const orderDate = order.client_created_at ? new Date(order.client_created_at) : new Date();
           const gstMode = resolveGstMode(req);
           const orderResult = await client.query(
-            'INSERT INTO orders (customer_id, customer_phone, total_price, order_status, payment_mode, created_at, location, transaction_type, is_gst_enabled, gst_mode, billing_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id',
-            [resolvedCustomerId, resolvedCustomerPhone, totalAmount, 'pending', paymentMode || null, orderDate, resolvedLocation, 'personal', false, gstMode, 'personal']
+            'INSERT INTO orders (client_order_id, customer_id, customer_phone, total_price, order_status, payment_mode, created_at, location, transaction_type, is_gst_enabled, gst_mode, billing_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id',
+            [clientOrderId || null, resolvedCustomerId, resolvedCustomerPhone, totalAmount, 'pending', paymentMode || null, orderDate, resolvedLocation, 'personal', false, gstMode, 'personal']
           );
 
         orderId = orderResult.rows[0].id;
@@ -2695,6 +2817,31 @@ const syncOfflineOrders = async (req, res) => {
       });
     } catch (error) {
       await client.query('ROLLBACK');
+      if (error?.code === '23505' && clientOrderId) {
+        try {
+          const existingOrderRes = await client.query(
+            `SELECT id, order_status, payment_mode
+             FROM orders
+             WHERE client_order_id = $1
+             LIMIT 1`,
+            [clientOrderId]
+          );
+          if (existingOrderRes.rowCount > 0) {
+            const existing = existingOrderRes.rows[0];
+            results.push({
+              client_order_id: clientOrderId,
+              status: 'duplicate',
+              order_id: existing.id,
+              order_status: existing.order_status || 'pending',
+              payment_mode: existing.payment_mode || null,
+              transactions: []
+            });
+            continue;
+          }
+        } catch {
+          // fall through to generic failed result
+        }
+      }
       results.push({
         client_order_id: clientOrderId,
         status: 'failed',
