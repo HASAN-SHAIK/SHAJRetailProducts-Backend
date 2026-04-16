@@ -11,9 +11,24 @@ const warmPool = async (pool, label) => {
   }
 };
 
+const isWarmupEnabled = () => {
+  const raw = String(process.env.DB_WARMUP_ENABLED ?? 'false').trim().toLowerCase();
+  return raw === 'true' || raw === '1' || raw === 'yes';
+};
+
+const resolveWarmupIntervalMs = () => {
+  const parsed = Number(process.env.DB_WARMUP_INTERVAL_MS || 4 * 60 * 1000);
+  if (!Number.isFinite(parsed)) return 4 * 60 * 1000;
+  return Math.max(30_000, parsed);
+};
+
 const startPoolWarmup = () => {
+  if (!isWarmupEnabled()) {
+    console.log('[WARM] DB warmup disabled (DB_WARMUP_ENABLED=false)');
+    return null;
+  }
   if (startPoolWarmup.timer) return startPoolWarmup.timer;
-  const intervalMs = 4 * 60 * 1000;
+  const intervalMs = resolveWarmupIntervalMs();
 
   const tick = async () => {
     await warmPool(masterPool, 'Master DB');
@@ -27,9 +42,10 @@ const startPoolWarmup = () => {
   tick().catch(() => null);
   const timer = setInterval(() => {
     tick().catch(() => null);
-  }, Math.max(30_000, intervalMs));
+  }, intervalMs);
   timer.unref?.();
   startPoolWarmup.timer = timer;
+  console.log(`[WARM] DB warmup started (interval=${intervalMs}ms)`);
   return timer;
 };
 
