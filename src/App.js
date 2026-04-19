@@ -17,6 +17,7 @@ const { getTenantMe, getPlatformBanner } = require('./controllers/tenantControll
 const { bootstrapMasterDatabase } = require('./services/masterBootstrap');
 const { startPoolWarmup } = require('./services/poolWarmup');
 const { startStockConsistencyJob } = require('./services/stockConsistencyJob');
+const masterPool = require('./db/masterPool');
 require('dotenv').config();
 
 app.set('trust proxy', 1);
@@ -42,21 +43,104 @@ app.use(
 );
 app.use(express.json({ limit: '5mb' }));
 
-app.get('/health', (req, res) => {
-  res.status(200).json({
-    status: 'ok',
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString()
-  });
+const toBoolean = (value, fallback = false) => {
+  if (value === undefined || value === null || value === '') return fallback;
+  return String(value).toLowerCase() === 'true';
+};
+
+const toNumber = (value, fallback) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const getWindowMinutes = () => ({
+  start:
+    toNumber(process.env.HEALTH_WARMUP_START_HOUR, 0) * 60 +
+    toNumber(process.env.HEALTH_WARMUP_START_MINUTE, 0),
+  end:
+    toNumber(process.env.HEALTH_WARMUP_END_HOUR, 23) * 60 +
+    toNumber(process.env.HEALTH_WARMUP_END_MINUTE, 59),
 });
 
-app.get('/api/health', (req, res) => {
-  res.status(200).json({
+const isWithinWarmupWindow = () => {
+  if (!toBoolean(process.env.HEALTH_WARMUP_WINDOW_ENABLED, false)) {
+    return true;
+  }
+
+  const offsetMinutes = toNumber(process.env.HEALTH_WARMUP_TZ_OFFSET_MINUTES, 0);
+  const nowUtcMs = Date.now();
+  const localMs = nowUtcMs + offsetMinutes * 60 * 1000;
+  const localDate = new Date(localMs);
+  const nowMinutes = localDate.getUTCHours() * 60 + localDate.getUTCMinutes();
+  const { start, end } = getWindowMinutes();
+
+  if (start === end) return true;
+  if (start < end) {
+    return nowMinutes >= start && nowMinutes < end;
+  }
+  return nowMinutes >= start || nowMinutes < end;
+};
+
+const isWarmupAuthorized = (req) => {
+  const expectedKey = process.env.HEALTH_WARMUP_KEY;
+  if (!expectedKey) return false;
+  const providedKey = req.query?.key || req.headers['x-warmup-key'];
+  return typeof providedKey === 'string' && providedKey === expectedKey;
+};
+
+const isWarmupRequested = (req) => {
+  const query = req.query || {};
+  const warmDbValue = query.warm_db ?? query.db;
+  return String(warmDbValue || '0') === '1';
+};
+
+const performHealthWarmup = async () => {
+  await masterPool.query('SELECT 1');
+};
+
+const handleHealth = async (req, res) => {
+  const response = {
     status: 'ok',
     uptime: process.uptime(),
-    timestamp: new Date().toISOString()
-  });
-});
+    timestamp: new Date().toISOString(),
+    db: {
+      warm_requested: false,
+      warmed: false,
+      window_enabled: toBoolean(process.env.HEALTH_WARMUP_WINDOW_ENABLED, false),
+      reason: 'not_requested',
+    },
+  };
+
+  if (!isWarmupRequested(req)) {
+    return res.status(200).json(response);
+  }
+
+  response.db.warm_requested = true;
+
+  if (!isWarmupAuthorized(req)) {
+    response.db.reason = 'unauthorized';
+    return res.status(200).json(response);
+  }
+
+  if (!isWithinWarmupWindow()) {
+    response.db.reason = 'outside_window';
+    return res.status(200).json(response);
+  }
+
+  try {
+    await performHealthWarmup();
+    response.db.warmed = true;
+    response.db.reason = 'warmed';
+    return res.status(200).json(response);
+  } catch (error) {
+    response.status = 'degraded';
+    response.db.reason = 'query_failed';
+    return res.status(503).json(response);
+  }
+};
+
+app.get('/health', handleHealth);
+app.get('/api/health', handleHealth);
 
 // Public routes
 app.use('/platform/auth', platformAuthRoutes);

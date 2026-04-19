@@ -13,7 +13,14 @@ const warmPool = async (pool, label) => {
 
 const startPoolWarmup = () => {
   if (startPoolWarmup.timer) return startPoolWarmup.timer;
-  const intervalMs = 4 * 60 * 1000;
+  const isEnabled = String(process.env.DB_WARMUP_ENABLED || 'false').toLowerCase() === 'true';
+  if (!isEnabled) {
+    console.log('[WARM] Periodic DB warmup disabled');
+    return null;
+  }
+
+  const parsedInterval = Number(process.env.DB_WARMUP_INTERVAL_MS || 4 * 60 * 1000);
+  const intervalMs = Number.isFinite(parsedInterval) ? parsedInterval : 4 * 60 * 1000;
 
   const tick = async () => {
     await warmPool(masterPool, 'Master DB');

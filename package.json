@@ -6,6 +6,7 @@
   "scripts": {
     "start": "nodemon server.js",
     "dev": "nodemon server.js",
+    "dev:cypress": "nodemon -r dotenv/config server.js dotenv_config_path=.env.cypress",
     "test": "jest"
   },
   "keywords": [],
