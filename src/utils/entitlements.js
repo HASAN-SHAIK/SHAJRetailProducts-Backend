@@ -8,6 +8,7 @@ const FEATURE_ALIASES = {
   advanced_reports: ['advanced_reports', 'advancedReports'],
   analytical_reports: ['analytical_reports', 'analyticalReports'],
   enable_barcode: ['enable_barcode'],
+  mobile_access: ['mobile_access', 'MOBILE_ACCESS', 'mobile_module', 'mobile_module_enabled'],
   enable_weight_based: ['enable_weight_based'],
   enable_piece_based: ['enable_piece_based'],
   priority_support: ['priority_support']

@@ -14,6 +14,7 @@ const {
   DEFAULTS
 } = require('../services/smartCache');
 const { resolveBranchIdFromRequest } = require('../utils/branch');
+const { hasFeature } = require('../utils/entitlements');
 
 const getTenantId = (req) => req.tenant_id || req.tenant?.id || null;
 const normalizeDateOnly = (value) => {
@@ -82,6 +83,14 @@ const normalizePaymentModeValue = (value) => {
   if (mode === 'upi' || mode === 'online') return 'online';
   if (mode === 'card' || mode === 'cash') return 'cash';
   return mode || null;
+};
+
+const ensureMobileAccess = (req, res) => {
+  if (hasFeature(req.featureFlags || req.planFeatures || {}, 'mobile_access')) {
+    return true;
+  }
+  res.status(403).json({ error: 'Mobile access is disabled for this tenant' });
+  return false;
 };
 
 const RETURN_REASONS = new Set([
@@ -1082,6 +1091,7 @@ const getOrderById = async (req, res) => {
         const { id } = req.params;
         const view = String(req.query?.view || '').toLowerCase();
         if (view === 'mobile') {
+            if (!ensureMobileAccess(req, res)) return;
             const orderRes = await requestPool.query(
                 `SELECT id,
                         order_status,
@@ -1374,6 +1384,7 @@ const getAllOrders = async (req, res) => {
         }
         const view = String(req.query?.view || '').toLowerCase();
         if (view === 'mobile') {
+            if (!ensureMobileAccess(req, res)) return;
             const resolvedPage = Math.max(parseInt(req.query?.page, 10) || 1, 1);
             const resolvedLimit = Math.min(Math.max(parseInt(req.query?.limit, 10) || 20, 1), 100);
             const offset = (resolvedPage - 1) * resolvedLimit;
