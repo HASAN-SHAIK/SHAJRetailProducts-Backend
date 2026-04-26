@@ -8,7 +8,26 @@ const normalizeBranchId = (raw) => {
   return isUuid(text) ? text : null;
 };
 
-const resolveBranchIdFromRequest = (req) =>
-  normalizeBranchId(req?.headers?.['x-branch-id'] || req?.query?.branch_id || req?.body?.branch_id);
+const resolveBranchIdFromRequest = (req) => {
+  const requestedBranchId = normalizeBranchId(
+    req?.headers?.['x-branch-id'] || req?.query?.branch_id || req?.body?.branch_id
+  );
+  const user = req?.user || {};
+  const userRole = String(user?.role || '').toLowerCase();
+  const userAllBranchAccess =
+    user?.all_branch_access === undefined || user?.all_branch_access === null
+      ? true
+      : user?.all_branch_access === true ||
+        user?.all_branch_access === 1 ||
+        String(user?.all_branch_access).toLowerCase() === 'true';
+  const userBranchId = normalizeBranchId(user?.branch_id);
+
+  // Staff with restricted branch access are always pinned to their assigned branch.
+  if (userRole === 'staff' && !userAllBranchAccess && userBranchId) {
+    return userBranchId;
+  }
+
+  return requestedBranchId;
+};
 
 module.exports = { isUuid, normalizeBranchId, resolveBranchIdFromRequest };

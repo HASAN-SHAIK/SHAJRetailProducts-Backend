@@ -4,8 +4,16 @@ CREATE TABLE IF NOT EXISTS users (
   email VARCHAR(255) UNIQUE NOT NULL,
   password TEXT NOT NULL,
   role VARCHAR(50) CHECK (role IN ('admin', 'staff')),
+  branch_id UUID,
+  all_branch_access BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC')
 );
+
+ALTER TABLE IF EXISTS users
+  ADD COLUMN IF NOT EXISTS branch_id UUID;
+
+ALTER TABLE IF EXISTS users
+  ADD COLUMN IF NOT EXISTS all_branch_access BOOLEAN NOT NULL DEFAULT TRUE;
 
 CREATE TABLE IF NOT EXISTS shop_details (
   id SERIAL PRIMARY KEY,
@@ -949,8 +957,8 @@ CREATE TABLE IF NOT EXISTS dedupe_merge_logs (
 CREATE TABLE IF NOT EXISTS stock_audit_logs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   product_id INT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-  batch_id UUID REFERENCES batches(id) ON DELETE SET NULL,
-  branch_id UUID REFERENCES branches(id) ON DELETE SET NULL,
+  batch_id UUID,
+  branch_id UUID,
   actor_user_id INT,
   actor_role TEXT,
   actor_name TEXT,
@@ -1204,6 +1212,32 @@ CREATE INDEX IF NOT EXISTS idx_batches_expiry
   ON batches (expiry_date ASC);
 CREATE INDEX IF NOT EXISTS idx_batches_purchase_order
   ON batches (purchase_order_id);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'stock_audit_logs_batch_id_fkey'
+      AND conrelid = 'stock_audit_logs'::regclass
+  ) THEN
+    ALTER TABLE stock_audit_logs
+      ADD CONSTRAINT stock_audit_logs_batch_id_fkey
+      FOREIGN KEY (batch_id) REFERENCES batches(id) ON DELETE SET NULL;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'stock_audit_logs_branch_id_fkey'
+      AND conrelid = 'stock_audit_logs'::regclass
+  ) THEN
+    ALTER TABLE stock_audit_logs
+      ADD CONSTRAINT stock_audit_logs_branch_id_fkey
+      FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE SET NULL;
+  END IF;
+END
+$$;
 
 ALTER TABLE orders
   ADD COLUMN IF NOT EXISTS returned_amount DECIMAL(12,2) DEFAULT 0;

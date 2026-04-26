@@ -42,7 +42,9 @@ const register = async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
     const safeRole = role === 'admin' || role === 'staff' ? role : 'staff';
     const newUser = await tenantPool.query(
-      'INSERT INTO users (name, email, password, role) VALUES ($1, $2, $3, $4) RETURNING id, name, email, role',
+      `INSERT INTO users (name, email, password, role)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, name, email, role, branch_id, all_branch_access`,
       [name, email, hashedPassword, safeRole]
     );
 
@@ -113,7 +115,9 @@ const login = async (req, res) => {
       tenant_plan: tenant.plan_type,
       tenant_active: tenant.is_active,
       tenant_addons: tenant.addons || {},
-      tenant_gst_mode: tenant.gst_mode || 'INCLUSIVE'
+      tenant_gst_mode: tenant.gst_mode || 'INCLUSIVE',
+      branch_id: user.branch_id || null,
+      all_branch_access: user.all_branch_access !== false
     });
 
     setAuthCookie(
@@ -126,7 +130,14 @@ const login = async (req, res) => {
     return res.status(200).json({
       success: true,
       token,
-      user: { id: user.id, name: user.name, email: user.email, role: user.role },
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        branch_id: user.branch_id || null,
+        all_branch_access: user.all_branch_access !== false
+      },
       tenant: { id: tenant.id, name: tenant.shop_name, plan: tenant.plan_type }
     });
   } catch (error) {

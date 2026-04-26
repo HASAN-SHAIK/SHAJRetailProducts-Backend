@@ -1775,6 +1775,16 @@ const createTenantUser = async (req, res) => {
     }
 
     const { name, email, password, role } = req.body || {};
+    const requestedBranchId = normalizeBranchId(req.body?.branch_id);
+    const requestedAllBranchAccess = req.body?.all_branch_access;
+    const allBranchAccess =
+      requestedAllBranchAccess === undefined || requestedAllBranchAccess === null
+        ? requestedBranchId
+          ? false
+          : true
+        : requestedAllBranchAccess === true ||
+          requestedAllBranchAccess === 1 ||
+          String(requestedAllBranchAccess).toLowerCase() === 'true';
     if (!name || !email || !password || !role) {
       return jsonError(res, 400, 'VALIDATION_ERROR', 'name, email, password, role are required');
     }
@@ -1783,10 +1793,27 @@ const createTenantUser = async (req, res) => {
     if (!['admin', 'staff'].includes(normalizedRole)) {
       return jsonError(res, 400, 'VALIDATION_ERROR', 'role must be admin or staff');
     }
+    if (!allBranchAccess && !requestedBranchId) {
+      return jsonError(
+        res,
+        400,
+        'VALIDATION_ERROR',
+        'branch_id is required when all_branch_access is false'
+      );
+    }
 
     const context = await resolveTenantContext(tenantId);
     if (!context) {
       return jsonError(res, 404, 'TENANT_NOT_FOUND', 'Tenant not found');
+    }
+    if (requestedBranchId) {
+      const branchRes = await context.tenantPool.query(
+        `SELECT id FROM branches WHERE id = $1 LIMIT 1`,
+        [requestedBranchId]
+      );
+      if (branchRes.rowCount === 0) {
+        return jsonError(res, 400, 'VALIDATION_ERROR', 'Invalid branch_id');
+      }
     }
 
     const contextPlanFeatures = resolveFeatures(context.tenant || {});
@@ -1803,16 +1830,25 @@ const createTenantUser = async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const result = await context.tenantPool.query(
-      `INSERT INTO users (name, email, password, role)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, name, email, role, created_at`,
-      [name, email.toString().trim().toLowerCase(), hashedPassword, normalizedRole]
+      `INSERT INTO users (name, email, password, role, branch_id, all_branch_access)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, name, email, role, branch_id, all_branch_access, created_at`,
+      [
+        name,
+        email.toString().trim().toLowerCase(),
+        hashedPassword,
+        normalizedRole,
+        allBranchAccess ? null : requestedBranchId,
+        allBranchAccess
+      ]
     );
 
     await logAdminAction(req.admin?.admin_id, 'TENANT_USER_CREATED', 'user', result.rows[0].id, {
       tenant_id: tenantId,
       email: result.rows[0].email,
-      role: result.rows[0].role
+      role: result.rows[0].role,
+      branch_id: result.rows[0].branch_id || null,
+      all_branch_access: result.rows[0].all_branch_access === true
     });
 
     return jsonOk(res, { user: result.rows[0] }, 'User created');
@@ -1837,9 +1873,17 @@ const getTenantUsers = async (req, res) => {
     }
 
     const result = await context.tenantPool.query(
-      `SELECT id, name, email, role, created_at
-       FROM users
-       ORDER BY id DESC`
+      `SELECT u.id,
+              u.name,
+              u.email,
+              u.role,
+              u.branch_id,
+              u.all_branch_access,
+              b.name AS branch_name,
+              u.created_at
+       FROM users u
+       LEFT JOIN branches b ON b.id = u.branch_id
+       ORDER BY u.id DESC`
     );
 
     await logAdminAction(req.admin?.admin_id, 'TENANT_USERS_VIEWED', 'user', null, {
@@ -1883,7 +1927,7 @@ const updateTenantUserRole = async (req, res) => {
       `UPDATE users
        SET role = $1
        WHERE id = $2
-       RETURNING id, name, email, role, created_at`,
+       RETURNING id, name, email, role, branch_id, all_branch_access, created_at`,
       [normalizedRole, userId]
     );
 
@@ -1920,7 +1964,7 @@ const unregisterTenantUser = async (req, res) => {
     }
 
     const targetRes = await context.tenantPool.query(
-      `SELECT id, name, email, role, created_at
+      `SELECT id, name, email, role, branch_id, all_branch_access, created_at
        FROM users
        WHERE id = $1`,
       [userId]
@@ -1951,7 +1995,7 @@ const unregisterTenantUser = async (req, res) => {
     const deleteRes = await context.tenantPool.query(
       `DELETE FROM users
        WHERE id = $1
-       RETURNING id, name, email, role, created_at`,
+       RETURNING id, name, email, role, branch_id, all_branch_access, created_at`,
       [userId]
     );
 

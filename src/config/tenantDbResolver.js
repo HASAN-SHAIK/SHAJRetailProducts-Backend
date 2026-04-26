@@ -4,6 +4,8 @@ const { resolveFeatures } = require('../utils/resolveFeatures');
 
 const tenantCache = new Map();
 const cacheTtlMs = 5 * 60 * 1000;
+const isMissingGstModeColumnError = (error) =>
+  error?.code === '42703' && String(error?.message || '').toLowerCase().includes('gst_mode');
 
 const getCached = (key) => {
   const entry = tenantCache.get(key);
@@ -23,12 +25,27 @@ const loadTenant = async (tenantId) => {
   const cached = getCached(`tenant:${tenantId}`);
   if (cached) return cached;
 
-  const tenantRes = await masterPool.query(
-    `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.plan_type, t.is_active, t.addons, t.gst_mode
-     FROM tenants t
-     WHERE t.id = $1`,
-    [tenantId]
-  );
+  let tenantRes;
+  try {
+    tenantRes = await masterPool.query(
+      `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.plan_type, t.is_active, t.addons, t.gst_mode
+       FROM tenants t
+       WHERE t.id = $1`,
+      [tenantId]
+    );
+  } catch (error) {
+    if (!isMissingGstModeColumnError(error)) throw error;
+    tenantRes = await masterPool.query(
+      `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.plan_type, t.is_active, t.addons
+       FROM tenants t
+       WHERE t.id = $1`,
+      [tenantId]
+    );
+    tenantRes = {
+      ...tenantRes,
+      rows: (tenantRes.rows || []).map((row) => ({ ...row, gst_mode: null }))
+    };
+  }
   if (tenantRes.rowCount === 0) return null;
   const tenant = tenantRes.rows[0];
   setCached(`tenant:${tenantId}`, tenant);
