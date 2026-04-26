@@ -10,7 +10,8 @@ const resolveGstMode = (req) => {
 
 const normalizePaymentModeValue = (value) => {
   const mode = (value || '').toLowerCase();
-  if (mode === 'upi' || mode === 'online') return 'online';
+  if (mode === 'online') return 'online';
+  if (mode === 'upi') return 'online';
   if (mode === 'card' || mode === 'cash') return 'cash';
   return mode || null;
 };
@@ -267,6 +268,7 @@ const createOrder = async (req, res) => {
     }
 
     const isOnline = resolvedPaymentMode === 'online';
+    // UPI and cash-like modes should complete immediately; only true online sync-mode starts pending.
     const orderStatus = isOnline ? 'pending' : 'completed';
     const gstMode = resolveGstMode(req);
     const orderRes = await client.query(
@@ -340,10 +342,17 @@ const createOrder = async (req, res) => {
     }
 
     const payments = Array.isArray(req.body?.payments) ? req.body.payments : [];
-    const paidTotal = payments.reduce((sum, payment) => {
+    const paidTotalFromPayload = payments.reduce((sum, payment) => {
       const amount = Number(payment?.amount_paid ?? payment?.amount ?? 0);
       return Number.isFinite(amount) ? sum + amount : sum;
     }, 0);
+    // Backward-compat: if client didn't send payments for non-credit modes, treat as fully paid.
+    const paidTotal =
+      paidTotalFromPayload > 0
+        ? paidTotalFromPayload
+        : resolvedPaymentMode === 'credit'
+          ? 0
+          : Number(totalPrice || 0);
     const outstanding = Math.max(Number(totalPrice || 0) - paidTotal, 0);
 
     if (outstanding > 0) {

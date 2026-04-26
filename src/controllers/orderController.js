@@ -80,7 +80,8 @@ const mapProductsForIndexedDb = (rows) => {
 
 const normalizePaymentModeValue = (value) => {
   const mode = (value || '').toLowerCase();
-  if (mode === 'upi' || mode === 'online') return 'online';
+  if (mode === 'online') return 'online';
+  if (mode === 'upi') return 'online';
   if (mode === 'card' || mode === 'cash') return 'cash';
   return mode || null;
 };
@@ -732,13 +733,55 @@ const processOrderItems = async (client, orderId, items) => {
           }
         }
 
-        const payments = Array.isArray(req.body?.payments) ? req.body.payments : [];
-        const paidTotal = payments.reduce((sum, payment) => {
+        const incomingPayments = Array.isArray(req.body?.payments) ? req.body.payments : [];
+        const paymentsToRecord = [...incomingPayments];
+        // Backward compatibility: if client omits payments for non-credit mode, treat as fully paid.
+        if (
+          paymentsToRecord.length === 0 &&
+          Number(total_price || 0) > 0 &&
+          resolvedPaymentMode &&
+          resolvedPaymentMode !== 'credit' &&
+          resolvedPaymentMode !== 'online'
+        ) {
+          paymentsToRecord.push({
+            amount_paid: Number(total_price || 0),
+            payment_mode: resolvedPaymentMode,
+            created_at: new Date().toISOString(),
+          });
+        }
+
+        let totalPaid = 0;
+        for (const payment of paymentsToRecord) {
           const amount = normalizeNumber(payment?.amount_paid ?? payment?.amount);
-          return Number.isFinite(amount) ? sum + amount : sum;
-        }, 0);
-        const outstanding = Math.max(Number(total_price || 0) - paidTotal, 0);
-        if (outstanding > 0) {
+          if (!Number.isFinite(amount) || amount <= 0) continue;
+          const resolvedPaymentForTxn =
+            normalizePaymentModeValue(payment?.payment_mode || payment?.payment_method) ||
+            resolvedPaymentMode ||
+            null;
+          const ratio = Number(total_price || 0) > 0 ? amount / Number(total_price || 0) : 0;
+          const profit = total_profit * ratio;
+          const createdAt = payment?.created_at ? new Date(payment.created_at) : new Date();
+          await client.query(
+            `INSERT INTO transactions (order_id, total_price, profit, payment_mode, created_at, amount, party_type, party_id, direction, txn_type, notes, branch_id)
+             VALUES ($1, $2, $3, $4, $5, $2, 'customer', $6, 'in', 'sale', NULL, $7)`,
+            [order_id, amount, profit, resolvedPaymentForTxn, createdAt, resolvedCustomerId || null, branchId]
+          );
+          totalPaid += amount;
+        }
+
+        if (totalPaid > 0) {
+          const completed = Number(total_price || 0) > 0 ? totalPaid >= Number(total_price || 0) : true;
+          await client.query(
+            `UPDATE orders
+             SET total_paid = $1,
+                 order_status = $2
+             WHERE id = $3`,
+            [totalPaid, completed ? 'completed' : 'pending', order_id]
+          );
+        }
+
+        const outstanding = Math.max(Number(total_price || 0) - totalPaid, 0);
+        if (outstanding > 0 && resolvedPaymentMode !== 'online') {
           if (!resolvedCustomerId) {
             throw new Error('Customer is required for partial/credit billing');
           }
@@ -763,7 +806,6 @@ const processOrderItems = async (client, orderId, items) => {
           );
         }
 
-        // Payment should be recorded only when payment is actually made (mark paid).
         await client.query("COMMIT");
 
         let updatedProducts = [];

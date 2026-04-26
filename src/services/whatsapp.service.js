@@ -233,4 +233,30 @@ const sendBill = async (req, { phone, order_id }) => {
   return { phone: e164Phone, order_id, message, provider: providerResponse };
 };
 
-module.exports = { sendBill };
+const sendText = async (req, { phone, message }, options = {}) => {
+  const e164Phone = buildE164Phone(phone);
+  if (!e164Phone) {
+    const err = new Error('Valid phone number is required.');
+    err.status = 400;
+    throw err;
+  }
+  const trimmed = String(message || '').trim();
+  if (!trimmed) {
+    const err = new Error('Message is required.');
+    err.status = 400;
+    throw err;
+  }
+
+  const requestPool = options.requestPool || getRequestPool(req || {});
+  if (options.skipModuleCheck !== true) {
+    await ensureWhatsAppEnabled(req || {}, requestPool);
+  }
+
+  const providerResponse = await sendWhatsAppMessage({
+    phone: e164Phone,
+    message: trimmed
+  });
+  return { phone: e164Phone, message: trimmed, provider: providerResponse };
+};
+
+module.exports = { sendBill, sendText };

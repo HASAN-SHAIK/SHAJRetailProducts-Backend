@@ -21,6 +21,7 @@ const {
   createTenantUser,
   getTenantUsers,
   updateTenantUserRole,
+  unregisterTenantUser,
   upgradeTenantPlan,
   renewTenantPlan,
   getTenantBranches,
@@ -64,6 +65,7 @@ router.patch('/tenants/:tenant_id/branches/:branch_id', updateTenantBranch);
 router.post('/tenants/:tenant_id/upgrade-plan', upgradeTenantPlan);
 router.post('/tenants/:tenant_id/renew-plan', renewTenantPlan);
 router.patch('/users/:id/role', updateTenantUserRole);
+router.delete('/tenants/:tenant_id/users/:id', unregisterTenantUser);
 router.get('/support/cases', getSupportCasesAdmin);
 router.get('/support/cases/:id', getSupportCaseAdmin);
 router.patch('/support/cases/:id/status', updateSupportCaseStatus);

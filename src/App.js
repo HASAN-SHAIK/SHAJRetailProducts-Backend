@@ -17,6 +17,7 @@ const { getTenantMe, getPlatformBanner } = require('./controllers/tenantControll
 const { bootstrapMasterDatabase } = require('./services/masterBootstrap');
 const { startPoolWarmup } = require('./services/poolWarmup');
 const { startStockConsistencyJob } = require('./services/stockConsistencyJob');
+const { startOwnerDailyDigestJob } = require('./services/ownerDailyDigestJob');
 const masterPool = require('./db/masterPool');
 require('dotenv').config();
 
@@ -173,6 +174,7 @@ const startServer = async () => {
   startPoolWarmup();
   if (process.env.NODE_ENV !== 'test') {
     startStockConsistencyJob();
+    startOwnerDailyDigestJob();
   }
 };
 

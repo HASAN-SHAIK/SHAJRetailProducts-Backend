@@ -1902,6 +1902,71 @@ const updateTenantUserRole = async (req, res) => {
   }
 };
 
+const unregisterTenantUser = async (req, res) => {
+  try {
+    const tenantId = Number(req.params.tenant_id || req.body?.tenant_id || req.query?.tenant_id);
+    if (!tenantId) {
+      return jsonError(res, 400, 'VALIDATION_ERROR', 'tenant_id is required');
+    }
+
+    const userId = Number(req.params.id);
+    if (!userId) {
+      return jsonError(res, 400, 'VALIDATION_ERROR', 'Invalid user id');
+    }
+
+    const context = await resolveTenantContext(tenantId);
+    if (!context) {
+      return jsonError(res, 404, 'TENANT_NOT_FOUND', 'Tenant not found');
+    }
+
+    const targetRes = await context.tenantPool.query(
+      `SELECT id, name, email, role, created_at
+       FROM users
+       WHERE id = $1`,
+      [userId]
+    );
+
+    if (targetRes.rowCount === 0) {
+      return jsonError(res, 404, 'USER_NOT_FOUND', 'User not found');
+    }
+
+    const targetUser = targetRes.rows[0];
+    if (String(targetUser.role || '').toLowerCase() === 'admin') {
+      const adminCountRes = await context.tenantPool.query(
+        `SELECT COUNT(*)::int AS total
+         FROM users
+         WHERE role = 'admin'`
+      );
+      const totalAdmins = Number(adminCountRes.rows[0]?.total || 0);
+      if (totalAdmins <= 1) {
+        return jsonError(
+          res,
+          409,
+          'LAST_ADMIN_BLOCKED',
+          'Cannot unregister the last admin user. Create or promote another admin first.'
+        );
+      }
+    }
+
+    const deleteRes = await context.tenantPool.query(
+      `DELETE FROM users
+       WHERE id = $1
+       RETURNING id, name, email, role, created_at`,
+      [userId]
+    );
+
+    await logAdminAction(req.admin?.admin_id, 'TENANT_USER_UNREGISTERED', 'user', userId, {
+      tenant_id: tenantId,
+      email: targetUser.email,
+      role: targetUser.role
+    });
+
+    return jsonOk(res, { user: deleteRes.rows[0] }, 'User unregistered');
+  } catch (error) {
+    return jsonError(res, 500, 'USER_UNREGISTER_FAILED', error.message);
+  }
+};
+
 const getTenantBranches = async (req, res) => {
   try {
     const tenantId = String(req.params.tenant_id || '').trim();
@@ -2045,6 +2110,7 @@ module.exports = {
   createTenantUser,
   getTenantUsers,
   updateTenantUserRole,
+  unregisterTenantUser,
   upgradeTenantPlan,
   renewTenantPlan,
   getTenantBranches,

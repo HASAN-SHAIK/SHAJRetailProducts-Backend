@@ -1,5 +1,6 @@
 const masterPool = require('../config/masterDb');
 const { jsonError, jsonOk } = require('../utils/responses');
+const { notifySupportAssigneeChanged } = require('../services/supportNotification.service');
 
 const SUPPORT_CATEGORIES = ['billing', 'technical', 'bug', 'feature_request'];
 const SUPPORT_PRIORITIES = ['low', 'medium', 'high', 'urgent'];
@@ -173,22 +174,45 @@ const updateSupportCaseAssignee = async (req, res) => {
 
   try {
     const adminRes = await masterPool.query(
-      `SELECT id FROM platform_admins WHERE email = $1 or name = $1`,
+      `SELECT id, name, email FROM platform_admins WHERE email = $1 or name = $1`,
       [assignedTo]
     );
     if (adminRes.rowCount === 0) {
       return jsonError(res, 400, 'VALIDATION_ERROR', 'Assigned admin not found');
     }
+    const assignee = adminRes.rows[0];
     const updateRes = await masterPool.query(
       `UPDATE support_cases
        SET assigned_to = $1,
            updated_at = (NOW() AT TIME ZONE 'UTC')
        WHERE id = $2
        RETURNING id, assigned_to, updated_at`,
-      [adminRes.rows[0].id, caseId]
+      [assignee.id, caseId]
     );
     if (updateRes.rowCount === 0) {
       return jsonError(res, 404, 'NOT_FOUND', 'Support case not found');
+    }
+
+    const caseRes = await masterPool.query(
+      `SELECT sc.id, sc.title, sc.category, sc.priority, sc.status, sc.tenant_id, t.shop_name AS tenant_name
+       FROM support_cases sc
+       JOIN tenants t ON t.id = sc.tenant_id
+       WHERE sc.id = $1`,
+      [caseId]
+    );
+    const supportCase = caseRes.rows[0];
+    if (supportCase) {
+      notifySupportAssigneeChanged({
+        caseId: supportCase.id,
+        title: supportCase.title,
+        category: supportCase.category,
+        priority: supportCase.priority,
+        status: supportCase.status,
+        tenantId: supportCase.tenant_id,
+        tenantName: supportCase.tenant_name,
+        assigneeName: assignee.name,
+        assigneeEmail: assignee.email
+      }).catch(() => null);
     }
 
     return jsonOk(res, { case: updateRes.rows[0] });

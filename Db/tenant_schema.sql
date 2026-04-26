@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS shop_details (
   shop_name VARCHAR(255) NOT NULL,
   owner_name VARCHAR(255),
   mobile_number VARCHAR(15),
+  upi_id VARCHAR(100),
   gst_number VARCHAR(20),
   address_line TEXT,
   city VARCHAR(100),
@@ -19,6 +20,9 @@ CREATE TABLE IF NOT EXISTS shop_details (
   pincode VARCHAR(10),
   created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC')
 );
+
+ALTER TABLE IF EXISTS shop_details
+  ADD COLUMN IF NOT EXISTS upi_id VARCHAR(100);
 
 CREATE TABLE IF NOT EXISTS customers (
   id SERIAL PRIMARY KEY,

@@ -1,5 +1,6 @@
 const masterPool = require('../../config/masterDb');
 const { jsonError, jsonOk } = require('../../utils/responses');
+const { notifyNewSupportCase } = require('../../services/supportNotification.service');
 
 const SUPPORT_CATEGORIES = ['billing', 'technical', 'bug', 'feature_request'];
 const SUPPORT_PRIORITIES = ['low', 'medium', 'high', 'urgent'];
@@ -168,10 +169,42 @@ const createSupportCase = async (req, res) => {
       [tenantId, title, description, category, priority, userId]
     );
 
+    const createdCase = insertRes.rows[0];
+    let creator = { name: req.user?.user_name || null, email: null };
+    try {
+      if (req.tenantPool && userId) {
+        const userRes = await req.tenantPool.query(
+          `SELECT name, email
+           FROM users
+           WHERE id = $1`,
+          [userId]
+        );
+        if (userRes.rowCount > 0) {
+          creator = {
+            name: userRes.rows[0]?.name || creator.name,
+            email: userRes.rows[0]?.email || null
+          };
+        }
+      }
+    } catch {
+      // ignore lookup error, email notification will still proceed with available details
+    }
+
+    notifyNewSupportCase({
+      caseId: createdCase.id,
+      tenantId,
+      title,
+      description,
+      category,
+      priority,
+      createdByName: creator.name,
+      createdByEmail: creator.email
+    }).catch(() => null);
+
     return res.status(201).json({
       success: true,
       data: {
-        case: insertRes.rows[0]
+        case: createdCase
       }
     });
   } catch (error) {
