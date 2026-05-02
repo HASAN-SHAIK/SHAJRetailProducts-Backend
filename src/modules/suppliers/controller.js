@@ -3,9 +3,9 @@ const {
   updateSupplier,
   listSuppliers,
   getSupplierById,
-  getLedger,
-  addPayment
+  getLedger
 } = require('./service');
+const accountingService = require('../../services/accountingService');
 
 const getPool = (req) => req.tenantPool;
 
@@ -74,7 +74,12 @@ const addPaymentEntry = async (req, res) => {
     if (!supplier) {
       return res.status(404).json({ success: false, message: 'Supplier not found' });
     }
-    const result = await addPayment(getPool(req), req.params.id, req.body || {});
+    const payload = {
+      ...(req.body || {}),
+      type: 'supplier',
+      supplier_id: Number(req.params.id),
+    };
+    const result = await accountingService.createPayment(req, payload);
     return res.status(201).json({ success: true, data: result });
   } catch (error) {
     return res.status(error.status || 500).json({ success: false, message: error.message || 'Failed to add payment' });

@@ -10,6 +10,15 @@ const { resolveBranchIdFromRequest } = require('../utils/branch');
 const getRequestPool = (req) => req.tenantPool || pool;
 
 const MAX_ERRORS = 50;
+const getOpeningState = async (client) => {
+  const res = await client.query(
+    `SELECT COALESCE(is_opening_completed, FALSE) AS is_opening_completed
+     FROM settings
+     ORDER BY id ASC
+     LIMIT 1`
+  );
+  return Boolean(res.rows[0]?.is_opening_completed);
+};
 
 const normalizeHeader = (value) => String(value || '').trim().toLowerCase();
 
@@ -32,6 +41,12 @@ const HEADER_MAP = {
   company: 'company',
   company_name: 'company',
   brand: 'company',
+  'is weight based': 'is_weight_based',
+  is_weight_based: 'is_weight_based',
+  weight_based: 'is_weight_based',
+  'time for delivery': 'time_for_delivery',
+  time_for_delivery: 'time_for_delivery',
+  delivery_time: 'time_for_delivery',
   quantity: 'stock_quantity',
   qty: 'stock_quantity',
   stock: 'stock_quantity',
@@ -81,6 +96,16 @@ const normalizeDate = (value) => {
   return raw;
 };
 
+const normalizeBoolean = (value, defaultValue = false) => {
+  if (value === null || value === undefined || value === '') return defaultValue;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  const raw = String(value).trim().toLowerCase();
+  if (['yes', 'y', 'true', '1'].includes(raw)) return true;
+  if (['no', 'n', 'false', '0'].includes(raw)) return false;
+  return defaultValue;
+};
+
 const normalizeRow = (row = {}) => {
   const mapped = {};
   Object.keys(row || {}).forEach((key) => {
@@ -90,6 +115,15 @@ const normalizeRow = (row = {}) => {
     }
   });
   return mapped;
+};
+
+const generateAutoBatchNumber = () => {
+  const now = new Date();
+  const yyyy = now.getUTCFullYear();
+  const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(now.getUTCDate()).padStart(2, '0');
+  const random = Math.random().toString(36).slice(2, 8).toUpperCase();
+  return `${yyyy}${mm}${dd}-${random}`;
 };
 
 
@@ -191,6 +225,7 @@ const importProducts = async (req, file) => {
   let inserted = 0;
   let skipped = 0;
   let updated = 0;
+  let inventoryValue = 0;
 
   if (total === 0) {
     return { total, inserted, skipped, errors };
@@ -217,6 +252,7 @@ const importProducts = async (req, file) => {
   const client = await requestPool.connect();
   try {
     await client.query('BEGIN');
+    const isOpeningCompleted = await getOpeningState(client);
     for (let index = 0; index < rows.length; index += 1) {
       const raw = rows[index];
       const rowNumber = index + 2;
@@ -226,10 +262,13 @@ const importProducts = async (req, file) => {
       const category = raw.category ? String(raw.category).trim() : null;
       const mrp = normalizeNumber(raw.mrp);
       const purchase_price = normalizeNumber(raw.purchase_price);
-      const batch_number = raw.batch_number ? String(raw.batch_number).trim() : null;
+      const batch_number_input = raw.batch_number ? String(raw.batch_number).trim() : '';
+      const batch_number = batch_number_input || generateAutoBatchNumber();
       const expiry_date = normalizeDate(raw.expiry_date);
       const hsn_code = raw.hsn_code ? String(raw.hsn_code).trim() : null;
       const stock_quantity = normalizeNumber(raw.stock_quantity) ?? 0;
+      const is_weight_based = normalizeBoolean(raw.is_weight_based, false);
+      const time_for_delivery = Number.isFinite(Number(raw.time_for_delivery)) ? Number(raw.time_for_delivery) : 0;
       let gst_percentage = normalizeNumber(raw.gst_percentage);
       if (gst_percentage === null) {
         gst_percentage = await resolveGstPercentage({ tenantPool: client }, hsn_code);
@@ -254,9 +293,13 @@ const importProducts = async (req, file) => {
         seenInFile.add(barcode);
       }
 
-      const selling_price = 0;
+      const selling_price = normalizeNumber(raw.selling_price);
+      if (!selling_price || selling_price <= 0) {
+        errors.push({ row: rowNumber, message: 'selling_price is required' });
+        continue;
+      }
       const resolvedPurchasePrice = purchase_price;
-      const hasBatch = Boolean(batch_number);
+      const hasBatch = true;
 
       try {
         await client.query('SAVEPOINT product_import_row');
@@ -267,15 +310,17 @@ const importProducts = async (req, file) => {
                  name = $1,
                  company = COALESCE($2, p.company),
                  category = COALESCE($3, p.category),
-                 purchase_price = COALESCE($4, p.purchase_price),
+                 purchase_price = CASE WHEN $13 THEN p.purchase_price ELSE COALESCE($4, p.purchase_price) END,
                  mrp = COALESCE($5, p.mrp),
                  hsn_code = COALESCE($6, p.hsn_code),
                  gst_percentage = COALESCE($7, p.gst_percentage),
                  barcode = COALESCE($8, p.barcode),
-                 stock_quantity = p.stock_quantity + COALESCE($9, 0),
+                 stock_quantity = CASE WHEN $13 THEN p.stock_quantity ELSE p.stock_quantity + COALESCE($9, 0) END,
                  expiry_date = COALESCE($10, p.expiry_date),
                  is_batch_enabled = CASE WHEN $11 THEN TRUE ELSE p.is_batch_enabled END,
-                 branch_id = COALESCE(p.branch_id, $12)
+                 branch_id = COALESCE(p.branch_id, $12),
+                 is_weight_based = COALESCE($14, p.is_weight_based),
+                 time_for_delivery = COALESCE($15, p.time_for_delivery)
              WHERE p.barcode = $8
                AND p.is_deleted = FALSE
                AND ($12::uuid IS NULL OR p.branch_id = $12)
@@ -292,12 +337,16 @@ const importProducts = async (req, file) => {
               stock_quantity,
               expiry_date,
               hasBatch,
-              branchId
+              branchId,
+              isOpeningCompleted,
+              is_weight_based,
+              time_for_delivery
             ]
           );
           if (updateRes.rowCount > 0) {
             updated += 1;
-            if (hasBatch) {
+            if (!isOpeningCompleted) inventoryValue += (stock_quantity || 0) * (resolvedPurchasePrice || 0);
+            if (hasBatch && !isOpeningCompleted) {
               await client.query(
                 `INSERT INTO batches
                   (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity)
@@ -317,26 +366,28 @@ const importProducts = async (req, file) => {
             // Fallback: if barcode existed in the pre-query but got deleted, insert.
             const insertRes = await client.query(
               `INSERT INTO products
-                (name, company, category, selling_price, purchase_price, mrp, hsn_code, gst_percentage, barcode, stock_quantity, expiry_date, is_batch_enabled, branch_id)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                (name, company, category, selling_price, purchase_price, mrp, hsn_code, gst_percentage, barcode, stock_quantity, expiry_date, is_batch_enabled, branch_id, is_weight_based, time_for_delivery)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                RETURNING id`,
               [
                 name,
                 company,
                 category,
                 selling_price,
-                resolvedPurchasePrice,
+                isOpeningCompleted ? null : resolvedPurchasePrice,
                 mrp,
                 hsn_code,
                 gst_percentage,
                 barcode,
-                stock_quantity,
+                isOpeningCompleted ? 0 : stock_quantity,
                 expiry_date,
                 hasBatch,
-                branchId
+                branchId,
+                is_weight_based,
+                time_for_delivery
               ]
             );
-            if (hasBatch) {
+            if (hasBatch && !isOpeningCompleted) {
               await client.query(
                 `INSERT INTO batches
                   (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity)
@@ -353,30 +404,33 @@ const importProducts = async (req, file) => {
               );
             }
             inserted += 1;
+            if (!isOpeningCompleted) inventoryValue += (stock_quantity || 0) * (resolvedPurchasePrice || 0);
           }
         } else {
           const insertRes = await client.query(
             `INSERT INTO products
-              (name, company, category, selling_price, purchase_price, mrp, hsn_code, gst_percentage, barcode, stock_quantity, expiry_date, is_batch_enabled, branch_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+              (name, company, category, selling_price, purchase_price, mrp, hsn_code, gst_percentage, barcode, stock_quantity, expiry_date, is_batch_enabled, branch_id, is_weight_based, time_for_delivery)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
              RETURNING id`,
             [
               name,
               company,
               category,
               selling_price,
-              resolvedPurchasePrice,
+              isOpeningCompleted ? null : resolvedPurchasePrice,
               mrp,
               hsn_code,
               gst_percentage,
               barcode,
-              stock_quantity,
+              isOpeningCompleted ? 0 : stock_quantity,
               expiry_date,
               hasBatch,
-              branchId
+              branchId,
+              is_weight_based,
+              time_for_delivery
             ]
           );
-          if (hasBatch) {
+          if (hasBatch && !isOpeningCompleted) {
             await client.query(
               `INSERT INTO batches
                 (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity)
@@ -393,6 +447,7 @@ const importProducts = async (req, file) => {
             );
           }
           inserted += 1;
+          if (!isOpeningCompleted) inventoryValue += (stock_quantity || 0) * (resolvedPurchasePrice || 0);
         }
       } catch (err) {
         await client.query('ROLLBACK TO SAVEPOINT product_import_row');
@@ -413,7 +468,7 @@ const importProducts = async (req, file) => {
     client.release();
   }
 
-  return { total, inserted, updated, skipped, errors };
+  return { total, inserted, updated, skipped, errors, imported_products_count: inserted + updated, inventory_value: Number(inventoryValue.toFixed(2)) };
 };
 
 const importProductsFromRows = async (req, rows = []) => {
@@ -430,6 +485,7 @@ const importProductsFromRows = async (req, rows = []) => {
   let inserted = 0;
   let skipped = 0;
   let updated = 0;
+  let inventoryValue = 0;
 
   const barcodes = rows
     .map((row) => (row?.barcode ? String(row.barcode).trim() : null))
@@ -452,6 +508,7 @@ const importProductsFromRows = async (req, rows = []) => {
   const client = await requestPool.connect();
   try {
     await client.query('BEGIN');
+    const isOpeningCompleted = await getOpeningState(client);
     for (let index = 0; index < rows.length; index += 1) {
       const raw = rows[index] || {};
       const rowNumber = index + 1;
@@ -462,11 +519,14 @@ const importProductsFromRows = async (req, rows = []) => {
       const mrp = normalizeNumber(raw.mrp);
       const purchase_price = normalizeNumber(raw.purchase_price);
       const selling_price = normalizeNumber(raw.selling_price);
-      const batch_number = raw.batch_number ? String(raw.batch_number).trim() : null;
+      const batch_number_input = raw.batch_number ? String(raw.batch_number).trim() : '';
+      const batch_number = batch_number_input || generateAutoBatchNumber();
       const expiry_date = normalizeDate(raw.expiry_date);
       const hsn_code = raw.hsn_code ? String(raw.hsn_code).trim() : null;
       const stock_quantity = normalizeNumber(raw.stock_quantity) ?? 0;
-      const hasBatch = Boolean(batch_number);
+      const is_weight_based = normalizeBoolean(raw.is_weight_based, false);
+      const time_for_delivery = Number.isFinite(Number(raw.time_for_delivery)) ? Number(raw.time_for_delivery) : 0;
+      const hasBatch = true;
       let gst_percentage = normalizeNumber(raw.gst_percentage);
       if (gst_percentage === null) {
         gst_percentage = await resolveGstPercentage({ tenantPool: client }, hsn_code);
@@ -504,18 +564,20 @@ const importProductsFromRows = async (req, rows = []) => {
                  company = COALESCE($2, p.company),
                  category = COALESCE($3, p.category),
                  selling_price = $4,
-                 purchase_price = COALESCE($5, p.purchase_price),
+                 purchase_price = CASE WHEN $13 THEN p.purchase_price ELSE COALESCE($5, p.purchase_price) END,
                  mrp = COALESCE($6, p.mrp),
                  hsn_code = COALESCE($7, p.hsn_code),
                  gst_percentage = COALESCE($8, p.gst_percentage),
                  barcode = COALESCE($9, p.barcode),
-                 stock_quantity = p.stock_quantity + COALESCE($10, 0),
+                 stock_quantity = CASE WHEN $13 THEN p.stock_quantity ELSE p.stock_quantity + COALESCE($10, 0) END,
                  expiry_date = COALESCE($11, p.expiry_date),
                  is_batch_enabled = CASE WHEN $12 THEN TRUE ELSE p.is_batch_enabled END,
-                 branch_id = COALESCE(p.branch_id, $13)
+                 branch_id = COALESCE(p.branch_id, $14),
+                 is_weight_based = COALESCE($15, p.is_weight_based),
+                 time_for_delivery = COALESCE($16, p.time_for_delivery)
              WHERE p.barcode = $9
                AND p.is_deleted = FALSE
-               AND ($13::uuid IS NULL OR p.branch_id = $13)
+               AND ($14::uuid IS NULL OR p.branch_id = $14)
              RETURNING p.id`,
             [
               name,
@@ -530,12 +592,16 @@ const importProductsFromRows = async (req, rows = []) => {
               stock_quantity,
               expiry_date,
               hasBatch,
-              branchId
+              isOpeningCompleted,
+              branchId,
+              is_weight_based,
+              time_for_delivery
             ]
           );
           if (updateRes.rowCount > 0) {
             updated += 1;
-            if (hasBatch) {
+            if (!isOpeningCompleted) inventoryValue += (stock_quantity || 0) * (purchase_price || 0);
+            if (hasBatch && !isOpeningCompleted) {
               await client.query(
                 `INSERT INTO batches
                   (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity)
@@ -554,26 +620,28 @@ const importProductsFromRows = async (req, rows = []) => {
           } else {
             const insertRes = await client.query(
               `INSERT INTO products
-                (name, company, category, selling_price, purchase_price, mrp, hsn_code, gst_percentage, barcode, stock_quantity, expiry_date, is_batch_enabled, branch_id)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                (name, company, category, selling_price, purchase_price, mrp, hsn_code, gst_percentage, barcode, stock_quantity, expiry_date, is_batch_enabled, branch_id, is_weight_based, time_for_delivery)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                RETURNING id`,
               [
                 name,
                 company,
                 category,
                 selling_price,
-                purchase_price,
+                isOpeningCompleted ? null : purchase_price,
                 mrp,
                 hsn_code,
                 gst_percentage,
                 barcode,
-                stock_quantity,
+                isOpeningCompleted ? 0 : stock_quantity,
                 expiry_date,
                 hasBatch,
-                branchId
+                branchId,
+                is_weight_based,
+                time_for_delivery
               ]
             );
-            if (hasBatch) {
+            if (hasBatch && !isOpeningCompleted) {
               await client.query(
                 `INSERT INTO batches
                   (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity)
@@ -590,30 +658,33 @@ const importProductsFromRows = async (req, rows = []) => {
               );
             }
             inserted += 1;
+            if (!isOpeningCompleted) inventoryValue += (stock_quantity || 0) * (purchase_price || 0);
           }
         } else {
           const insertRes = await client.query(
             `INSERT INTO products
-              (name, company, category, selling_price, purchase_price, mrp, hsn_code, gst_percentage, barcode, stock_quantity, expiry_date, is_batch_enabled, branch_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+              (name, company, category, selling_price, purchase_price, mrp, hsn_code, gst_percentage, barcode, stock_quantity, expiry_date, is_batch_enabled, branch_id, is_weight_based, time_for_delivery)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
              RETURNING id`,
             [
               name,
               company,
               category,
               selling_price,
-              purchase_price,
+              isOpeningCompleted ? null : purchase_price,
               mrp,
               hsn_code,
               gst_percentage,
               barcode,
-              stock_quantity,
+              isOpeningCompleted ? 0 : stock_quantity,
               expiry_date,
               hasBatch,
-              branchId
+              branchId,
+              is_weight_based,
+              time_for_delivery
             ]
           );
-          if (hasBatch) {
+          if (hasBatch && !isOpeningCompleted) {
             await client.query(
               `INSERT INTO batches
                 (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity)
@@ -630,6 +701,7 @@ const importProductsFromRows = async (req, rows = []) => {
             );
           }
           inserted += 1;
+          if (!isOpeningCompleted) inventoryValue += (stock_quantity || 0) * (purchase_price || 0);
         }
       } catch (err) {
         await client.query('ROLLBACK TO SAVEPOINT product_import_row');
@@ -650,7 +722,7 @@ const importProductsFromRows = async (req, rows = []) => {
     client.release();
   }
 
-  return { total, inserted, updated, skipped, errors };
+  return { total, inserted, updated, skipped, errors, imported_products_count: inserted + updated, inventory_value: Number(inventoryValue.toFixed(2)) };
 };
 
 module.exports = { importProducts, importProductsFromRows };

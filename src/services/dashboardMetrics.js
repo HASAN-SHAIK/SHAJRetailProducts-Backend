@@ -254,6 +254,7 @@ const getInventoryIntelligence = async (
     `SELECT p.id AS product_id,
             p.name AS product_name,
             p.stock_quantity AS current_stock,
+            p.created_at AS created_at,
             MAX(CASE WHEN $2::text IS NULL OR o.location = $2 THEN o.created_at END) AS last_sold_date,
             COALESCE(p.purchase_price, 0) AS purchase_price
      FROM products p
@@ -261,8 +262,11 @@ const getInventoryIntelligence = async (
      LEFT JOIN orders o ON o.id = oi.order_id AND o.transaction_type = 'sale'
      WHERE p.is_deleted = FALSE
        AND ($3::uuid IS NULL OR p.branch_id = $3)
-     GROUP BY p.id, p.name, p.stock_quantity, p.purchase_price
-     HAVING MAX(CASE WHEN $2::text IS NULL OR o.location = $2 THEN o.created_at END) IS NULL
+     GROUP BY p.id, p.name, p.stock_quantity, p.purchase_price, p.created_at
+     HAVING (
+       MAX(CASE WHEN $2::text IS NULL OR o.location = $2 THEN o.created_at END) IS NULL
+       AND p.created_at < NOW() - ($1::text || ' days')::interval
+     )
         OR MAX(CASE WHEN $2::text IS NULL OR o.location = $2 THEN o.created_at END) < NOW() - ($1::text || ' days')::interval
      ORDER BY last_sold_date NULLS FIRST
      LIMIT 50`,

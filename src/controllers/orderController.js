@@ -15,6 +15,7 @@ const {
 } = require('../services/smartCache');
 const { resolveBranchIdFromRequest } = require('../utils/branch');
 const { hasFeature } = require('../utils/entitlements');
+const { insertLedgerEntries, resolveCashBankLedgerName } = require('../services/ledgerPostingService');
 
 const getTenantId = (req) => req.tenant_id || req.tenant?.id || null;
 const normalizeDateOnly = (value) => {
@@ -28,6 +29,40 @@ const isExpiryBeforeBatchDate = (expiryValue, batchDate = new Date()) => {
   if (!expiryDate) return false;
   const batchDateOnly = normalizeDateOnly(batchDate);
   return Boolean(batchDateOnly && expiryDate < batchDateOnly);
+};
+
+const buildAutoBatchNumber = () => {
+  const now = new Date();
+  const year = now.getUTCFullYear();
+  const month = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(now.getUTCDate()).padStart(2, '0');
+  const randomPart = Math.floor(100000 + Math.random() * 900000);
+  return `${year}${month}${day}-${randomPart}`;
+};
+
+const resolveUniqueBatchNumber = async (client, productId, branchId, batchNumberInput) => {
+  const requested = String(batchNumberInput || '').trim();
+  const seed = requested || buildAutoBatchNumber();
+  let candidate = seed;
+  let suffix = 1;
+  while (true) {
+    const existingRes = await client.query(
+      `SELECT id
+       FROM batches
+       WHERE product_id = $1
+         AND is_deleted = FALSE
+         AND batch_number = $2
+         AND (
+           ($3::uuid IS NULL AND branch_id IS NULL) OR
+           branch_id = $3::uuid
+         )
+       LIMIT 1`,
+      [productId, candidate, branchId || null]
+    );
+    if (existingRes.rowCount === 0) return candidate;
+    candidate = `${seed}-${suffix}`;
+    suffix += 1;
+  }
 };
 
 const refreshCacheForProducts = async (tenantId, requestPool, productIds, branchId = null) => {
@@ -82,6 +117,7 @@ const normalizePaymentModeValue = (value) => {
   const mode = (value || '').toLowerCase();
   if (mode === 'online') return 'online';
   if (mode === 'upi') return 'online';
+  if (mode === 'bank') return 'bank';
   if (mode === 'card' || mode === 'cash') return 'cash';
   return mode || null;
 };
@@ -178,10 +214,28 @@ const validateCustomer = (req) => {
 const upsertCustomer = async (tenantPool, customer) => {
   const { name, mobile, phone, address, location } = customer;
   const resolvedPhone = phone || mobile || null;
-  const existing = await tenantPool.query(
-    'SELECT id FROM customers WHERE COALESCE(phone, mobile) = $1',
-    [resolvedPhone]
-  );
+  const normalizedPhone = String(resolvedPhone || '').replace(/\D+/g, '');
+  let existing;
+  if (normalizedPhone) {
+    existing = await tenantPool.query(
+      `SELECT id
+       FROM customers
+       WHERE regexp_replace(COALESCE(phone, mobile, ''), '\D', '', 'g') = $1
+       ORDER BY updated_at DESC NULLS LAST, id DESC
+       LIMIT 1`,
+      [normalizedPhone]
+    );
+  } else {
+    existing = await tenantPool.query(
+      `SELECT id
+       FROM customers
+       WHERE LOWER(TRIM(COALESCE(name, ''))) = LOWER(TRIM($1))
+         AND COALESCE(NULLIF(regexp_replace(COALESCE(phone, mobile, ''), '\D', '', 'g'), ''), '') = ''
+       ORDER BY updated_at DESC NULLS LAST, id DESC
+       LIMIT 1`,
+      [name || '']
+    );
+  }
   if (existing.rowCount > 0) {
     const customerId = existing.rows[0].id;
     const hasUpdates =
@@ -223,6 +277,21 @@ const buildValidationError = (message) => {
   const err = new Error(message);
   err.status = 400;
   return err;
+};
+
+const buildCreditCheckPayload = ({ creditLimit, currentBalance, requestedCredit }) => {
+  const limit = Number(creditLimit || 0);
+  const current = Number(currentBalance || 0);
+  const requested = Number(requestedCredit || 0);
+  const projected = current + requested;
+  const available = Math.max(limit - current, 0);
+  return {
+    credit_limit: limit,
+    current_balance: current,
+    requested_credit: requested,
+    projected_balance: projected,
+    available_credit: available
+  };
 };
 
 const normalizeReturnReason = (value) => {
@@ -539,7 +608,7 @@ const processOrderItems = async (client, orderId, items) => {
     return totalPrice;
 };
 
-  const saleOrder = async(req, res) => {
+const saleOrder = async(req, res) => {
       const requestPool = getRequestPool(req);
       const client = await requestPool.connect();
       try {
@@ -639,6 +708,7 @@ const processOrderItems = async (client, orderId, items) => {
         const resolvedPaymentMode = normalizePaymentModeValue(payment_mode || payment_method);
         const billingType = String(req.body?.billing_type || req.body?.billingType || 'retail').toLowerCase();
         const orderStatus = 'pending';
+        let creditCheck = null;
 
         let resolvedCustomerId = req.body?.customer_id || null;
         const resolvedCustomer = buildCustomerPayload(req);
@@ -666,6 +736,29 @@ const processOrderItems = async (client, orderId, items) => {
               [req.user?.user_id || null, resolvedCustomerId, resolvedCustomerPhone, branchId, total_price, orderStatus, resolvedPaymentMode || null, resolvedLocation, 'sale', isGstEnabled, gstMode, billingType]
           );
         const order_id = orderResult.rows[0].id;
+        if (resolvedCustomerId) {
+          await insertLedgerEntries({
+            client,
+            lines: [
+              { ledger: 'Accounts Receivable', debit: Number(total_price || 0), credit: 0 },
+              {
+                ledger: billingType === 'wholesale' ? 'Sales (Wholesale)' : 'Sales (Retail)',
+                debit: 0,
+                credit: Number(total_price || 0),
+              },
+            ],
+            transactionId: null,
+            referenceId: order_id,
+            referenceType: 'order',
+            description: `Sale order #${order_id}`,
+            date: new Date().toISOString(),
+            branchId,
+            clientTxnId: null,
+            syncStatus: 'SYNCED',
+            partyType: 'customer',
+            partyId: resolvedCustomerId,
+          });
+        }
 
         const orderItemProductIds = preparedItems.map((item) => item.product_id);
         const orderItemBatchIds = preparedItems.map((item) => item.batch_id);
@@ -766,6 +859,25 @@ const processOrderItems = async (client, orderId, items) => {
              VALUES ($1, $2, $3, $4, $5, $2, 'customer', $6, 'in', 'sale', NULL, $7)`,
             [order_id, amount, profit, resolvedPaymentForTxn, createdAt, resolvedCustomerId || null, branchId]
           );
+          if (resolvedCustomerId) {
+            await insertLedgerEntries({
+              client,
+              lines: [
+                { ledger: resolveCashBankLedgerName(resolvedPaymentForTxn), debit: amount, credit: 0 },
+                { ledger: 'Accounts Receivable', debit: 0, credit: amount },
+              ],
+              transactionId: null,
+              referenceId: order_id,
+              referenceType: 'payment',
+              description: `Sale receipt for order #${order_id}`,
+              date: createdAt,
+              branchId,
+              clientTxnId: null,
+              syncStatus: 'SYNCED',
+              partyType: 'customer',
+              partyId: resolvedCustomerId,
+            });
+          }
           totalPaid += amount;
         }
 
@@ -794,16 +906,20 @@ const processOrderItems = async (client, orderId, items) => {
           }
           const creditLimit = Number(creditRes.rows[0]?.credit_limit || 0);
           const currentBalance = Number(creditRes.rows[0]?.current_balance || 0);
+          creditCheck = buildCreditCheckPayload({
+            creditLimit,
+            currentBalance,
+            requestedCredit: outstanding
+          });
           if (creditLimit <= 0) {
             throw new Error('Credit not allowed for this customer');
           }
           if (currentBalance + outstanding > creditLimit) {
-            throw new Error('Customer credit limit exceeded');
+            const err = new Error('Customer credit limit exceeded');
+            err.status = 400;
+            err.details = creditCheck;
+            throw err;
           }
-          await client.query(
-            'UPDATE customers SET current_balance = COALESCE(current_balance, 0) + $1, updated_at = NOW() WHERE id = $2',
-            [outstanding, resolvedCustomerId]
-          );
         }
 
         await client.query("COMMIT");
@@ -831,17 +947,19 @@ const processOrderItems = async (client, orderId, items) => {
           data: {
             order_id,
             payment_mode: resolvedPaymentMode,
-            updated_products: updatedProducts
+            updated_products: updatedProducts,
+            credit_check: creditCheck
           },
           message: "Order created successfully",
           order_id,
           payment_mode: resolvedPaymentMode,
-          updated_products: updatedProducts
+          updated_products: updatedProducts,
+          credit_check: creditCheck
         });
     } catch (error) {
         await client.query("ROLLBACK");
         const status = error.status || 400;
-        res.status(status).json({ error: error.message });
+        res.status(status).json({ error: error.message, details: error.details || null });
     } finally {
         client.release();
     } 
@@ -907,10 +1025,16 @@ const processOrderItems = async (client, orderId, items) => {
                   `;
                   await client.query(updateProductQuery, [purchase_price, resolvedSellingPrice, existingProduct.id]);
                   touchedProductIds.add(existingProduct.id);
+                  const resolvedBatchNumber = await resolveUniqueBatchNumber(
+                    client,
+                    existingProduct.id,
+                    resolvedBranchId,
+                    batch_number
+                  );
                   await client.query(
                     `INSERT INTO batches (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity, quantity_remaining)
                      VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
-                    [existingProduct.id, resolvedBranchId, batch_number || null, expiryDate, purchase_price, resolvedSellingPrice, quantity]
+                    [existingProduct.id, resolvedBranchId, resolvedBatchNumber, expiryDate, purchase_price, resolvedSellingPrice, quantity]
                   );
               } else {
                   if (maxProducts !== null) {
@@ -931,10 +1055,16 @@ const processOrderItems = async (client, orderId, items) => {
                   if (inserted.rowCount > 0) {
                       touchedProductIds.add(inserted.rows[0].id);
                       newProductsAdded += 1;
+                      const resolvedBatchNumber = await resolveUniqueBatchNumber(
+                        client,
+                        inserted.rows[0].id,
+                        resolvedBranchId,
+                        batch_number
+                      );
                       await client.query(
                         `INSERT INTO batches (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity, quantity_remaining)
                          VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
-                        [inserted.rows[0].id, resolvedBranchId, batch_number || null, expiryDate, purchase_price, selling_price, quantity]
+                        [inserted.rows[0].id, resolvedBranchId, resolvedBatchNumber, expiryDate, purchase_price, selling_price, quantity]
                       );
                   }
               }
@@ -2238,18 +2368,6 @@ const processOrderReturn = async (req, res) => {
         );
 
         const totalPaid = Number(order.total_paid || 0);
-        const outstandingBefore = Math.max(totalPrice - totalPaid - previousReturned, 0);
-        const outstandingAfter = Math.max(totalPrice - totalPaid - nextReturned, 0);
-        const creditReduction = Math.max(outstandingBefore - outstandingAfter, 0);
-        if (order.customer_id && creditReduction > 0) {
-            await client.query(
-                `UPDATE customers
-                 SET current_balance = GREATEST(COALESCE(current_balance, 0) - $1, 0),
-                     updated_at = NOW()
-                 WHERE id = $2`,
-                [creditReduction, order.customer_id]
-            );
-        }
 
         await client.query('COMMIT');
 
@@ -2338,6 +2456,25 @@ const markOrderAsPaid = async (req, res) => {
              VALUES ($1, $2, $3, $4, $5, 'customer', $6, 'in', 'sale', NULL, $7)`,
             [orderRow.id, payAmount, profitPaid, resolvedPaymentMode, payAmount, orderRow.customer_id, orderRow.branch_id]
         );
+        if (orderRow.customer_id) {
+            await insertLedgerEntries({
+                client,
+                lines: [
+                    { ledger: resolveCashBankLedgerName(resolvedPaymentMode), debit: payAmount, credit: 0 },
+                    { ledger: 'Accounts Receivable', debit: 0, credit: payAmount },
+                ],
+                transactionId: null,
+                referenceId: Number(orderRow.id),
+                referenceType: 'payment',
+                description: `Order payment #${orderRow.id}`,
+                date: new Date().toISOString(),
+                branchId: orderRow.branch_id || null,
+                clientTxnId: null,
+                syncStatus: 'SYNCED',
+                partyType: 'customer',
+                partyId: Number(orderRow.customer_id),
+            });
+        }
 
         const nextTotalPaid = totalPaid + payAmount;
 
@@ -2350,17 +2487,6 @@ const markOrderAsPaid = async (req, res) => {
             [orderRow.id, resolvedPaymentMode, nextTotalPaid]
         );
 
-        if (String(orderRow.payment_mode || '').toLowerCase() === 'credit' && orderRow.customer_id) {
-            if (resolvedPaymentMode !== 'credit') {
-                await client.query(
-                    `UPDATE customers
-                     SET current_balance = GREATEST(COALESCE(current_balance, 0) - $1, 0),
-                         updated_at = NOW()
-                     WHERE id = $2`,
-                    [payAmount, orderRow.customer_id]
-                );
-            }
-        }
 
         await client.query("COMMIT");
         const tenantId = getTenantId(req);
@@ -2748,10 +2874,16 @@ const syncOfflineOrders = async (req, res) => {
                 [purchase_price, selling_price, time_for_delivery, is_weight_based ?? existingProduct.is_weight_based ?? 0, existingProduct.id]
               );
               touchedProductIds.add(existingProduct.id);
+              const resolvedBatchNumber = await resolveUniqueBatchNumber(
+                client,
+                existingProduct.id,
+                branchId,
+                batch_number
+              );
               await client.query(
                 `INSERT INTO batches (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity, quantity_remaining)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
-                [existingProduct.id, branchId, batch_number || null, expiryDate, purchase_price, selling_price, quantity]
+                [existingProduct.id, branchId, resolvedBatchNumber, expiryDate, purchase_price, selling_price, quantity]
               );
             } else {
               const insertRes = await client.query(
@@ -2760,10 +2892,16 @@ const syncOfflineOrders = async (req, res) => {
               );
               if (insertRes.rowCount > 0) {
                 touchedProductIds.add(insertRes.rows[0].id);
+                const resolvedBatchNumber = await resolveUniqueBatchNumber(
+                  client,
+                  insertRes.rows[0].id,
+                  branchId,
+                  batch_number
+                );
                 await client.query(
                   `INSERT INTO batches (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity, quantity_remaining)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
-                  [insertRes.rows[0].id, branchId, batch_number || null, expiryDate, purchase_price, selling_price, quantity]
+                  [insertRes.rows[0].id, branchId, resolvedBatchNumber, expiryDate, purchase_price, selling_price, quantity]
                 );
               }
             }
@@ -2823,6 +2961,7 @@ const syncOfflineOrders = async (req, res) => {
       }
 
       const outstanding = Math.max(Number(orderTotal || 0) - Number(totalPaid || 0), 0);
+      let creditCheck = null;
       if (outstanding > 0) {
         if (!resolvedCustomerId) {
           throw new Error('Customer is required for partial/credit billing');
@@ -2836,16 +2975,20 @@ const syncOfflineOrders = async (req, res) => {
         }
         const creditLimit = Number(creditRes.rows[0]?.credit_limit || 0);
         const currentBalance = Number(creditRes.rows[0]?.current_balance || 0);
+        creditCheck = buildCreditCheckPayload({
+          creditLimit,
+          currentBalance,
+          requestedCredit: outstanding
+        });
         if (creditLimit <= 0) {
           throw new Error('Credit not allowed for this customer');
         }
         if (currentBalance + outstanding > creditLimit) {
-          throw new Error('Customer credit limit exceeded');
+          const err = new Error('Customer credit limit exceeded');
+          err.status = 400;
+          err.details = creditCheck;
+          throw err;
         }
-        await client.query(
-          'UPDATE customers SET current_balance = COALESCE(current_balance, 0) + $1, updated_at = NOW() WHERE id = $2',
-          [outstanding, resolvedCustomerId]
-        );
       }
 
       await client.query('COMMIT');
@@ -2866,7 +3009,8 @@ const syncOfflineOrders = async (req, res) => {
         order_id: orderId,
         order_status: orderStatus,
         payment_mode: paymentMode || null,
-        transactions: insertedTransactions
+        transactions: insertedTransactions,
+        credit_check: creditCheck
       });
     } catch (error) {
       await client.query('ROLLBACK');
@@ -2898,7 +3042,7 @@ const syncOfflineOrders = async (req, res) => {
       results.push({
         client_order_id: clientOrderId,
         status: 'failed',
-        errors: [{ code: 'PROCESSING_ERROR', message: error.message }]
+        errors: [{ code: 'PROCESSING_ERROR', message: error.message, details: error.details || null }]
       });
     } finally {
       client.release();

@@ -1,5 +1,6 @@
 const pool = require('../db');
 const { setStockAuditContext } = require('./stockAuditService');
+const { insertLedgerEntries, resolveCashBankLedgerName } = require('./ledgerPostingService');
 const getRequestPool = (req) => req.tenantPool || pool;
 
 const buildValidationError = (message) => {
@@ -21,18 +22,15 @@ const normalizeDateOnly = (value) => {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
 };
 
-const toCompactTimestamp = (date = new Date()) => {
+const toCompactDate = (date = new Date()) => {
   const year = date.getUTCFullYear();
   const month = String(date.getUTCMonth() + 1).padStart(2, '0');
   const day = String(date.getUTCDate()).padStart(2, '0');
-  const hours = String(date.getUTCHours()).padStart(2, '0');
-  const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-  const seconds = String(date.getUTCSeconds()).padStart(2, '0');
-  return `${year}${month}${day}${hours}${minutes}${seconds}`;
+  return `${year}${month}${day}`;
 };
 
-const buildAutoBatchNumber = (productId, index) =>
-  `PB-${productId}-${toCompactTimestamp()}-${index + 1}`;
+const buildAutoBatchNumber = () =>
+  `${toCompactDate()}-${Math.floor(100000 + Math.random() * 900000)}`;
 
 const ensureUniqueBatchNumber = async (client, productId, branchId, requestedBatchNumber) => {
   let candidate = String(requestedBatchNumber || '').trim();
@@ -101,6 +99,31 @@ const normalizeOptionalText = (value) => {
   return trimmed || null;
 };
 
+const normalizePaymentMode = (value) => {
+  const mode = String(value || '').trim().toLowerCase();
+  if (!mode) return 'credit';
+  if (mode === 'upi') return 'online';
+  if (mode === 'bank') return 'bank';
+  if (mode === 'cash' || mode === 'online' || mode === 'credit') return mode;
+  return 'credit';
+};
+
+const resolveDiscountAmount = (item, lineBase = 0) => {
+  const explicitAmount = normalizeNumber(item.discount_amount);
+  if (Number.isFinite(explicitAmount) && explicitAmount >= 0) {
+    return explicitAmount;
+  }
+  const rawValue = item.discount_value ?? item.discount;
+  const parsed = normalizeNumber(rawValue);
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  const type = String(item.discount_type || '').trim().toLowerCase();
+  if (type === 'percent' || type === 'percentage') {
+    const pct = Math.min(parsed, 100);
+    return (Number(lineBase || 0) * pct) / 100;
+  }
+  return parsed;
+};
+
 const calculateTotal = (items, gstMode) => {
   return items.reduce((sum, item) => {
     const qty = Number(item.quantity || 0);
@@ -108,8 +131,35 @@ const calculateTotal = (items, gstMode) => {
     const base = qty * price;
     const gstPercent = Number(item.gst_percent || item.gst_percent === 0 ? item.gst_percent : item.gstPercent);
     const gst = Number.isFinite(gstPercent) ? (base * gstPercent) / 100 : 0;
-    return sum + (gstMode === 'EXCLUSIVE' ? base + gst : base);
+    const line = base + gst;
+    const discount = resolveDiscountAmount(item, line);
+    return sum + Math.max(line - discount, 0);
   }, 0);
+};
+
+const calculatePurchaseBreakup = (items = []) => {
+  let taxableTotal = 0;
+  let gstTotal = 0;
+  let grandTotal = 0;
+  for (const item of items) {
+    const qty = Number(item.quantity || 0);
+    const price = Number(item.purchase_price || 0);
+    const base = qty * price;
+    const gstPercent = Number(item.gst_percent || item.gstPercent || 0);
+    const gst = Number.isFinite(gstPercent) ? (base * gstPercent) / 100 : 0;
+    const line = base + gst;
+    const discount = resolveDiscountAmount(item, line);
+    const netLine = Math.max(line - discount, 0);
+    const ratio = line > 0 ? (netLine / line) : 0;
+    taxableTotal += Math.max(base * ratio, 0);
+    gstTotal += Math.max(gst * ratio, 0);
+    grandTotal += netLine;
+  }
+  return {
+    taxableTotal,
+    gstTotal,
+    grandTotal,
+  };
 };
 
 const ensureSupplier = async (client, supplierId, branchId) => {
@@ -146,15 +196,31 @@ const createPurchase = async (req, payload = {}) => {
     await ensureSupplier(client, supplierId, branchId);
 
     const gstMode = resolveGstMode(req);
-    const totalPrice = calculateTotal(items, gstMode);
-    const paymentMode = normalizeOptionalText(payload.payment_mode || payload.paymentMode || null);
+    const breakup = calculatePurchaseBreakup(items);
+    const totalPrice = breakup.grandTotal || calculateTotal(items, gstMode);
+    const paymentMode = normalizePaymentMode(payload.payment_mode || payload.paymentMode || 'credit');
     const invoiceNumber = normalizeOptionalText(payload.invoice_number || payload.invoiceNumber || null);
+    const requestedPaidAmount = normalizeNumber(payload.paid_amount ?? payload.paidAmount);
+    let paidAmount;
+    if (paymentMode !== 'credit') {
+      if (Number.isFinite(requestedPaidAmount) && requestedPaidAmount < totalPrice) {
+        throw buildValidationError('For cash/online/bank purchases, full payment is required. Use credit for pending payable.');
+      }
+      paidAmount = totalPrice;
+    } else {
+      const normalizedPaidAmount = Number.isFinite(requestedPaidAmount)
+        ? Math.max(requestedPaidAmount, 0)
+        : 0;
+      paidAmount = Math.min(normalizedPaidAmount, totalPrice);
+    }
+    const payableOutstanding = Math.max(totalPrice - paidAmount, 0);
+    const purchaseStatus = payableOutstanding > 0 ? 'pending' : 'completed';
 
     const orderRes = await client.query(
-      `INSERT INTO orders (supplier_id, branch_id, total_price, payment_mode, transaction_type, gst_mode, is_gst_enabled, invoice_number)
-       VALUES ($1, $2, $3, $4, 'purchase', $5, TRUE, $6)
+      `INSERT INTO orders (supplier_id, branch_id, total_price, total_paid, order_status, payment_mode, transaction_type, gst_mode, is_gst_enabled, invoice_number)
+       VALUES ($1, $2, $3, $4, $5, $6, 'purchase', $7, TRUE, $8)
        RETURNING id, created_at`,
-      [supplierId, branchId, totalPrice, paymentMode, gstMode, invoiceNumber]
+      [supplierId, branchId, totalPrice, paidAmount, purchaseStatus, paymentMode, gstMode, invoiceNumber]
     );
     const orderId = orderRes.rows[0].id;
 
@@ -163,6 +229,60 @@ const createPurchase = async (req, payload = {}) => {
        VALUES ($1, $2, 0, $3, NOW(), $2, 'supplier', $4, 'out', 'purchase', NULL, $5)`,
       [orderId, totalPrice, paymentMode, supplierId, branchId]
     );
+    const txnRes = await client.query(
+      `SELECT id
+       FROM transactions
+       WHERE order_id = $1
+         AND party_type = 'supplier'
+         AND txn_type = 'purchase'
+       ORDER BY id DESC
+       LIMIT 1`,
+      [orderId]
+    );
+    const purchaseTxnId = txnRes.rows[0]?.id || null;
+
+    const lines = [
+      { ledger: 'Purchase', debit: Number(breakup.taxableTotal || totalPrice), credit: 0 },
+      { ledger: 'Accounts Payable', debit: 0, credit: Number(totalPrice || 0) },
+    ];
+    const gstComponent = Number(breakup.gstTotal || 0);
+    if (gstComponent > 0) {
+      lines.splice(1, 0, { ledger: 'Input IGST', debit: gstComponent, credit: 0 });
+      lines[0].debit = Math.max(Number(totalPrice || 0) - gstComponent, 0);
+    }
+    await insertLedgerEntries({
+      client,
+      lines,
+      transactionId: purchaseTxnId,
+      referenceId: orderId,
+      referenceType: 'order',
+      description: `Purchase order #${orderId}`,
+      date: orderRes.rows[0].created_at,
+      branchId,
+      clientTxnId: null,
+      syncStatus: 'SYNCED',
+      partyType: 'supplier',
+      partyId: supplierId,
+    });
+    if (paymentMode !== 'credit' && Number(totalPrice || 0) > 0) {
+      await insertLedgerEntries({
+        client,
+        lines: [
+          { ledger: 'Accounts Payable', debit: Number(totalPrice || 0), credit: 0 },
+          { ledger: resolveCashBankLedgerName(paymentMode), debit: 0, credit: Number(totalPrice || 0) },
+        ],
+        transactionId: purchaseTxnId,
+        referenceId: orderId,
+        referenceType: 'payment',
+        description: `Auto settlement for purchase order #${orderId}`,
+        date: orderRes.rows[0].created_at,
+        branchId,
+        clientTxnId: null,
+        syncStatus: 'SYNCED',
+        partyType: 'supplier',
+        partyId: supplierId,
+      });
+    }
 
     const createdBatches = [];
     for (let index = 0; index < items.length; index += 1) {
@@ -177,6 +297,8 @@ const createPurchase = async (req, payload = {}) => {
       const purchasePrice = normalizeNumber(item.purchase_price);
       const sellingPrice = normalizeNumber(item.selling_price);
       const mrp = normalizeNumber(item.mrp);
+      const base = quantity * purchasePrice;
+      const discount = resolveDiscountAmount(item, base);
       const category = item.category ? String(item.category).trim() : null;
       const company = item.company ? String(item.company).trim() : null;
       if (!Number.isFinite(purchasePrice) || purchasePrice < 0) {
@@ -184,6 +306,9 @@ const createPurchase = async (req, payload = {}) => {
       }
       if (item.selling_price !== undefined && (!Number.isFinite(sellingPrice) || sellingPrice < 0)) {
         throw buildValidationError('selling_price must be >= 0.');
+      }
+      if (!Number.isFinite(discount) || discount < 0) {
+        throw buildValidationError('discount must be >= 0.');
       }
       const gstPercent = normalizeNumber(item.gst_percent ?? item.gstPercent);
       const expiryDate = normalizeDateOnly(item.expiry_date || item.expiryDate);
@@ -264,43 +389,88 @@ const createPurchase = async (req, payload = {}) => {
       }
 
       const batchNumberInput = item.batch_number ? String(item.batch_number).trim() : '';
-      const generatedBatch = buildAutoBatchNumber(productId, index);
-      const resolvedBatchNumber = await ensureUniqueBatchNumber(
-        client,
-        productId,
-        branchId,
-        batchNumberInput || generatedBatch
-      );
-      const batchRes = await client.query(
-        `INSERT INTO batches (
-            product_id,
-            branch_id,
-            batch_number,
-            expiry_date,
-            purchase_price,
-            selling_price,
-            quantity,
-            quantity_remaining,
-            purchase_order_id
-          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8)
-         RETURNING id, product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity, quantity_remaining, created_at`,
-        [
+      let createdBatch;
+      if (batchNumberInput) {
+        const existingBatchRes = await client.query(
+          `SELECT id
+           FROM batches
+           WHERE product_id = $1
+             AND is_deleted = FALSE
+             AND batch_number = $2
+             AND (
+               ($3::uuid IS NULL AND branch_id IS NULL) OR
+               branch_id = $3::uuid
+             )
+           LIMIT 1`,
+          [productId, batchNumberInput, branchId || null]
+        );
+        if (existingBatchRes.rowCount > 0) {
+          const updateBatchRes = await client.query(
+            `UPDATE batches
+             SET quantity = COALESCE(quantity, 0) + $1,
+                 quantity_remaining = COALESCE(quantity_remaining, 0) + $1,
+                 purchase_price = $2,
+                 selling_price = COALESCE($3, selling_price),
+                 mrp = COALESCE($4, mrp),
+                 expiry_date = COALESCE($5, expiry_date),
+                 purchase_order_id = COALESCE($6, purchase_order_id),
+                 updated_at = NOW()
+             WHERE id = $7
+             RETURNING id, product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, mrp, quantity, quantity_remaining, created_at`,
+            [
+              quantity,
+              purchasePrice,
+              Number.isFinite(sellingPrice) ? sellingPrice : null,
+              Number.isFinite(mrp) ? mrp : null,
+              expiryDate,
+              orderId,
+              existingBatchRes.rows[0].id
+            ]
+          );
+          createdBatch = updateBatchRes.rows[0];
+        }
+      }
+      if (!createdBatch) {
+        const generatedBatch = buildAutoBatchNumber(productId, index);
+        const resolvedBatchNumber = await ensureUniqueBatchNumber(
+          client,
           productId,
           branchId,
-          resolvedBatchNumber,
-          expiryDate,
-          purchasePrice,
-          Number.isFinite(sellingPrice) ? sellingPrice : null,
-          quantity,
-          orderId
-        ]
-      );
-      const createdBatch = batchRes.rows[0];
+          batchNumberInput || generatedBatch
+        );
+        const batchRes = await client.query(
+          `INSERT INTO batches (
+              product_id,
+              branch_id,
+              batch_number,
+              expiry_date,
+              purchase_price,
+              selling_price,
+              mrp,
+              quantity,
+              quantity_remaining,
+              purchase_order_id
+            )
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9)
+           RETURNING id, product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, mrp, quantity, quantity_remaining, created_at`,
+          [
+            productId,
+            branchId,
+            resolvedBatchNumber,
+            expiryDate,
+            purchasePrice,
+            Number.isFinite(sellingPrice) ? sellingPrice : null,
+            Number.isFinite(mrp) ? mrp : null,
+            quantity,
+            orderId
+          ]
+        );
+        createdBatch = batchRes.rows[0];
+      }
 
       await client.query(
-        `INSERT INTO order_items (order_id, product_id, batch_id, quantity, selling_price, purchase_price_snapshot, gst_percent)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        `INSERT INTO order_items (order_id, product_id, batch_id, quantity, selling_price, purchase_price_snapshot, gst_percent, discount_amount)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [
           orderId,
           productId,
@@ -308,7 +478,8 @@ const createPurchase = async (req, payload = {}) => {
           quantity,
           Number.isFinite(sellingPrice) ? sellingPrice : null,
           purchasePrice,
-          Number.isFinite(gstPercent) ? gstPercent : 0
+          Number.isFinite(gstPercent) ? gstPercent : 0,
+          Number.isFinite(discount) ? discount : 0
         ]
       );
 
@@ -335,17 +506,14 @@ const createPurchase = async (req, payload = {}) => {
       createdBatches.push(createdBatch);
     }
 
-    if (String(paymentMode || '').toLowerCase() === 'credit') {
-      await client.query(
-        `UPDATE suppliers
-         SET current_balance = COALESCE(current_balance, 0) + $1
-         WHERE id = $2`,
-        [totalPrice, supplierId]
-      );
-    }
-
     await client.query('COMMIT');
-    return { order_id: orderId, total_price: totalPrice, batches: createdBatches };
+    return {
+      order_id: orderId,
+      total_price: totalPrice,
+      total_paid: paidAmount,
+      payable_outstanding: payableOutstanding,
+      batches: createdBatches
+    };
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
@@ -387,6 +555,9 @@ const listPurchases = async (req, query = {}) => {
     `SELECT o.id,
             o.created_at,
             o.total_price,
+            COALESCE(o.total_paid, 0) AS total_paid,
+            GREATEST(COALESCE(o.total_price, 0) - COALESCE(o.total_paid, 0), 0) AS payable_outstanding,
+            o.order_status,
             o.payment_mode,
             o.invoice_number,
             o.branch_id,
@@ -410,6 +581,7 @@ const getPurchaseDetail = async (req, purchaseId) => {
   }
   const orderRes = await requestPool.query(
     `SELECT o.*,
+            GREATEST(COALESCE(o.total_price, 0) - COALESCE(o.total_paid, 0), 0) AS payable_outstanding,
             s.name AS supplier_name,
             s.mobile AS supplier_mobile,
             s.gst_number AS supplier_gst

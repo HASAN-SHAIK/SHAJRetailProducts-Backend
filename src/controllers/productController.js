@@ -63,6 +63,15 @@ const {
 const { resolveBranchIdFromRequest } = require('../utils/branch');
 
 const getTenantId = (req) => req.tenant_id || req.tenant?.id || null;
+const getOpeningCompleted = async (requestPool) => {
+    const res = await requestPool.query(
+        `SELECT COALESCE(is_opening_completed, FALSE) AS is_opening_completed
+         FROM settings
+         ORDER BY id ASC
+         LIMIT 1`
+    );
+    return Boolean(res.rows[0]?.is_opening_completed);
+};
 const normalizeDateOnly = (value) => {
     if (value === null || value === undefined || value === '') return null;
     const date = new Date(value);
@@ -288,9 +297,19 @@ const addProduct = async (req, res) => {
   const gstInput = Object.prototype.hasOwnProperty.call(req.body || {}, 'gst_percentage')
     ? Number(req.body?.gst_percentage)
     : null;
-  const branchId = resolveBranchIdFromRequest(req);
+    const branchId = resolveBranchIdFromRequest(req);
 
   try {
+    const requestPool = getRequestPool(req);
+    const isOpeningCompleted = await getOpeningCompleted(requestPool);
+    if (isOpeningCompleted) {
+      if (Number(stock_quantity || 0) !== 0) {
+        return res.status(400).json({ message: 'Stock quantity cannot be set directly after opening is completed.' });
+      }
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, 'purchase_price')) {
+        return res.status(400).json({ message: 'Purchase price cannot be set directly after opening is completed.' });
+      }
+    }
     if (!product_name) {
       return res.status(400).json({ message: 'Product name is required.' });
     }
@@ -312,7 +331,6 @@ const addProduct = async (req, res) => {
         return res.status(400).json({ message: 'Expiry date must be on or after batch date.' });
       }
     }
-    const requestPool = getRequestPool(req);
     let gst_percentage = gstInput;
     if (Number.isNaN(gst_percentage)) gst_percentage = null;
     if (gst_percentage === null && hsn_code) {
@@ -564,6 +582,15 @@ const updateProduct = async (req, res) => {
         : null;
     try {
         const requestPool = getRequestPool(req);
+        const isOpeningCompleted = await getOpeningCompleted(requestPool);
+        if (isOpeningCompleted) {
+            if (Object.prototype.hasOwnProperty.call(req.body || {}, 'stock_quantity')) {
+                return res.status(400).json({ message: 'Stock quantity cannot be edited directly after opening is completed.' });
+            }
+            if (Object.prototype.hasOwnProperty.call(req.body || {}, 'purchase_price')) {
+                return res.status(400).json({ message: 'Purchase price cannot be edited directly after opening is completed.' });
+            }
+        }
         const barcodeEnabled = req.features?.enable_barcode === true;
         const barcodeSupported = await hasBarcodeColumn(requestPool);
         const shouldStoreBarcode = barcodeSupported && barcodeProvided;
@@ -1470,6 +1497,17 @@ async function bulkUpdateProducts(req, res) {
     }
     const branchId = resolveBranchIdFromRequest(req);
     const tenantId = getTenantId(req);
+    const isOpeningCompleted = await getOpeningCompleted(requestPool);
+    if (isOpeningCompleted) {
+        for (const item of payload) {
+            if (Object.prototype.hasOwnProperty.call(item || {}, 'stock_quantity')) {
+                return res.status(400).json({ message: 'Stock quantity cannot be edited via bulk update after opening is completed.' });
+            }
+            if (Object.prototype.hasOwnProperty.call(item || {}, 'purchase_price')) {
+                return res.status(400).json({ message: 'Purchase price cannot be edited via bulk update after opening is completed.' });
+            }
+        }
+    }
 
     const client = await requestPool.connect();
     try {

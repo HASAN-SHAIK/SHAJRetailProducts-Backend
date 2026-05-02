@@ -31,10 +31,11 @@ const logAdminAction = async (adminId, action, entityType, entityId, metadata) =
   if (!(await hasMasterTable('platform_activity_logs'))) {
     return;
   }
+  const normalizedEntityId = Number.isFinite(Number(entityId)) ? Number(entityId) : null;
   await masterPool.query(
     `INSERT INTO platform_activity_logs (admin_id, action, entity_type, entity_id, metadata)
      VALUES ($1, $2, $3, $4, $5)`,
-    [adminId, action, entityType, entityId || null, metadata || {}]
+    [adminId, action, entityType, normalizedEntityId, metadata || {}]
   );
 };
 
@@ -1829,19 +1830,47 @@ const createTenantUser = async (req, res) => {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const result = await context.tenantPool.query(
-      `INSERT INTO users (name, email, password, role, branch_id, all_branch_access)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, name, email, role, branch_id, all_branch_access, created_at`,
-      [
-        name,
-        email.toString().trim().toLowerCase(),
-        hashedPassword,
-        normalizedRole,
-        allBranchAccess ? null : requestedBranchId,
-        allBranchAccess
-      ]
-    );
+    const insertUserWithBranchAccess = async () =>
+      context.tenantPool.query(
+        `INSERT INTO users (name, email, password, role, branch_id, all_branch_access)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id, name, email, role, branch_id, all_branch_access, created_at`,
+        [
+          name,
+          email.toString().trim().toLowerCase(),
+          hashedPassword,
+          normalizedRole,
+          allBranchAccess ? null : requestedBranchId,
+          allBranchAccess
+        ]
+      );
+
+    let result;
+    try {
+      result = await insertUserWithBranchAccess();
+    } catch (error) {
+      const message = String(error?.message || '').toLowerCase();
+      const missingBranchIdColumn =
+        message.includes('column "branch_id"') && message.includes('does not exist');
+      const missingAllBranchAccessColumn =
+        message.includes('column "all_branch_access"') && message.includes('does not exist');
+
+      if (!missingBranchIdColumn && !missingAllBranchAccessColumn) {
+        throw error;
+      }
+
+      // Backward-compatible self-healing for tenants that missed branch-access migration.
+      await context.tenantPool.query(
+        `ALTER TABLE IF EXISTS users
+         ADD COLUMN IF NOT EXISTS branch_id UUID`
+      );
+      await context.tenantPool.query(
+        `ALTER TABLE IF EXISTS users
+         ADD COLUMN IF NOT EXISTS all_branch_access BOOLEAN NOT NULL DEFAULT TRUE`
+      );
+
+      result = await insertUserWithBranchAccess();
+    }
 
     await logAdminAction(req.admin?.admin_id, 'TENANT_USER_CREATED', 'user', result.rows[0].id, {
       tenant_id: tenantId,

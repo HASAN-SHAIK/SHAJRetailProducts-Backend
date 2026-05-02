@@ -38,6 +38,31 @@ const buildCustomerInput = (payload = {}) => {
 
 const createCustomer = async (pool, payload) => {
   const input = buildCustomerInput(payload);
+  const normalizedPhone = normalizePhone(input.phone || input.mobile);
+  let existingRes;
+  if (normalizedPhone) {
+    existingRes = await pool.query(
+      `SELECT id
+       FROM customers
+       WHERE regexp_replace(COALESCE(phone, mobile, ''), '\D', '', 'g') = $1
+       ORDER BY updated_at DESC NULLS LAST, id DESC
+       LIMIT 1`,
+      [normalizedPhone]
+    );
+  } else {
+    existingRes = await pool.query(
+      `SELECT id
+       FROM customers
+       WHERE LOWER(TRIM(COALESCE(name, ''))) = LOWER(TRIM($1))
+         AND COALESCE(NULLIF(regexp_replace(COALESCE(phone, mobile, ''), '\D', '', 'g'), ''), '') = ''
+       ORDER BY updated_at DESC NULLS LAST, id DESC
+       LIMIT 1`,
+      [input.name || '']
+    );
+  }
+  if (existingRes.rowCount > 0) {
+    return updateCustomer(pool, existingRes.rows[0].id, payload);
+  }
   const result = await pool.query(
     `INSERT INTO customers (
       name,
@@ -120,10 +145,27 @@ const updateCustomer = async (pool, id, payload) => {
 const listCustomers = async (pool, { search = '', limit = 100 } = {}) => {
   const term = String(search || '').trim();
   const max = Number.isFinite(Number(limit)) ? Math.min(Number(limit), 5000) : 100;
+  const dedupeExpr = `COALESCE(NULLIF(regexp_replace(COALESCE(phone, mobile, ''), '\\D', '', 'g'), ''), CONCAT('name:', LOWER(TRIM(COALESCE(name, '')))))`;
   if (!term) {
     const result = await pool.query(
-      `SELECT id, name, COALESCE(phone, mobile) AS phone, type, current_balance, credit_limit, shop_name, gst_number, is_active, address, location
-       FROM customers
+      `SELECT id, name, phone, type, current_balance, credit_limit, shop_name, gst_number, is_active, address, location
+       FROM (
+         SELECT DISTINCT ON (${dedupeExpr})
+                id,
+                name,
+                COALESCE(phone, mobile) AS phone,
+                type,
+                current_balance,
+                credit_limit,
+                shop_name,
+                gst_number,
+                is_active,
+                address,
+                location,
+                ${dedupeExpr} AS dedupe_key
+         FROM customers
+         ORDER BY ${dedupeExpr}, updated_at DESC NULLS LAST, id DESC
+       ) c
        ORDER BY name ASC
        LIMIT $1`,
       [max]
@@ -132,11 +174,27 @@ const listCustomers = async (pool, { search = '', limit = 100 } = {}) => {
   }
   const like = `%${term}%`;
   const result = await pool.query(
-    `SELECT id, name, COALESCE(phone, mobile) AS phone, type, current_balance, credit_limit, shop_name, gst_number, is_active, address, location
-     FROM customers
-     WHERE LOWER(name) LIKE LOWER($1)
-        OR COALESCE(phone, mobile, '') LIKE $1
-        OR LOWER(COALESCE(shop_name, '')) LIKE LOWER($1)
+    `SELECT id, name, phone, type, current_balance, credit_limit, shop_name, gst_number, is_active, address, location
+     FROM (
+       SELECT DISTINCT ON (${dedupeExpr})
+              id,
+              name,
+              COALESCE(phone, mobile) AS phone,
+              type,
+              current_balance,
+              credit_limit,
+              shop_name,
+              gst_number,
+              is_active,
+              address,
+              location,
+              ${dedupeExpr} AS dedupe_key
+       FROM customers
+       WHERE LOWER(name) LIKE LOWER($1)
+          OR COALESCE(phone, mobile, '') LIKE $1
+          OR LOWER(COALESCE(shop_name, '')) LIKE LOWER($1)
+       ORDER BY ${dedupeExpr}, updated_at DESC NULLS LAST, id DESC
+     ) c
      ORDER BY name ASC
      LIMIT $2`,
     [like, max]
@@ -188,16 +246,9 @@ const addPayment = async (pool, id, payload) => {
        RETURNING *`,
       [id, amount, mode, notes]
     );
-    const customerRes = await client.query(
-      `UPDATE customers
-       SET current_balance = COALESCE(current_balance, 0) - $1,
-           updated_at = NOW()
-       WHERE id = $2
-       RETURNING *`,
-      [amount, id]
-    );
     await client.query('COMMIT');
-    return { payment: paymentRes.rows[0], customer: customerRes.rows[0] };
+    const currentCustomer = await client.query('SELECT * FROM customers WHERE id = $1', [id]);
+    return { payment: paymentRes.rows[0], customer: currentCustomer.rows[0] || null };
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;

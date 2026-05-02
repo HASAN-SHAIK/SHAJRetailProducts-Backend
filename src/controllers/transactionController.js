@@ -3,6 +3,7 @@ const getRequestPool = (req) => req.tenantPool || pool;
 const { getAuthUser } = require('../utils/auth');
 const { getDateRange } = require('../utils/dateRange');
 const { resolveBranchIdFromRequest } = require('../utils/branch');
+const { insertLedgerEntries, resolveCashBankLedgerName } = require('../services/ledgerPostingService');
 
 // 💳 Create a Transaction (Payment Processing)
 const createTransaction = async (req, res) => {
@@ -69,28 +70,44 @@ const createTransaction = async (req, res) => {
             VALUES ($1, $2, $3, $4, now(), $2, 'customer', $5, 'in', 'sale', NULL, $6) RETURNING id;
         `;
         const resolvedPaymentModeRaw = (payment_mode || payment_method || 'cash').toLowerCase();
-        const resolvedPaymentMode = resolvedPaymentModeRaw === 'upi' || resolvedPaymentModeRaw === 'online'
-            ? 'online'
-            : 'cash';
+        let resolvedPaymentMode = 'cash';
+        if (resolvedPaymentModeRaw === 'upi' || resolvedPaymentModeRaw === 'online') {
+            resolvedPaymentMode = 'online';
+        } else if (resolvedPaymentModeRaw === 'bank') {
+            resolvedPaymentMode = 'bank';
+        }
         const transactionRes = await client.query(transactionQuery, [order_id, resolvedAmountPaid, resolvedProfit, resolvedPaymentMode, customer_id || null, branch_id || null]);
         const transactionId = transactionRes.rows[0].id;
+        if (customer_id) {
+            await insertLedgerEntries({
+                client,
+                lines: [
+                    { ledger: resolveCashBankLedgerName(resolvedPaymentMode), debit: resolvedAmountPaid, credit: 0 },
+                    { ledger: 'Accounts Receivable', debit: 0, credit: resolvedAmountPaid },
+                ],
+                transactionId,
+                referenceId: Number(order_id),
+                referenceType: 'payment',
+                description: `Order payment #${order_id}`,
+                date: new Date().toISOString(),
+                branchId: branch_id || null,
+                clientTxnId: null,
+                syncStatus: 'SYNCED',
+                partyType: 'customer',
+                partyId: Number(customer_id),
+            });
+        }
 
         const newTotalPaid = alreadyPaid + resolvedAmountPaid;
         const completed = netTotal > 0 ? newTotalPaid >= netTotal : true;
-        const updateOrderQuery = `UPDATE orders SET order_status = $2, payment_mode = COALESCE(payment_mode, $3) WHERE id = $1;`;
-        await client.query(updateOrderQuery, [order_id, completed ? 'completed' : 'pending', resolvedPaymentMode]);
-
-        if (String(orderPaymentMode || '').toLowerCase() === 'credit' && customer_id) {
-            if (resolvedPaymentMode !== 'credit') {
-                await client.query(
-                    `UPDATE customers
-                     SET current_balance = COALESCE(current_balance, 0) - $1,
-                         updated_at = NOW()
-                     WHERE id = $2`,
-                    [resolvedAmountPaid, customer_id]
-                );
-            }
-        }
+        const updateOrderQuery = `
+            UPDATE orders
+            SET order_status = $2,
+                payment_mode = COALESCE(payment_mode, $3),
+                total_paid = $4
+            WHERE id = $1;
+        `;
+        await client.query(updateOrderQuery, [order_id, completed ? 'completed' : 'pending', resolvedPaymentMode, newTotalPaid]);
 
         await client.query('COMMIT'); // Commit transaction
         res.status(201).json({ message: 'Payment successful', transactionId });
@@ -155,7 +172,7 @@ const getAllTransactions = async (req, res) => {
         SELECT SUM(t.total_price) AS total_cash
         FROM transactions t
         JOIN orders o ON t.order_id = o.id
-        WHERE t.payment_mode = 'online'
+        WHERE t.payment_mode IN ('online', 'bank', 'upi')
           AND t.created_at BETWEEN $1 AND $2
           AND ($3::uuid IS NULL OR o.branch_id = $3)
         `;

@@ -4,11 +4,11 @@ const DEFAULT_TENANT_COOKIE = 'token';
 const DEFAULT_ADMIN_COOKIE = 'admin_token';
 
 const getTokenFromRequest = (req, cookieName) => {
-  const cookieToken = cookieName ? req.cookies?.[cookieName] : null;
   const headerToken = req.headers.authorization
     ? req.headers.authorization.replace(/^Bearer\s+/i, '')
     : null;
-  return cookieToken || headerToken || null;
+  const cookieToken = cookieName ? req.cookies?.[cookieName] : null;
+  return headerToken || cookieToken || null;
 };
 
 const getTenantJwtSecret = () => process.env.JWT_SECRET;

@@ -12,6 +12,7 @@ const normalizePaymentModeValue = (value) => {
   const mode = (value || '').toLowerCase();
   if (mode === 'online') return 'online';
   if (mode === 'upi') return 'online';
+  if (mode === 'bank') return 'bank';
   if (mode === 'card' || mode === 'cash') return 'cash';
   return mode || null;
 };
@@ -135,10 +136,28 @@ const validateCustomer = (req) => {
 const upsertCustomer = async (tenantPool, customer) => {
   const { name, mobile, phone, address, location } = customer;
   const resolvedPhone = phone || mobile || null;
-  const existing = await tenantPool.query(
-    'SELECT id FROM customers WHERE COALESCE(phone, mobile) = $1',
-    [resolvedPhone]
-  );
+  const normalizedPhone = String(resolvedPhone || '').replace(/\D+/g, '');
+  let existing;
+  if (normalizedPhone) {
+    existing = await tenantPool.query(
+      `SELECT id
+       FROM customers
+       WHERE regexp_replace(COALESCE(phone, mobile, ''), '\D', '', 'g') = $1
+       ORDER BY updated_at DESC NULLS LAST, id DESC
+       LIMIT 1`,
+      [normalizedPhone]
+    );
+  } else {
+    existing = await tenantPool.query(
+      `SELECT id
+       FROM customers
+       WHERE LOWER(TRIM(COALESCE(name, ''))) = LOWER(TRIM($1))
+         AND COALESCE(NULLIF(regexp_replace(COALESCE(phone, mobile, ''), '\D', '', 'g'), ''), '') = ''
+       ORDER BY updated_at DESC NULLS LAST, id DESC
+       LIMIT 1`,
+      [name || '']
+    );
+  }
   if (existing.rowCount > 0) return existing.rows[0].id;
 
   const insertRes = await tenantPool.query(
@@ -374,10 +393,6 @@ const createOrder = async (req, res) => {
       if (currentBalance + outstanding > creditLimit) {
         throw new Error('Customer credit limit exceeded');
       }
-      await client.query(
-        'UPDATE customers SET current_balance = COALESCE(current_balance, 0) + $1, updated_at = NOW() WHERE id = $2',
-        [outstanding, resolvedCustomerId]
-      );
     }
 
     await client.query('COMMIT');

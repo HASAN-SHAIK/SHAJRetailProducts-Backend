@@ -1,5 +1,6 @@
 const pool = require('../db');
 const getRequestPool = (req) => req.tenantPool || pool;
+const { insertLedgerEntries } = require('./ledgerPostingService');
 
 const buildValidationError = (message) => {
   const err = new Error(message);
@@ -149,13 +150,23 @@ const createPurchaseReturn = async (req, payload = {}) => {
        VALUES ($1, $2, 0, 'cash', NOW(), $2, 'supplier', $3, 'in', 'refund', $4, $5)`,
       [purchaseId, totalAmount, supplierId, payload.reason || null, branchId || null]
     );
-
-    await client.query(
-      `UPDATE suppliers
-       SET current_balance = COALESCE(current_balance, 0) - $1
-       WHERE id = $2`,
-      [totalAmount, supplierId]
-    );
+    await insertLedgerEntries({
+      client,
+      lines: [
+        { ledger: 'Accounts Payable', debit: totalAmount, credit: 0 },
+        { ledger: 'Purchase', debit: 0, credit: totalAmount },
+      ],
+      transactionId: null,
+      referenceId: returnId,
+      referenceType: 'return',
+      description: `Purchase return #${returnId}`,
+      date: new Date().toISOString(),
+      branchId: branchId || null,
+      clientTxnId: null,
+      syncStatus: 'SYNCED',
+      partyType: 'supplier',
+      partyId: supplierId,
+    });
 
     await client.query('COMMIT');
     return { id: returnId, total_amount: totalAmount };

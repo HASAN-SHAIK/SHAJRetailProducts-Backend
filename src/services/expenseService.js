@@ -10,6 +10,23 @@ const buildValidationError = (message) => {
   return err;
 };
 
+const toDateOnlyString = (value, fieldName = 'date') => {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    const match = trimmed.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (match) return match[1];
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw buildValidationError(`${fieldName} is invalid.`);
+  }
+  const y = parsed.getUTCFullYear();
+  const m = String(parsed.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(parsed.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
 const addExpense = async (req, payload = {}) => {
   const requestPool = getRequestPool(req);
   const branchId = resolveBranchIdFromRequest(req) || normalizeBranchId(payload.branch_id);
@@ -20,7 +37,7 @@ const addExpense = async (req, payload = {}) => {
   const paymentMethod = String(payload.paymentMethod || payload.payment_method || '').trim() || null;
   const notes = String(payload.notes || payload.description || '').trim() || null;
   const amount = Number(payload.amount);
-  const date = payload.date ? new Date(payload.date) : null;
+  const date = toDateOnlyString(payload.date, 'date');
 
   if (!type || !['staff', 'shop'].includes(type)) {
     throw buildValidationError('type must be staff or shop.');
@@ -32,10 +49,6 @@ const addExpense = async (req, payload = {}) => {
   if (!Number.isFinite(amount) || amount <= 0) {
     throw buildValidationError('amount must be > 0.');
   }
-  if (date && Number.isNaN(date.getTime())) {
-    throw buildValidationError('date is invalid.');
-  }
-
   const result = await requestPool.query(
     `INSERT INTO expenses (id, type, name, category, amount, description, notes, staff_id, payment_method, date, branch_id, created_at, updated_at)
      VALUES (COALESCE($1, gen_random_uuid()), $2, $3, $4, $5, $6, $6, $7, $8, COALESCE($9, CURRENT_DATE), $10, NOW(), NOW())
@@ -74,15 +87,8 @@ const getExpenses = async (req, query = {}) => {
   const type = normalizeType(query.type);
   const category = String(query.category || query.name || '').trim();
   const staffId = query.staffId || query.staff_id;
-  const from = query.from ? new Date(query.from) : null;
-  const to = query.to ? new Date(query.to) : null;
-
-  if (from && Number.isNaN(from.getTime())) {
-    throw buildValidationError('from is invalid.');
-  }
-  if (to && Number.isNaN(to.getTime())) {
-    throw buildValidationError('to is invalid.');
-  }
+  const from = toDateOnlyString(query.from, 'from');
+  const to = toDateOnlyString(query.to, 'to');
 
   const conditions = [];
   const values = [];
@@ -137,10 +143,7 @@ const getExpenses = async (req, query = {}) => {
 const getDailyReport = async (req) => {
   const requestPool = getRequestPool(req);
   const branchId = resolveBranchIdFromRequest(req) || normalizeBranchId(req.query?.branch_id);
-  const date = req.query?.date ? new Date(req.query.date) : new Date();
-  if (Number.isNaN(date.getTime())) {
-    throw buildValidationError('date is invalid.');
-  }
+  const date = toDateOnlyString(req.query?.date, 'date') || toDateOnlyString(new Date(), 'date');
   const totalRes = await requestPool.query(
     `SELECT COALESCE(SUM(amount), 0)::numeric AS total
      FROM expenses
@@ -159,7 +162,7 @@ const getDailyReport = async (req) => {
   );
 
   return {
-    date: date.toISOString().slice(0, 10),
+    date,
     total: Number(totalRes.rows[0]?.total || 0),
     categories: categoryRes.rows.map((row) => ({
       category: row.category || 'Uncategorized',
@@ -172,14 +175,14 @@ const getMonthlyReport = async (req) => {
   const requestPool = getRequestPool(req);
   const branchId = resolveBranchIdFromRequest(req) || normalizeBranchId(req.query?.branch_id);
   const rawMonth = String(req.query?.month || '').trim();
-  const month = rawMonth || new Date().toISOString().slice(0, 7);
-  const monthStart = new Date(`${month}-01T00:00:00.000Z`);
-  if (Number.isNaN(monthStart.getTime())) {
+  const month = rawMonth || toDateOnlyString(new Date(), 'month').slice(0, 7);
+  if (!/^\d{4}-\d{2}$/.test(month)) {
     throw buildValidationError('month is invalid.');
   }
-  const monthEnd = new Date(monthStart);
-  monthEnd.setUTCMonth(monthEnd.getUTCMonth() + 1);
-  monthEnd.setUTCDate(0);
+  const monthStart = `${month}-01`;
+  const [year, monthNumber] = month.split('-').map(Number);
+  const monthEndDate = new Date(Date.UTC(year, monthNumber, 0));
+  const monthEnd = toDateOnlyString(monthEndDate, 'month');
 
   const totalRes = await requestPool.query(
     `SELECT COALESCE(SUM(amount), 0)::numeric AS total
