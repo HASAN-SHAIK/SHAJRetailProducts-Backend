@@ -851,6 +851,9 @@ const saleOrder = async(req, res) => {
             normalizePaymentModeValue(payment?.payment_mode || payment?.payment_method) ||
             resolvedPaymentMode ||
             null;
+          if (!resolvedPaymentForTxn || resolvedPaymentForTxn === 'credit') {
+            throw buildValidationError('payment_mode must be cash or bank for paid sale entries.');
+          }
           const ratio = Number(total_price || 0) > 0 ? amount / Number(total_price || 0) : 0;
           const profit = total_profit * ratio;
           const createdAt = payment?.created_at ? new Date(payment.created_at) : new Date();
@@ -876,6 +879,28 @@ const saleOrder = async(req, res) => {
               syncStatus: 'SYNCED',
               partyType: 'customer',
               partyId: resolvedCustomerId,
+            });
+          } else {
+            await insertLedgerEntries({
+              client,
+              lines: [
+                { ledger: resolveCashBankLedgerName(resolvedPaymentForTxn), debit: amount, credit: 0 },
+                {
+                  ledger: billingType === 'wholesale' ? 'Sales (Wholesale)' : 'Sales (Retail)',
+                  debit: 0,
+                  credit: amount,
+                },
+              ],
+              transactionId: null,
+              referenceId: order_id,
+              referenceType: 'order',
+              description: `Cash/bank sale for order #${order_id}`,
+              date: createdAt,
+              branchId,
+              clientTxnId: null,
+              syncStatus: 'SYNCED',
+              partyType: 'expense',
+              partyId: null,
             });
           }
           totalPaid += amount;
@@ -974,6 +999,17 @@ const saleOrder = async(req, res) => {
           }
           await client.query("BEGIN"); // Start transaction
           const { products, total_amount, payment_mode, branch_id } = req.body;
+          const supplierId = normalizeNumber(req.body?.supplier_id ?? req.body?.supplierId);
+          if (!Number.isFinite(supplierId)) {
+              return res.status(400).json({ message: "supplier_id is required for purchase" });
+          }
+          if (hasValue(req.body?.customer_id ?? req.body?.customerId)) {
+              return res.status(400).json({ message: "customer_id must be null/empty for purchase" });
+          }
+          const supplierRes = await client.query('SELECT id FROM suppliers WHERE id = $1 LIMIT 1', [supplierId]);
+          if (supplierRes.rowCount === 0) {
+              return res.status(400).json({ message: "supplier_id is invalid" });
+          }
           const resolvedBranchId = await resolveBranchId(client, branch_id);
           const resolvedLocation = resolveOrderLocation(req.body);
           if (!products || products.length === 0) {
@@ -988,13 +1024,69 @@ const saleOrder = async(req, res) => {
         // Step 1: Create the order entry
         const resolvedPaymentMode = normalizePaymentModeValue(payment_mode);
         const orderStatus = 'pending';
-          const gstMode = resolveGstMode(req);
+        const purchaseTotal = Number(total_amount || 0);
+        if (!Number.isFinite(purchaseTotal) || purchaseTotal <= 0) {
+          return res.status(400).json({ message: "total_amount must be > 0 for purchase" });
+        }
+        const gstMode = resolveGstMode(req);
           const orderQuery = `
-              INSERT INTO orders (customer_phone, branch_id, total_price, order_status, payment_mode, location, transaction_type, is_gst_enabled, gst_mode)
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id;
+              INSERT INTO orders (customer_id, supplier_id, customer_phone, branch_id, total_price, order_status, payment_mode, location, transaction_type, is_gst_enabled, gst_mode)
+              VALUES (NULL, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id;
           `;
-          const orderResult = await client.query(orderQuery, [null, resolvedBranchId, total_amount, orderStatus, resolvedPaymentMode || null, resolvedLocation, 'purchase', false, gstMode]);
+          const orderResult = await client.query(orderQuery, [supplierId, null, resolvedBranchId, total_amount, orderStatus, resolvedPaymentMode || null, resolvedLocation, 'purchase', false, gstMode]);
           const orderId = orderResult.rows[0].id;
+          const purchaseTxnRes = await client.query(
+            `INSERT INTO transactions (order_id, total_price, payment_mode, amount, party_type, party_id, direction, txn_type, notes, branch_id)
+             VALUES ($1, $2, $3, $2, 'supplier', $4, 'out', 'purchase', NULL, $5)
+             RETURNING id, created_at`,
+            [orderId, purchaseTotal, resolvedPaymentMode || 'credit', supplierId, resolvedBranchId]
+          );
+          const purchaseTxnId = purchaseTxnRes.rows[0]?.id || null;
+
+          await insertLedgerEntries({
+            client,
+            lines: [
+              { ledger: 'Purchase', debit: purchaseTotal, credit: 0 },
+              { ledger: 'Accounts Payable', debit: 0, credit: purchaseTotal },
+            ],
+            transactionId: purchaseTxnId,
+            referenceId: orderId,
+            referenceType: 'order',
+            description: `Purchase order #${orderId}`,
+            date: purchaseTxnRes.rows[0]?.created_at || new Date(),
+            branchId: resolvedBranchId,
+            clientTxnId: null,
+            syncStatus: 'SYNCED',
+            partyType: 'supplier',
+            partyId: supplierId,
+          });
+
+          if (resolvedPaymentMode && resolvedPaymentMode !== 'credit') {
+            await insertLedgerEntries({
+              client,
+              lines: [
+                { ledger: 'Accounts Payable', debit: purchaseTotal, credit: 0 },
+                { ledger: resolveCashBankLedgerName(resolvedPaymentMode), debit: 0, credit: purchaseTotal },
+              ],
+              transactionId: purchaseTxnId,
+              referenceId: orderId,
+              referenceType: 'payment',
+              description: `Auto settlement for purchase order #${orderId}`,
+              date: purchaseTxnRes.rows[0]?.created_at || new Date(),
+              branchId: resolvedBranchId,
+              clientTxnId: null,
+              syncStatus: 'SYNCED',
+              partyType: 'supplier',
+              partyId: supplierId,
+            });
+            await client.query(
+              `UPDATE orders
+               SET total_paid = $1,
+                   order_status = 'completed'
+               WHERE id = $2`,
+              [purchaseTotal, orderId]
+            );
+          }
           // Step 2: Process each item in the purchase order
           const touchedProductIds = new Set();
           for (let item of products) {
@@ -1184,22 +1276,26 @@ const createPersonalOrder = async (req, res) => {
 
 // 🟢 Create Order
 const createOrder = async (req, res) => {
-    const { transaction_type: transactionTypeRaw } = req.body;
-    const inferredType =
-        Array.isArray(req.body?.items) || Array.isArray(req.body?.products)
-            ? 'sale'
-            : null;
-    const transaction_type = transactionTypeRaw || inferredType;
-    if(!transaction_type)
-        return res.status(400).json({ error: "transaction type should be provided"});
-    if(transaction_type === 'sale') 
-        await saleOrder(req, res);
-    else if(transaction_type === 'purchase')
-        await createPurchaseOrder(req, res);
-    else if(transaction_type === 'personal')
-        await createPersonalOrder(req, res);
-    else
-        res.json({message: "transaction type should be sent for creating order"});
+    const transactionType = normalizeTransactionType(req.body?.transaction_type);
+    if (!transactionType) {
+      return res.status(400).json({ error: "transaction_type is required and must be 'sale', 'purchase', or 'personal'." });
+    }
+    const partyValidation = validateOrderPartyByType(transactionType, req.body || {});
+    if (partyValidation) {
+      return res.status(400).json({ error: partyValidation });
+    }
+    if (transactionType === 'sale') {
+      req.body.supplier_id = null;
+      return await saleOrder(req, res);
+    }
+    if (transactionType === 'purchase') {
+      req.body.customer_id = null;
+      return await createPurchaseOrder(req, res);
+    }
+    if (transactionType === 'personal') {
+      return await createPersonalOrder(req, res);
+    }
+    return res.status(400).json({ error: "transaction_type must be one of: sale, purchase, personal." });
     // const client = await pool.connect();
     // try {
     //     const { type, payment_mode } = req.query;
@@ -1315,7 +1411,7 @@ const getOrderById = async (req, res) => {
                LEFT JOIN users u ON o.user_id = u.id
                  LEFT JOIN customers c ON c.id = o.customer_id
                  LEFT JOIN (
-                   SELECT order_id, COALESCE(SUM(total_price), 0)::numeric AS total_paid
+                   SELECT order_id, COALESCE(SUM(COALESCE(amount, total_price, 0)), 0)::numeric AS total_paid
                    FROM transactions
                    WHERE transaction_type IS NULL OR transaction_type <> 'refund'
                    GROUP BY order_id
@@ -1361,7 +1457,7 @@ const getOrderById = async (req, res) => {
 
           const paymentsRes = await requestPool.query(
               `SELECT id,
-                      total_price AS amount,
+                      COALESCE(amount, total_price, 0)::numeric AS amount,
                       payment_mode,
                       transaction_type,
                       created_at
@@ -1377,16 +1473,18 @@ const getOrderById = async (req, res) => {
           const returnedAmount = Number(orderRow.returned_amount || 0);
           const balance = Math.max(totalAmount - totalPaid - returnedAmount, 0);
           const completedLike = ['completed', 'partially_returned', 'fully_returned'];
-          const paymentHistory = completedLike.includes(orderRow.order_status)
-              ? paymentsRes.rows
-                  .filter((row) => row.transaction_type !== 'refund')
-                  .map((row) => ({
-                  id: row.id,
-                  amount: Number(row.amount || 0),
-                  payment_mode: row.payment_mode,
-                  created_at: row.created_at
+          const paymentHistory = paymentsRes.rows
+              .filter((row) => row.transaction_type !== 'refund')
+              .map((row) => ({
+                id: row.id,
+                amount: Number(row.amount || 0),
+                payment_mode: row.payment_mode,
+                created_at: row.created_at
               }))
-              : [];
+              .filter((row) => row.amount > 0);
+        const actualPaid = paymentHistory.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+        const normalizedTotalPaid = paymentHistory.length === 0 && totalPaid > 0 ? 0 : actualPaid;
+        const normalizedBalance = Math.max(totalAmount - normalizedTotalPaid - returnedAmount, 0);
         let paymentAction = 'none';
         if (!completedLike.includes(orderRow.order_status)) {
             const mode = (orderRow.payment_mode || '').toLowerCase();
@@ -1394,9 +1492,9 @@ const getOrderById = async (req, res) => {
         }
 
         let paymentStatus = 'unpaid';
-          if (totalPaid === 0) {
+          if (normalizedTotalPaid === 0) {
               paymentStatus = 'unpaid';
-          } else if (totalPaid + returnedAmount < totalAmount) {
+          } else if (normalizedTotalPaid + returnedAmount < totalAmount) {
               paymentStatus = 'partial';
           } else {
               paymentStatus = 'paid';
@@ -1439,8 +1537,8 @@ const getOrderById = async (req, res) => {
                   payments: paymentHistory,
                   payment_history: paymentHistory,
                   total_amount: totalAmount,
-                  total_paid: totalPaid,
-                  balance,
+                  total_paid: normalizedTotalPaid,
+                  balance: normalizedBalance,
             payment_status: paymentStatus,
             payment_mode: orderRow.payment_mode,
             payment_action: paymentAction,
@@ -1463,6 +1561,10 @@ const getAllOrders = async (req, res) => {
         }
         const requestPool = getRequestPool(req);
         const branchId = resolveBranchIdFromRequest(req);
+        const transactionTypeFilterRaw = normalizeTransactionType(req.query?.transaction_type || req.query?.transactionType);
+        const transactionTypeFilter = ['sale', 'purchase', 'personal'].includes(transactionTypeFilterRaw)
+          ? transactionTypeFilterRaw
+          : null;
         const sinceRaw = req.query?.since;
         if (sinceRaw) {
             const sinceDate = new Date(sinceRaw);
@@ -1476,6 +1578,7 @@ const getAllOrders = async (req, res) => {
                       o.total_price AS total_amount,
                       o.created_at,
                       o.order_status,
+                      o.transaction_type,
                       o.billing_type,
                       o.payment_mode,
                       o.is_gst_enabled,
@@ -1484,14 +1587,21 @@ const getAllOrders = async (req, res) => {
                           COALESCE(o.customer_phone, c.mobile) AS customer_phone,
                           COALESCE(o.product_count, 0)::int AS product_count,
                           COALESCE(o.product_summary, '') AS product_names,
-                          COALESCE(o.total_paid, 0)::numeric AS total_paid
+                          COALESCE(t.total_paid, 0)::numeric AS total_paid
                    FROM orders o
                    LEFT JOIN customers c ON c.id = o.customer_id
+                   LEFT JOIN (
+                     SELECT order_id, COALESCE(SUM(COALESCE(amount, total_price, 0)), 0)::numeric AS total_paid
+                     FROM transactions
+                     WHERE transaction_type IS NULL OR transaction_type <> 'refund'
+                     GROUP BY order_id
+                   ) t ON t.order_id = o.id
                    WHERE o.created_at >= $1
                      AND ($2::uuid IS NULL OR o.branch_id = $2)
+                     AND ($4::text IS NULL OR LOWER(COALESCE(o.transaction_type, '')) = $4)
                    ORDER BY o.created_at ASC, o.id ASC
                    LIMIT $3`,
-                  [sinceDate, branchId, resolvedLimit]
+                  [sinceDate, branchId, resolvedLimit, transactionTypeFilter]
               );
 
             const customerDetailsEnabled = Boolean(req.planFeatures?.customer_details_enabled);
@@ -1535,6 +1645,7 @@ const getAllOrders = async (req, res) => {
                       returned_amount: returnedAmount,
                       balance,
                   payment_status: paymentStatus,
+                  transaction_type: String(order.transaction_type || '').toLowerCase() || null,
                   billing_type: String(order.billing_type || 'retail').toLowerCase(),
                   payment_mode: order.payment_mode,
                   payment_action: paymentAction,
@@ -1642,6 +1753,7 @@ const getAllOrders = async (req, res) => {
                         o.total_price AS total_amount,
                         o.created_at,
                         o.order_status,
+                        o.transaction_type,
                         o.billing_type,
                         o.payment_mode,
                         o.is_gst_enabled,
@@ -1650,9 +1762,15 @@ const getAllOrders = async (req, res) => {
                         o.customer_phone,
                         COALESCE(o.product_count, 0)::int AS product_count,
                         COALESCE(o.product_summary, '') AS product_names,
-                        COALESCE(o.total_paid, 0)::numeric AS total_paid
+                        COALESCE(t.total_paid, 0)::numeric AS total_paid
                  FROM orders o
                  LEFT JOIN customers c ON c.id = o.customer_id
+                 LEFT JOIN (
+                   SELECT order_id, COALESCE(SUM(COALESCE(amount, total_price, 0)), 0)::numeric AS total_paid
+                   FROM transactions
+                   WHERE transaction_type IS NULL OR transaction_type <> 'refund'
+                   GROUP BY order_id
+                 ) t ON t.order_id = o.id
                  WHERE o.created_at BETWEEN $1 AND $2
                    AND ($5::uuid IS NULL OR o.branch_id = $5)
                    AND (
@@ -1661,12 +1779,13 @@ const getAllOrders = async (req, res) => {
                      OR c.name ILIKE $6
                      OR o.product_summary ILIKE $6
                    )
+                   AND ($8::text IS NULL OR LOWER(COALESCE(o.transaction_type, '')) = $8)
                  ORDER BY
                    CASE WHEN $7 = 'id' THEN o.id END ${sortOrder},
                    CASE WHEN $7 = 'created_at' THEN o.created_at END ${sortOrder},
                    CASE WHEN $7 = 'total_amount' THEN o.total_price END ${sortOrder},
-                   CASE WHEN $7 = 'total_paid' THEN COALESCE(o.total_paid, 0)::numeric END ${sortOrder},
-                   CASE WHEN $7 = 'balance' THEN (o.total_price - COALESCE(o.total_paid, 0)::numeric - COALESCE(o.returned_amount, 0)::numeric) END ${sortOrder},
+                   CASE WHEN $7 = 'total_paid' THEN COALESCE(t.total_paid, 0)::numeric END ${sortOrder},
+                   CASE WHEN $7 = 'balance' THEN (o.total_price - COALESCE(t.total_paid, 0)::numeric - COALESCE(o.returned_amount, 0)::numeric) END ${sortOrder},
                    o.id DESC
                  LIMIT $3 OFFSET $4
                )
@@ -1675,6 +1794,7 @@ const getAllOrders = async (req, res) => {
                       b.total_amount,
                       b.created_at,
                       b.order_status,
+                      b.transaction_type,
                       b.billing_type,
                       b.payment_mode,
                       b.is_gst_enabled,
@@ -1693,7 +1813,7 @@ const getAllOrders = async (req, res) => {
                   CASE WHEN $7 = 'total_paid' THEN COALESCE(b.total_paid, 0)::numeric END ${sortOrder},
                   CASE WHEN $7 = 'balance' THEN (b.total_amount - COALESCE(b.total_paid, 0)::numeric - COALESCE(b.returned_amount, 0)::numeric) END ${sortOrder},
                   b.id DESC`,
-              [start, end, resolvedLimit, offset, branchId, searchValue, resolvedSort]
+              [start, end, resolvedLimit, offset, branchId, searchValue, resolvedSort, transactionTypeFilter]
           );
 
         if (ordersRes.rowCount === 0) {
@@ -1741,6 +1861,7 @@ const getAllOrders = async (req, res) => {
                     returned_amount: returnedAmount,
                     balance,
                 payment_status: paymentStatus,
+                transaction_type: String(order.transaction_type || '').toLowerCase() || null,
                 billing_type: String(order.billing_type || 'retail').toLowerCase(),
                 payment_mode: order.payment_mode,
                 payment_action: paymentAction,
@@ -1756,19 +1877,21 @@ const getAllOrders = async (req, res) => {
                  LEFT JOIN customers c ON c.id = o.customer_id
                  WHERE o.created_at BETWEEN $1 AND $2
                    AND ($4::uuid IS NULL OR o.branch_id = $4)
+                   AND ($5::text IS NULL OR LOWER(COALESCE(o.transaction_type, '')) = $5)
                    AND (
                      o.id::text ILIKE $3
                      OR c.name ILIKE $3
                      OR o.product_summary ILIKE $3
                    )`,
-                [start, end, searchValue, branchId]
+                [start, end, searchValue, branchId, transactionTypeFilter]
               )
             : await requestPool.query(
                 `SELECT COUNT(*)::int AS total_records
                  FROM orders o
                  WHERE o.created_at BETWEEN $1 AND $2
-                   AND ($3::uuid IS NULL OR o.branch_id = $3)`,
-                [start, end, branchId]
+                   AND ($3::uuid IS NULL OR o.branch_id = $3)
+                   AND ($4::text IS NULL OR LOWER(COALESCE(o.transaction_type, '')) = $4)`,
+                [start, end, branchId, transactionTypeFilter]
               );
         const totalRecords = Number(totalCountRes.rows[0]?.total_records || 0);
         const totalPages = totalRecords === 0 ? 0 : Math.ceil(totalRecords / resolvedLimit);
@@ -2151,10 +2274,7 @@ const processOrderReturn = async (req, res) => {
             throw buildValidationError('Return items are required.');
         }
 
-        const refundMode = normalizeRefundMode(payload.refundMode || payload.refund_mode);
-        if (!refundMode) {
-            throw buildValidationError('refundMode is required.');
-        }
+        const refundMode = normalizeRefundMode(payload.refundMode || payload.refund_mode) || 'cash';
 
         const reason = normalizeReturnReason(payload.reason);
 
@@ -2166,7 +2286,8 @@ const processOrderReturn = async (req, res) => {
                     is_gst_enabled,
                     branch_id,
                     customer_id,
-                    payment_mode
+                    payment_mode,
+                    total_paid
              FROM orders
              WHERE id = $1
              FOR UPDATE`,
@@ -2175,19 +2296,33 @@ const processOrderReturn = async (req, res) => {
         if (orderRes.rowCount == 0) {
             throw buildValidationError('Order not found.');
         }
-        const totalPaidRes = await client.query(
-            `SELECT COALESCE(SUM(total_price), 0)::numeric AS total_paid
+        const paymentHistoryRes = await client.query(
+            `SELECT id,
+                    payment_mode,
+                    COALESCE(amount, total_price, 0)::numeric AS amount,
+                    created_at
              FROM transactions
              WHERE order_id = $1
-               AND (transaction_type IS NULL OR transaction_type <> 'refund')`,
+               AND (transaction_type IS NULL OR transaction_type <> 'refund')
+               AND COALESCE(amount, total_price, 0)::numeric > 0
+             ORDER BY created_at ASC, id ASC`,
             [orderId]
         );
+        const paymentHistory = paymentHistoryRes.rows || [];
+        const paymentHistoryTotal = paymentHistory.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+        const orderLevelPaid = Number(orderRes.rows[0]?.total_paid || 0);
+        if (orderLevelPaid > 0 && paymentHistory.length === 0) {
+            throw buildValidationError('Invalid state: Paid amount exists without payment records');
+        }
         const order = {
             ...orderRes.rows[0],
-            total_paid: totalPaidRes.rows[0]?.total_paid || 0
+            total_paid: Math.max(paymentHistoryTotal, orderLevelPaid, 0)
         };
-        if (!['completed', 'partially_returned'].includes(order.order_status)) {
-            throw buildValidationError('Only completed orders can be returned.');
+        if (['cancelled', 'fully_returned'].includes(String(order.order_status || '').toLowerCase())) {
+            throw buildValidationError('Order is not eligible for return.');
+        }
+        if (Number(order.returned_amount || 0) >= Number(order.total_price || 0)) {
+            throw buildValidationError('Order is already fully returned.');
         }
 
         const orderItemsRes = await client.query(
@@ -2277,12 +2412,45 @@ const processOrderReturn = async (req, res) => {
             throw buildValidationError('No valid return items found.');
         }
 
-        const refundTotal = prepared.reduce((sum, row) => sum + Number(row.line_total || 0), 0);
-        if (!Number.isFinite(refundTotal) || refundTotal <= 0) {
-            throw buildValidationError('Refund total must be > 0.');
+        const returnValue = prepared.reduce((sum, row) => sum + Number(row.line_total || 0), 0);
+        if (!Number.isFinite(returnValue) || returnValue <= 0) {
+            throw buildValidationError('Return amount must be > 0.');
         }
 
         const returnUuid = payload.returnId || payload.return_id || null;
+        if (returnUuid) {
+            const existingReturnRes = await client.query(
+                `SELECT id, refund_total, created_at, return_uuid
+                 FROM order_returns
+                 WHERE return_uuid = $1
+                 LIMIT 1`,
+                [returnUuid]
+            );
+            if (existingReturnRes.rowCount > 0) {
+                await client.query('ROLLBACK');
+                const existing = existingReturnRes.rows[0];
+                return res.status(200).json({
+                    return_id: existing.id,
+                    return_uuid: existing.return_uuid || null,
+                    refund_total: Number(existing.refund_total || 0),
+                    idempotent: true
+                });
+            }
+        }
+        const totalPaid = Math.max(Number(order.total_paid || 0), 0);
+        let refundAmount = 0;
+        let payableReduction = 0;
+        if (totalPaid <= 0) {
+            refundAmount = 0;
+            payableReduction = returnValue;
+        } else if (totalPaid >= returnValue) {
+            refundAmount = returnValue;
+            payableReduction = 0;
+        } else {
+            refundAmount = totalPaid;
+            payableReduction = Math.max(returnValue - refundAmount, 0);
+        }
+
         const taxReversed = prepared.reduce((sum, row) => sum + Number(row.gst_amount || 0), 0);
         const returnRes = await client.query(
             `INSERT INTO order_returns (order_id, customer_id, refund_total, refund_mode, reason, created_by, return_uuid, tax_reversed)
@@ -2291,7 +2459,7 @@ const processOrderReturn = async (req, res) => {
             [
                 orderId,
                 order.customer_id || null,
-                refundTotal,
+                returnValue,
                 refundMode,
                 reason || null,
                 req.user?.user_id || null,
@@ -2335,39 +2503,54 @@ const processOrderReturn = async (req, res) => {
             );
         }
 
-        const refundProfit = prepared.reduce(
+        const returnProfit = prepared.reduce(
             (sum, row) => sum + (Number(row.line_total || 0) - (Number(row.purchase_price || 0) * Number(row.qty || 0))),
             0
         );
 
-        await client.query(
-            `INSERT INTO transactions (order_id, total_price, profit, payment_mode, transaction_type, reference_id, created_at, amount, party_type, party_id, direction, txn_type, notes, branch_id)
-             VALUES ($1, $2, $3, $4, 'refund', $5, NOW(), $6, 'customer', $7, 'out', 'refund', NULL, $8)`,
-            [orderId, -refundTotal, -refundProfit, refundMode, returnId, refundTotal, order.customer_id || null, order.branch_id || null]
-        );
+        if (refundAmount > 0) {
+            const refundProfit = returnValue > 0 ? (returnProfit * (refundAmount / returnValue)) : 0;
+            await client.query(
+                `INSERT INTO transactions (order_id, total_price, profit, payment_mode, transaction_type, reference_id, created_at, amount, party_type, party_id, direction, txn_type, notes, branch_id)
+                 VALUES ($1, $2, $3, $4, 'refund', $5, NOW(), $6, 'customer', $7, 'out', 'refund', $8, $9)`,
+                [
+                    orderId,
+                    -refundAmount,
+                    -refundProfit,
+                    refundMode,
+                    returnId,
+                    refundAmount,
+                    order.customer_id || null,
+                    `Sales return refund; return=${returnValue.toFixed(2)} refund=${refundAmount.toFixed(2)} adjusted=${payableReduction.toFixed(2)}`,
+                    order.branch_id || null
+                ]
+            );
+        }
 
         const cgst = taxReversed > 0 ? taxReversed / 2 : 0;
         const sgst = taxReversed > 0 ? taxReversed / 2 : 0;
         await client.query(
             `INSERT INTO gst_ledger (id, bill_id, type, taxable_amount, cgst, sgst, igst, total_tax, date, is_synced)
              VALUES (gen_random_uuid(), $1, 'RETURN', $2, $3, $4, 0, $5, CURRENT_DATE, FALSE)`,
-            [orderId, refundTotal, cgst, sgst, taxReversed]
+            [orderId, returnValue, cgst, sgst, taxReversed]
         );
 
         const previousReturned = Number(order.returned_amount || 0);
         const totalPrice = Number(order.total_price || 0);
-        const nextReturned = Math.min(previousReturned + refundTotal, totalPrice);
+        const nextReturned = Math.min(previousReturned + returnValue, totalPrice);
+        const nextTotalPaid = Math.max(totalPaid - refundAmount, 0);
         const nextStatus = resolveReturnStatus(totalPrice, nextReturned);
 
         await client.query(
             `UPDATE orders
              SET returned_amount = $1,
-                 order_status = $2
-             WHERE id = $3`,
-            [nextReturned, nextStatus, orderId]
+                 order_status = $2,
+                 total_paid = $3
+             WHERE id = $4`,
+            [nextReturned, nextStatus, nextTotalPaid, orderId]
         );
-
-        const totalPaid = Number(order.total_paid || 0);
+        const nextBalance = Math.max(totalPrice - nextReturned - nextTotalPaid, 0);
+        const settlementStatus = nextBalance === 0 ? 'settled' : (nextTotalPaid === 0 && returnValue > 0 ? 'adjusted' : 'open');
 
         await client.query('COMMIT');
 
@@ -2382,9 +2565,13 @@ const processOrderReturn = async (req, res) => {
         return res.status(201).json({
             return_id: returnId,
             return_uuid: returnRes.rows[0]?.return_uuid || null,
-            refund_total: refundTotal,
+            refund_total: returnValue,
+            refund_amount: refundAmount,
+            adjusted_amount: payableReduction,
+            settlement_status: settlementStatus,
             returned_amount: nextReturned,
-            order_status: nextStatus
+            order_status: nextStatus,
+            balance: nextBalance
         });
     } catch (error) {
         await client.query('ROLLBACK');
@@ -2524,11 +2711,35 @@ const normalizePaymentMode = (order) => {
   return order.payment_mode || order.payment_method || null;
 };
 
+const normalizeTransactionType = (value) => String(value || '').trim().toLowerCase();
+
+const hasValue = (value) => value !== undefined && value !== null && String(value).trim() !== '';
+
+const validateOrderPartyByType = (type, payload = {}) => {
+  const hasSupplier = hasValue(payload.supplier_id ?? payload.supplierId);
+  const hasCustomer = hasValue(payload.customer_id ?? payload.customerId);
+
+  if (!['sale', 'purchase', 'personal'].includes(type)) {
+    return 'transaction_type must be one of: sale, purchase, personal.';
+  }
+  if (type === 'sale') {
+    if (hasSupplier) return 'supplier_id must be null/empty for sale.';
+    if (!hasCustomer) return 'customer_id is required for sale.';
+  }
+  if (type === 'purchase') {
+    if (hasCustomer) return 'customer_id must be null/empty for purchase.';
+    if (!hasSupplier) return 'supplier_id is required for purchase.';
+  }
+  return null;
+};
+
 const validateOfflineOrder = (order) => {
   if (!order || typeof order !== 'object') return 'Order is required.';
   if (!order.transaction_type) return 'transaction_type is required.';
 
-  const type = order.transaction_type;
+  const type = normalizeTransactionType(order.transaction_type);
+  const partyValidation = validateOrderPartyByType(type, order);
+  if (partyValidation) return partyValidation;
   const paymentMode = normalizePaymentMode(order);
   const items = Array.isArray(order.products)
     ? order.products
@@ -2842,13 +3053,21 @@ const syncOfflineOrders = async (req, res) => {
           : Array.isArray(order.items)
             ? order.items
             : [];
+        const supplierId = normalizeNumber(order.supplier_id ?? order.supplierId);
+        if (!Number.isFinite(supplierId)) {
+          throw new Error('supplier_id is required for purchase');
+        }
+        const supplierRes = await client.query('SELECT id FROM suppliers WHERE id = $1 LIMIT 1', [supplierId]);
+        if (supplierRes.rowCount === 0) {
+          throw new Error('supplier_id is invalid');
+        }
         const totalAmount = order.total_amount;
         orderTotal = normalizeNumber(totalAmount) || 0;
           const orderDate = order.client_created_at ? new Date(order.client_created_at) : new Date();
           const gstMode = resolveGstMode(req);
           const orderResult = await client.query(
-            'INSERT INTO orders (client_order_id, customer_id, customer_phone, branch_id, total_price, order_status, payment_mode, created_at, location, transaction_type, is_gst_enabled, gst_mode, billing_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id',
-            [clientOrderId || null, resolvedCustomerId, resolvedCustomerPhone, branchId, totalAmount, 'pending', paymentMode || null, orderDate, resolvedLocation, 'purchase', false, gstMode, 'purchase']
+            'INSERT INTO orders (client_order_id, customer_id, supplier_id, customer_phone, branch_id, total_price, order_status, payment_mode, created_at, location, transaction_type, is_gst_enabled, gst_mode, billing_type) VALUES ($1, NULL, $2, NULL, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id',
+            [clientOrderId || null, supplierId, branchId, totalAmount, 'pending', paymentMode || null, orderDate, resolvedLocation, 'purchase', false, gstMode, 'purchase']
           );
 
         orderId = orderResult.rows[0].id;
@@ -2932,19 +3151,141 @@ const syncOfflineOrders = async (req, res) => {
           if (!Number.isFinite(amount) || amount <= 0) continue;
           const resolvedPaymentMode =
             normalizePaymentModeValue(payment?.payment_mode || payment?.payment_method) || paymentMode || null;
+          if (!resolvedPaymentMode || resolvedPaymentMode === 'credit') {
+            throw new Error('payment_mode must be cash or bank for paid entries.');
+          }
           const ratio = orderTotal > 0 ? amount / orderTotal : 0;
           const profit = type === 'sale' ? orderProfit * ratio : 0;
           const createdAt = payment?.created_at ? new Date(payment.created_at) : new Date();
+          const partyType = type === 'purchase' ? 'supplier' : 'customer';
+          const partyId = type === 'purchase'
+            ? (normalizeNumber(order.supplier_id ?? order.supplierId) || null)
+            : (resolvedCustomerId || null);
+          const direction = type === 'purchase' ? 'out' : 'in';
+          const txnType = type === 'purchase' ? 'purchase' : 'sale';
           const txRes = await client.query(
             `INSERT INTO transactions (order_id, total_price, profit, payment_mode, created_at, amount, party_type, party_id, direction, txn_type, notes, branch_id)
-             VALUES ($1, $2, $3, $4, $5, $2, 'customer', $6, 'in', 'sale', NULL, $7)
-             RETURNING id, order_id, total_price, payment_mode, created_at`,
-            [orderId, amount, profit, resolvedPaymentMode, createdAt, resolvedCustomerId || null, order?.branch_id || null]
+             VALUES ($1, $2, $3, $4, $5, $2, $6, $7, $8, $9, NULL, $10)
+             RETURNING id, order_id, total_price, payment_mode, amount, party_id, created_at`,
+            [orderId, amount, profit, resolvedPaymentMode, createdAt, partyType, partyId, direction, txnType, order?.branch_id || null]
           );
           if (txRes.rowCount > 0) {
             insertedTransactions.push(txRes.rows[0]);
           }
           totalPaid += amount;
+        }
+      }
+
+      if (type === 'sale') {
+        const salesLedger = String(order?.billing_type || 'retail').toLowerCase() === 'wholesale'
+          ? 'Sales (Wholesale)'
+          : 'Sales (Retail)';
+        if (resolvedCustomerId) {
+          await insertLedgerEntries({
+            client,
+            lines: [
+              { ledger: 'Accounts Receivable', debit: Number(orderTotal || 0), credit: 0 },
+              { ledger: salesLedger, debit: 0, credit: Number(orderTotal || 0) },
+            ],
+            transactionId: null,
+            referenceId: orderId,
+            referenceType: 'order',
+            description: `Sale order #${orderId}`,
+            date: new Date(),
+            branchId,
+            clientTxnId: null,
+            syncStatus: 'SYNCED',
+            partyType: 'customer',
+            partyId: resolvedCustomerId,
+          });
+          for (const txn of insertedTransactions) {
+            const paidAmount = Number(txn.amount || 0);
+            if (paidAmount <= 0) continue;
+            await insertLedgerEntries({
+              client,
+              lines: [
+                { ledger: resolveCashBankLedgerName(txn.payment_mode), debit: paidAmount, credit: 0 },
+                { ledger: 'Accounts Receivable', debit: 0, credit: paidAmount },
+              ],
+              transactionId: Number(txn.id),
+              referenceId: orderId,
+              referenceType: 'payment',
+              description: `Sale receipt for order #${orderId}`,
+              date: txn.created_at || new Date(),
+              branchId,
+              clientTxnId: null,
+              syncStatus: 'SYNCED',
+              partyType: 'customer',
+              partyId: resolvedCustomerId,
+            });
+          }
+        } else if (totalPaid > 0) {
+          let bookedSales = 0;
+          for (const txn of insertedTransactions) {
+            const paidAmount = Number(txn.amount || 0);
+            if (paidAmount <= 0) continue;
+            bookedSales += paidAmount;
+            await insertLedgerEntries({
+              client,
+              lines: [
+                { ledger: resolveCashBankLedgerName(txn.payment_mode), debit: paidAmount, credit: 0 },
+                { ledger: salesLedger, debit: 0, credit: paidAmount },
+              ],
+              transactionId: Number(txn.id),
+              referenceId: orderId,
+              referenceType: 'order',
+              description: `Cash/bank sale for order #${orderId}`,
+              date: txn.created_at || new Date(),
+              branchId,
+              clientTxnId: null,
+              syncStatus: 'SYNCED',
+              partyType: 'expense',
+              partyId: null,
+            });
+          }
+          if (Math.round(bookedSales * 100) !== Math.round(Number(orderTotal || 0) * 100)) {
+            throw new Error('Non-customer sale must be fully paid to post cash/bank sale.');
+          }
+        }
+      } else if (type === 'purchase') {
+        const supplierId = normalizeNumber(order.supplier_id ?? order.supplierId);
+        await insertLedgerEntries({
+          client,
+          lines: [
+            { ledger: 'Purchase', debit: Number(orderTotal || 0), credit: 0 },
+            { ledger: 'Accounts Payable', debit: 0, credit: Number(orderTotal || 0) },
+          ],
+          transactionId: null,
+          referenceId: orderId,
+          referenceType: 'order',
+          description: `Purchase order #${orderId}`,
+          date: new Date(),
+          branchId,
+          clientTxnId: null,
+          syncStatus: 'SYNCED',
+          partyType: 'supplier',
+          partyId: Number.isFinite(supplierId) ? supplierId : null,
+        });
+        for (const txn of insertedTransactions) {
+          const paidAmount = Number(txn.amount || 0);
+          if (paidAmount <= 0) continue;
+          await insertLedgerEntries({
+            client,
+            lines: [
+              { ledger: 'Accounts Payable', debit: paidAmount, credit: 0 },
+              { ledger: resolveCashBankLedgerName(txn.payment_mode), debit: 0, credit: paidAmount },
+            ],
+            transactionId: Number(txn.id),
+            referenceId: orderId,
+            referenceType: 'payment',
+            description: `Supplier payment for order #${orderId}`,
+            date: txn.created_at || new Date(),
+            branchId,
+            clientTxnId: null,
+            syncStatus: 'SYNCED',
+            partyType: 'supplier',
+            partyId: Number.isFinite(supplierId) ? supplierId : null,
+          });
         }
       }
 
@@ -2962,7 +3303,7 @@ const syncOfflineOrders = async (req, res) => {
 
       const outstanding = Math.max(Number(orderTotal || 0) - Number(totalPaid || 0), 0);
       let creditCheck = null;
-      if (outstanding > 0) {
+      if (outstanding > 0 && type === 'sale') {
         if (!resolvedCustomerId) {
           throw new Error('Customer is required for partial/credit billing');
         }

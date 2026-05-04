@@ -22,6 +22,7 @@ const normalizePaymentMode = (value) => {
   if (!raw) return 'cash';
   if (raw === 'upi' || raw === 'online') return 'online';
   if (raw === 'bank') return 'bank';
+  if (raw === 'card') return 'cash';
   return raw;
 };
 
@@ -44,6 +45,9 @@ const createReceipt = async (req, payload = {}) => {
     const orderId = parseNumberInput(payload.order_id || payload.orderId);
     const paymentMode = normalizePaymentMode(payload.payment_mode || payload.paymentMode);
     const normalizedMode = paymentMode === 'upi' ? 'online' : paymentMode;
+    if (!['cash', 'bank', 'online'].includes(normalizedMode)) {
+      throw buildValidationError('payment_mode must be cash, bank, or online for receipt entry.');
+    }
     const notes = payload.notes || null;
     const branchId = payload.branch_id || payload.branchId || resolveBranchIdFromRequest(req);
     const date = payload.date || payload.created_at || null;
@@ -136,6 +140,9 @@ const createPayment = async (req, payload = {}) => {
     const orderId = parseNumberInput(payload.order_id || payload.orderId);
     const paymentMode = normalizePaymentMode(payload.payment_mode || payload.paymentMode);
     const normalizedMode = paymentMode === 'upi' ? 'online' : paymentMode;
+    if (!['cash', 'bank', 'online'].includes(normalizedMode)) {
+      throw buildValidationError('payment_mode must be cash, bank, or online for payment entry.');
+    }
     const notes = payload.notes || null;
     const branchId = payload.branch_id || payload.branchId || resolveBranchIdFromRequest(req);
     const date = payload.date || payload.created_at || null;
@@ -337,25 +344,40 @@ const getLedgerBook = async (req, query = {}) => {
   );
 
   const rowsRes = await requestPool.query(
-    `SELECT le.id,
-            le.date,
-            le.description,
-            le.debit,
-            le.credit,
-            le.reference_id,
-            le.reference_type,
-            le.transaction_id,
-            le.branch_id,
-            l.id AS ledger_id,
-            l.name AS ledger_name,
-            (COALESCE(SUM(le.debit - le.credit) OVER (ORDER BY le.date ASC, le.created_at ASC), 0) + $4::numeric) AS running_balance
-     FROM ledger_entries le
-     JOIN ledgers l ON l.id = le.ledger_id
-     WHERE ($1::text = '' OR l.name = $1)
-       AND ($2::uuid IS NULL OR l.id = $2::uuid)
-       AND ($3::uuid IS NULL OR le.branch_id = $3 OR le.branch_id IS NULL)
-       AND le.date BETWEEN $5 AND $6
-     ORDER BY le.date ASC, le.created_at ASC`,
+    `SELECT *
+     FROM (
+       SELECT le.id,
+              le.date,
+              le.created_at,
+              le.description,
+              le.debit,
+              le.credit,
+              le.reference_id,
+              le.reference_type,
+              le.transaction_id,
+              le.branch_id,
+              l.id AS ledger_id,
+              l.name AS ledger_name,
+              CASE WHEN LOWER(COALESCE(le.reference_type, '')) = 'opening' THEN 0 ELSE 1 END AS order_rank,
+              (COALESCE(SUM(le.debit - le.credit) OVER (
+                ORDER BY
+                  le.date ASC,
+                  CASE WHEN LOWER(COALESCE(le.reference_type, '')) = 'opening' THEN 0 ELSE 1 END ASC,
+                  le.created_at ASC,
+                  le.id ASC
+              ), 0) + $4::numeric) AS running_balance
+       FROM ledger_entries le
+       JOIN ledgers l ON l.id = le.ledger_id
+       WHERE ($1::text = '' OR l.name = $1)
+         AND ($2::uuid IS NULL OR l.id = $2::uuid)
+         AND ($3::uuid IS NULL OR le.branch_id = $3 OR le.branch_id IS NULL)
+         AND le.date BETWEEN $5 AND $6
+     ) t
+     ORDER BY
+       t.date DESC,
+       t.order_rank DESC,
+       t.created_at DESC,
+       t.id DESC`,
     [ledgerName, ledgerId, branchId, Number(openingRes.rows[0]?.opening_balance || 0), start, end]
   );
 
@@ -383,40 +405,45 @@ const getLedger = async (req, query = {}) => {
   const branchId = resolveBranchIdFromRequest(req);
 
   const ledgerQuery = `
-    SELECT t.id,
-           t.created_at,
-           t.txn_type,
-           t.direction,
-           COALESCE(t.amount, t.total_price, 0) AS amount,
-           t.payment_mode,
-           t.notes,
-           SUM(
-             CASE
-               WHEN $1 = 'customer' THEN
-                 CASE
-                   WHEN t.txn_type = 'sale' THEN COALESCE(t.amount, t.total_price, 0)
-                   WHEN t.txn_type IN ('receipt', 'refund') THEN -COALESCE(t.amount, t.total_price, 0)
-                   WHEN LOWER(COALESCE(t.direction, 'in')) = 'in' THEN COALESCE(t.amount, t.total_price, 0)
-                   WHEN LOWER(COALESCE(t.direction, 'in')) = 'out' THEN -COALESCE(t.amount, t.total_price, 0)
-                   ELSE 0
-                 END
-               ELSE
-                 CASE
-                   WHEN t.txn_type = 'purchase' THEN COALESCE(t.amount, t.total_price, 0)
-                   WHEN t.txn_type IN ('payment', 'refund') THEN -COALESCE(t.amount, t.total_price, 0)
-                   WHEN LOWER(COALESCE(t.direction, 'in')) = 'out' THEN COALESCE(t.amount, t.total_price, 0)
-                   WHEN LOWER(COALESCE(t.direction, 'in')) = 'in' THEN -COALESCE(t.amount, t.total_price, 0)
-                   ELSE 0
-                 END
-             END
-           ) OVER (ORDER BY t.created_at ASC, t.id ASC) AS running_balance
-    FROM transactions t
-    LEFT JOIN orders o ON o.id = t.order_id
-    WHERE t.party_type = $1
-      AND t.party_id = $2
-      AND t.created_at BETWEEN $3 AND $4
-      AND ($5::uuid IS NULL OR COALESCE(t.branch_id, o.branch_id) = $5)
-    ORDER BY t.created_at DESC, t.id DESC
+    SELECT *
+    FROM (
+      SELECT t.id,
+             t.created_at,
+             t.txn_type,
+             t.direction,
+             COALESCE(t.amount, t.total_price, 0) AS amount,
+             t.payment_mode,
+             t.notes,
+             SUM(
+               CASE
+                 WHEN $1 = 'customer' THEN
+                   CASE
+                     WHEN t.txn_type = 'sale' THEN COALESCE(t.amount, t.total_price, 0)
+                     WHEN t.txn_type IN ('receipt', 'refund') THEN -COALESCE(t.amount, t.total_price, 0)
+                     WHEN LOWER(COALESCE(t.direction, 'in')) = 'in' THEN COALESCE(t.amount, t.total_price, 0)
+                     WHEN LOWER(COALESCE(t.direction, 'in')) = 'out' THEN -COALESCE(t.amount, t.total_price, 0)
+                     ELSE 0
+                   END
+                 ELSE
+                   CASE
+                     WHEN t.txn_type = 'purchase' THEN COALESCE(t.amount, t.total_price, 0)
+                     WHEN t.txn_type IN ('payment', 'refund') THEN -COALESCE(t.amount, t.total_price, 0)
+                     WHEN LOWER(COALESCE(t.direction, 'in')) = 'out' THEN COALESCE(t.amount, t.total_price, 0)
+                     WHEN LOWER(COALESCE(t.direction, 'in')) = 'in' THEN -COALESCE(t.amount, t.total_price, 0)
+                     ELSE 0
+                   END
+               END
+             ) OVER (
+               ORDER BY t.created_at ASC, t.id ASC
+             ) AS running_balance
+      FROM transactions t
+      LEFT JOIN orders o ON o.id = t.order_id
+      WHERE t.party_type = $1
+        AND t.party_id = $2
+        AND t.created_at BETWEEN $3 AND $4
+        AND ($5::uuid IS NULL OR COALESCE(t.branch_id, o.branch_id) = $5)
+    ) x
+    ORDER BY x.created_at DESC, x.id DESC
     LIMIT $6 OFFSET $7;
   `;
 

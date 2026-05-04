@@ -18,7 +18,8 @@ const normalizePartyType = (value) => {
 const resolveCashBankLedgerName = (paymentMode) => {
   const mode = String(paymentMode || '').trim().toLowerCase();
   if (mode === 'bank' || mode === 'online' || mode === 'upi') return 'Bank Account';
-  return 'Cash in Hand';
+  if (mode === 'cash' || mode === 'card') return 'Cash in Hand';
+  throw buildValidationError(`Invalid payment_mode for cash/bank posting: ${paymentMode}`);
 };
 
 const getLedgerIdByName = async (client, name) => {

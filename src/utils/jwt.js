@@ -3,11 +3,19 @@ const jwt = require('jsonwebtoken');
 const DEFAULT_TENANT_COOKIE = 'token';
 const DEFAULT_ADMIN_COOKIE = 'admin_token';
 
+const normalizeTokenValue = (value) => {
+  if (!value || typeof value !== 'string') return null;
+  const cleaned = value.trim().replace(/^['"]|['"]$/g, '');
+  if (!cleaned) return null;
+  const lowered = cleaned.toLowerCase();
+  if (lowered === 'null' || lowered === 'undefined' || lowered === 'nan') return null;
+  return cleaned;
+};
+
 const getTokenFromRequest = (req, cookieName) => {
-  const headerToken = req.headers.authorization
-    ? req.headers.authorization.replace(/^Bearer\s+/i, '')
-    : null;
-  const cookieToken = cookieName ? req.cookies?.[cookieName] : null;
+  const authHeader = req?.headers?.authorization;
+  const headerToken = authHeader ? normalizeTokenValue(authHeader.replace(/^Bearer\s+/i, '')) : null;
+  const cookieToken = cookieName ? normalizeTokenValue(req?.cookies?.[cookieName]) : null;
   return headerToken || cookieToken || null;
 };
 
