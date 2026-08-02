@@ -1951,6 +1951,116 @@ const createTenantBranch = async (req, res) => {
   }
 };
 
+const getTenantBranchDevices = async (req, res) => {
+  try {
+    const tenantId = String(req.params.tenant_id || '').trim();
+    const branchId = normalizeBranchId(req.params.branch_id);
+    if (!tenantId) {
+      return jsonError(res, 400, 'VALIDATION_ERROR', 'Invalid tenant id');
+    }
+    if (!branchId) {
+      return jsonError(res, 400, 'VALIDATION_ERROR', 'Invalid branch id');
+    }
+
+    const context = await resolveTenantContext(tenantId);
+    if (!context) {
+      return jsonError(res, 404, 'TENANT_NOT_FOUND', 'Tenant not found');
+    }
+
+    const branchRes = await context.tenantPool.query(
+      `SELECT id, name, location, subscription_plan, max_devices_allowed
+       FROM branches
+       WHERE id = $1`,
+      [branchId]
+    );
+    if (branchRes.rowCount === 0) {
+      return jsonError(res, 404, 'BRANCH_NOT_FOUND', 'Branch not found');
+    }
+
+    const devicesRes = await context.tenantPool.query(
+      `SELECT id, device_id, device_name, browser_info, os_info, ip_address, last_login_at, is_active, created_at
+       FROM branch_devices
+       WHERE branch_id = $1
+       ORDER BY is_active DESC, last_login_at DESC NULLS LAST, created_at DESC`,
+      [branchId]
+    );
+    const activeCountRes = await context.tenantPool.query(
+      `SELECT COUNT(*)::int AS count
+       FROM branch_devices
+       WHERE branch_id = $1 AND is_active = TRUE`,
+      [branchId]
+    );
+
+    await logAdminAction(req.admin?.admin_id, 'TENANT_BRANCH_DEVICES_VIEWED', 'branch', branchId, {
+      tenant_id: tenantId
+    });
+
+    return jsonOk(
+      res,
+      {
+        branch: branchRes.rows[0],
+        devices: devicesRes.rows,
+        active_count: activeCountRes.rows[0]?.count || 0
+      },
+      'Devices fetched'
+    );
+  } catch (error) {
+    return jsonError(res, 500, 'TENANT_BRANCH_DEVICES_FAILED', error.message);
+  }
+};
+
+const deactivateTenantBranchDevice = async (req, res) => {
+  try {
+    const tenantId = String(req.params.tenant_id || '').trim();
+    const branchId = normalizeBranchId(req.params.branch_id);
+    const deviceId = normalizeBranchId(req.params.device_id);
+    if (!tenantId) {
+      return jsonError(res, 400, 'VALIDATION_ERROR', 'Invalid tenant id');
+    }
+    if (!branchId || !deviceId) {
+      return jsonError(res, 400, 'VALIDATION_ERROR', 'Invalid branch or device id');
+    }
+
+    const context = await resolveTenantContext(tenantId);
+    if (!context) {
+      return jsonError(res, 404, 'TENANT_NOT_FOUND', 'Tenant not found');
+    }
+
+    const deviceRes = await context.tenantPool.query(
+      `UPDATE branch_devices
+       SET is_active = FALSE
+       WHERE id = $1 AND branch_id = $2
+       RETURNING id, device_id, device_name, browser_info, os_info, ip_address, last_login_at, is_active, created_at`,
+      [deviceId, branchId]
+    );
+    if (deviceRes.rowCount === 0) {
+      return jsonError(res, 404, 'DEVICE_NOT_FOUND', 'Device not found');
+    }
+
+    await context.tenantPool.query(
+      `INSERT INTO branch_device_logs (branch_id, user_id, device_id, action, metadata)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        branchId,
+        null,
+        deviceRes.rows[0]?.device_id || null,
+        'DEVICE_DEACTIVATED',
+        JSON.stringify({ by_admin: req.admin?.admin_id || null })
+      ]
+    );
+
+    await logAdminAction(req.admin?.admin_id, 'TENANT_BRANCH_DEVICE_DEACTIVATED', 'branch_device', deviceId, {
+      tenant_id: tenantId,
+      branch_id: branchId,
+      device_id: deviceRes.rows[0]?.device_id || null
+    });
+
+    return jsonOk(res, { device: deviceRes.rows[0] }, 'Device deactivated');
+  } catch (error) {
+    return jsonError(res, 500, 'TENANT_BRANCH_DEVICE_DEACTIVATE_FAILED', error.message);
+  }
+};
+
 module.exports = {
   createTenantHandler,
   getDashboard: getDashboardHandler,
@@ -1978,6 +2088,8 @@ module.exports = {
   upgradeTenantPlan,
   renewTenantPlan,
   getTenantBranches,
-  createTenantBranch
+  createTenantBranch,
+  getTenantBranchDevices,
+  deactivateTenantBranchDevice
 };
 
