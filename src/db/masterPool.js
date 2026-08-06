@@ -16,7 +16,13 @@ const poolConfig = process.env.MASTER_DATABASE_URL
       ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false
     };
 
-const tunedConfig = { ...poolConfig, ...getPoolTuning('MASTER_DB') };
+const resolveMasterPoolMax = () => {
+  const raw = process.env.MASTER_DB_POOL_MAX ?? process.env.DB_POOL_MAX;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : 5;
+};
+
+const tunedConfig = { ...poolConfig, max: resolveMasterPoolMax(), ...getPoolTuning('MASTER_DB') };
 let masterPool;
 
 const getMasterPool = () => {

@@ -11,9 +11,13 @@ const normalizeBatchRow = (row) => ({
   expiry_date: row.expiry_date ?? null,
   purchase_price: row.purchase_price ?? null,
   selling_price: row.selling_price ?? null,
+  mrp: row.mrp ?? null,
   quantity: row.quantity ?? 0,
   quantity_remaining: row.quantity_remaining ?? row.quantity ?? 0,
   created_at: row.created_at ?? null,
+  updated_at: row.updated_at ?? row.created_at ?? null,
+  sync_version: row.sync_version ?? 1,
+  is_deleted: row.is_deleted ?? false,
 });
 
 const getBatches = async (req, res) => {
@@ -29,9 +33,13 @@ const getBatches = async (req, res) => {
                 expiry_date,
                 purchase_price,
                 selling_price,
+                mrp,
                 quantity,
                 quantity_remaining,
-                created_at
+                created_at,
+                updated_at,
+                sync_version,
+                is_deleted
          FROM batches
          WHERE branch_id = $1
            AND is_deleted = FALSE`
@@ -42,9 +50,13 @@ const getBatches = async (req, res) => {
                 expiry_date,
                 purchase_price,
                 selling_price,
+                mrp,
                 quantity,
                 quantity_remaining,
-                created_at
+                created_at,
+                updated_at,
+                sync_version,
+                is_deleted
          FROM batches
          WHERE is_deleted = FALSE`;
 

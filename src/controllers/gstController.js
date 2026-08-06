@@ -1,29 +1,46 @@
 const pool = require('../db');
 const { resolveBranchIdFromRequest } = require('../utils/branch');
+const { buildPaginationMeta, parsePagination } = require('../utils/queryParams');
 
 const getRequestPool = (req) => req.tenantPool || pool;
+
+const branchFilterClause = '($1::uuid IS NULL OR o.branch_id = $1)';
 
 const listLedger = async (req, res) => {
   try {
     const requestPool = getRequestPool(req);
     const branchId = resolveBranchIdFromRequest(req);
-    const result = await requestPool.query(
-      `SELECT id AS "gstEntryId",
-              bill_id AS "billId",
-              type,
-              taxable_amount AS "taxableAmount",
-              cgst,
-              sgst,
-              igst,
-              total_tax AS "totalTax",
-              date,
-              is_synced AS "isSynced"
-       FROM gst_ledger
-       WHERE ($1::uuid IS NULL OR bill_id IN (SELECT id FROM orders WHERE branch_id = $1))
-       ORDER BY date DESC`,
+    const { page, limit, offset } = parsePagination(req, { defaultLimit: 50, maxLimit: 200 });
+    const countResult = await requestPool.query(
+      `SELECT COUNT(*)::int AS total
+       FROM gst_ledger gl
+       LEFT JOIN orders o ON o.id = gl.bill_id
+       WHERE ${branchFilterClause}`,
       [branchId]
     );
-    return res.status(200).json({ success: true, entries: result.rows });
+    const result = await requestPool.query(
+      `SELECT gl.id AS "gstEntryId",
+              gl.bill_id AS "billId",
+              gl.type,
+              gl.taxable_amount AS "taxableAmount",
+              gl.cgst,
+              gl.sgst,
+              gl.igst,
+              gl.total_tax AS "totalTax",
+              gl.date,
+              gl.is_synced AS "isSynced"
+       FROM gst_ledger gl
+       LEFT JOIN orders o ON o.id = gl.bill_id
+       WHERE ${branchFilterClause}
+       ORDER BY gl.date DESC
+       LIMIT $2 OFFSET $3`,
+      [branchId, limit, offset]
+    );
+    return res.status(200).json({
+      success: true,
+      entries: result.rows,
+      pagination: buildPaginationMeta({ page, limit, total: countResult.rows[0]?.total || 0 }),
+    });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || 'Internal Server Error' });
   }
@@ -73,11 +90,12 @@ const getSummary = async (req, res) => {
     const branchId = resolveBranchIdFromRequest(req);
     const result = await requestPool.query(
       `SELECT
-          COALESCE(SUM(CASE WHEN type = 'SALE' THEN taxable_amount ELSE 0 END), 0)::numeric AS sales_total,
-          COALESCE(SUM(CASE WHEN type = 'RETURN' THEN taxable_amount ELSE 0 END), 0)::numeric AS returns_total,
-          COALESCE(SUM(total_tax), 0)::numeric AS total_tax
-       FROM gst_ledger
-       WHERE ($1::uuid IS NULL OR bill_id IN (SELECT id FROM orders WHERE branch_id = $1))`,
+          COALESCE(SUM(CASE WHEN gl.type = 'SALE' THEN gl.taxable_amount ELSE 0 END), 0)::numeric AS sales_total,
+          COALESCE(SUM(CASE WHEN gl.type = 'RETURN' THEN gl.taxable_amount ELSE 0 END), 0)::numeric AS returns_total,
+          COALESCE(SUM(gl.total_tax), 0)::numeric AS total_tax
+       FROM gst_ledger gl
+       LEFT JOIN orders o ON o.id = gl.bill_id
+       WHERE ${branchFilterClause}`,
       [branchId]
     );
     const row = result.rows[0] || {};
@@ -102,17 +120,18 @@ const getReports = async (req, res) => {
     const from = req.query?.from;
     const to = req.query?.to;
     const result = await requestPool.query(
-      `SELECT date,
-              COALESCE(SUM(cgst), 0)::numeric AS cgst,
-              COALESCE(SUM(sgst), 0)::numeric AS sgst,
-              COALESCE(SUM(igst), 0)::numeric AS igst
-       FROM gst_ledger
-       WHERE ($1::date IS NULL OR date >= $1)
-         AND ($2::date IS NULL OR date <= $2)
-         AND ($3::uuid IS NULL OR bill_id IN (SELECT id FROM orders WHERE branch_id = $3))
-       GROUP BY date
-       ORDER BY date DESC`,
-      [from || null, to || null, branchId]
+      `SELECT gl.date,
+              COALESCE(SUM(gl.cgst), 0)::numeric AS cgst,
+              COALESCE(SUM(gl.sgst), 0)::numeric AS sgst,
+              COALESCE(SUM(gl.igst), 0)::numeric AS igst
+       FROM gst_ledger gl
+       LEFT JOIN orders o ON o.id = gl.bill_id
+       WHERE ($2::date IS NULL OR gl.date >= $2)
+         AND ($3::date IS NULL OR gl.date <= $3)
+         AND ${branchFilterClause}
+       GROUP BY gl.date
+       ORDER BY gl.date DESC`,
+      [branchId, from || null, to || null]
     );
     return res.status(200).json({ success: true, reports: result.rows });
   } catch (error) {
@@ -124,12 +143,15 @@ const getFilingData = async (req, res) => {
   try {
     const requestPool = getRequestPool(req);
     const branchId = resolveBranchIdFromRequest(req);
+    const { page, limit, offset } = parsePagination(req, { defaultLimit: 100, maxLimit: 500 });
     const dataRes = await requestPool.query(
-      `SELECT bill_id, type, taxable_amount, cgst, sgst, igst, total_tax, date
-       FROM gst_ledger
-       WHERE ($1::uuid IS NULL OR bill_id IN (SELECT id FROM orders WHERE branch_id = $1))
-       ORDER BY date DESC`,
-      [branchId]
+      `SELECT gl.bill_id, gl.type, gl.taxable_amount, gl.cgst, gl.sgst, gl.igst, gl.total_tax, gl.date
+       FROM gst_ledger gl
+       LEFT JOIN orders o ON o.id = gl.bill_id
+       WHERE ${branchFilterClause}
+       ORDER BY gl.date DESC
+       LIMIT $2 OFFSET $3`,
+      [branchId, limit, offset]
     );
     return res.status(200).json({
       success: true,

@@ -10,13 +10,14 @@ const {
   getRecentActivityLogs,
   getTopTenantsByRevenue
 } = require('../services/analyticsService');
-const { resolveTenantContext } = require('../config/tenantDbResolver');
+const { clearCachedTenant, resolveTenantContext } = require('../config/tenantDbResolver');
 const { normalizeBranchId } = require('../utils/branch');
 const { jsonError, jsonOk } = require('../utils/responses');
 const { getPlanFeatures } = require('../utils/planFeatures');
 const { resolvePlanDeviceLimit, normalizePlan } = require('../config/planDeviceLimits');
 const { resolveFeatures } = require('../utils/resolveFeatures');
 const { sanitizeAddons } = require('../utils/addons');
+const { clearCachedSubscription } = require('../config/subscriptionCache');
 
 const GST_MODES = new Set(['INCLUSIVE', 'EXCLUSIVE']);
 
@@ -44,6 +45,11 @@ const isSubscriptionActive = (subscription) => {
   const isPaid = subscription.payment_status === 'paid';
   const isExpired = subscription.end_date ? new Date(subscription.end_date) < new Date() : true;
   return isPaid && !isExpired;
+};
+
+const clearTenantRuntimeCaches = (tenantId) => {
+  clearCachedTenant(tenantId);
+  clearCachedSubscription(tenantId);
 };
 
 const resolveRenewalWindow = async (lastEndDate, durationDays) => {
@@ -568,6 +574,7 @@ const updateTenant = async (req, res) => {
          RETURNING id, shop_name, owner_name, email, mobile, plan_type, is_active, gst_mode, created_at`,
         values
       );
+      clearTenantRuntimeCaches(tenant_id);
     }
 
     const context = await resolveTenantContext(tenant_id);
@@ -739,6 +746,8 @@ const updatePlan = async (req, res) => {
       payment_amount: payment_amount ?? null
     });
 
+    clearTenantRuntimeCaches(tenantId);
+
     return jsonOk(
       res,
       { tenant_id: tenantId, plan_id: planRow.id, plan_name: planRow.name },
@@ -875,6 +884,8 @@ const updateTenantPlanAndFlags = async (req, res) => {
       plan_name: planRow?.name ?? null,
       payment_amount: payment_amount ?? null
     });
+
+    clearTenantRuntimeCaches(tenantId);
 
     return jsonOk(res, {
       tenant_id: tenantId,
@@ -1072,6 +1083,8 @@ const upgradeTenantPlan = async (req, res) => {
         extra_amount: extraAmount
       });
 
+      clearTenantRuntimeCaches(tenantId);
+
         const tenantRes = await client.query(
           `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.domain, t.plan_type, t.is_active, t.created_at, t.addons, t.gst_mode
            FROM tenants t
@@ -1231,6 +1244,8 @@ const renewTenantPlan = async (req, res) => {
       start_date: renewalWindow.start_date,
       end_date: renewalWindow.end_date
     });
+
+    clearTenantRuntimeCaches(tenantId);
 
     return jsonOk(res, {
       tenant_id: tenantId,
@@ -1492,8 +1507,8 @@ const parseBoolean = (value) => {
   if (value === undefined || value === null) return null;
   const text = value.toString().trim().toLowerCase();
   if (!text) return null;
-  if (['true', 'yes', 'y', '1'].includes(text)) return true;
-  if (['false', 'no', 'n', '0'].includes(text)) return false;
+  if (['true', 'yes', 'y', '1', 'weight', 'weighted', 'weight based', 'weight-based', 'kg', 'kgs', 'gram', 'grams'].includes(text)) return true;
+  if (['false', 'no', 'n', '0', 'piece', 'pieces', 'piece based', 'piece-based', 'unit', 'units'].includes(text)) return false;
   return null;
 };
 
@@ -1614,11 +1629,28 @@ const importProductsFromGoogleSheet = async (req, res) => {
       name: ['name', 'productname', 'product'],
       category: ['category', 'productcategory', 'group'],
       selling_price: ['sellingprice', 'selling_price', 'price', 'selling'],
-      stock_quantity: ['stockquantity', 'stock', 'quantity', 'qty'],
+      stock_quantity: [
+        'stockquantity',
+        'stock',
+        'quantity',
+        'qty',
+        'currentstock',
+        'currentquantity',
+        'currentqty',
+        'openingstock',
+        'openingquantity',
+        'openingqty',
+        'closingstock',
+        'closingquantity',
+        'closingqty',
+        'availablestock',
+        'availablequantity',
+        'availableqty'
+      ],
       purchase_price: ['actualprice', 'purchase_price', 'cost', 'costprice'],
       company: ['company', 'brand', 'seller', 'vendor'],
       time_for_delivery: ['timefordelivery', 'deliverytime', 'leadtime'],
-      is_weight_based: ['isweightbased', 'weightbased', 'is_weight_based', 'weightbased?'],
+      is_weight_based: ['isweightbased', 'weightbased', 'is_weight_based', 'weightbased?', 'type'],
       barcode: ['barcode', 'bar_code', 'code', 'ean', 'upc']
     };
 
@@ -1734,11 +1766,28 @@ const importProductsFromGoogleSheet = async (req, res) => {
           }
           const placeholders = insertValues.map((_, idx) => `$${idx + 1}`).join(', ');
 
-          await context.tenantPool.query(
+          const insertRes = await context.tenantPool.query(
             `INSERT INTO products (${insertColumns.join(', ')})
-             VALUES (${placeholders})`,
+             VALUES (${placeholders})
+             RETURNING id`,
             insertValues
           );
+          const productId = insertRes.rows[0]?.id;
+          if (productId && stockQuantity > 0) {
+            await context.tenantPool.query(
+              `INSERT INTO batches
+                (product_id, branch_id, batch_number, purchase_price, selling_price, quantity, quantity_remaining)
+               VALUES ($1, $2, $3, $4, $5, $6, $6)`,
+              [
+                productId,
+                branchId || null,
+                `IMPORT-${Date.now()}-${rowNumber}`,
+                purchasePriceRaw,
+                sellingPriceRaw ?? 0,
+                stockQuantity
+              ]
+            );
+          }
           insertedCount += 1;
         } catch (error) {
           errors.push({

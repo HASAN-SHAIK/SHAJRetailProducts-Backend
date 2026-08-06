@@ -119,6 +119,10 @@ const getExpenses = async (req, query = {}) => {
   }
 
   const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const page = Math.max(1, Number.parseInt(query.page, 10) || 1);
+  const limit = Math.min(Math.max(Number.parseInt(query.limit, 10) || 200, 1), 500);
+  const offset = (page - 1) * limit;
+
   const result = await requestPool.query(
     `SELECT id AS "expenseId",
             type,
@@ -133,8 +137,9 @@ const getExpenses = async (req, query = {}) => {
             branch_id AS "branchId"
      FROM expenses
      ${whereClause}
-     ORDER BY date DESC, created_at DESC`,
-    values
+     ORDER BY date DESC, created_at DESC
+     LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
+    [...values, limit, offset]
   );
 
   return result.rows;
@@ -144,13 +149,6 @@ const getDailyReport = async (req) => {
   const requestPool = getRequestPool(req);
   const branchId = resolveBranchIdFromRequest(req) || normalizeBranchId(req.query?.branch_id);
   const date = toDateOnlyString(req.query?.date, 'date') || toDateOnlyString(new Date(), 'date');
-  const totalRes = await requestPool.query(
-    `SELECT COALESCE(SUM(amount), 0)::numeric AS total
-     FROM expenses
-     WHERE date = $1
-       AND ($2::uuid IS NULL OR branch_id = $2)`,
-    [date, branchId]
-  );
   const categoryRes = await requestPool.query(
     `SELECT category, COALESCE(SUM(amount), 0)::numeric AS total
      FROM expenses
@@ -160,14 +158,15 @@ const getDailyReport = async (req) => {
      ORDER BY total DESC`,
     [date, branchId]
   );
+  const categories = categoryRes.rows.map((row) => ({
+    category: row.category || 'Uncategorized',
+    total: Number(row.total || 0),
+  }));
 
   return {
     date,
-    total: Number(totalRes.rows[0]?.total || 0),
-    categories: categoryRes.rows.map((row) => ({
-      category: row.category || 'Uncategorized',
-      total: Number(row.total || 0),
-    })),
+    total: categories.reduce((sum, row) => sum + row.total, 0),
+    categories,
   };
 };
 
@@ -184,13 +183,6 @@ const getMonthlyReport = async (req) => {
   const monthEndDate = new Date(Date.UTC(year, monthNumber, 0));
   const monthEnd = toDateOnlyString(monthEndDate, 'month');
 
-  const totalRes = await requestPool.query(
-    `SELECT COALESCE(SUM(amount), 0)::numeric AS total
-     FROM expenses
-     WHERE date >= $1 AND date <= $2
-       AND ($3::uuid IS NULL OR branch_id = $3)`,
-    [monthStart, monthEnd, branchId]
-  );
   const categoryRes = await requestPool.query(
     `SELECT category, COALESCE(SUM(amount), 0)::numeric AS total
      FROM expenses
@@ -200,15 +192,53 @@ const getMonthlyReport = async (req) => {
      ORDER BY total DESC`,
     [monthStart, monthEnd, branchId]
   );
+  const categories = categoryRes.rows.map((row) => ({
+    category: row.category || 'Uncategorized',
+    total: Number(row.total || 0),
+  }));
 
   return {
     month,
-    total: Number(totalRes.rows[0]?.total || 0),
-    categories: categoryRes.rows.map((row) => ({
-      category: row.category || 'Uncategorized',
-      total: Number(row.total || 0),
-    })),
+    total: categories.reduce((sum, row) => sum + row.total, 0),
+    categories,
   };
 };
 
-module.exports = { addExpense, getExpenses, getDailyReport, getMonthlyReport };
+const getStaffExpenseTotal = async (req) => {
+  const requestPool = getRequestPool(req);
+  const branchId = resolveBranchIdFromRequest(req) || normalizeBranchId(req.query?.branch_id);
+  const staffId = req.query?.staffId || req.query?.staff_id;
+  const from = toDateOnlyString(req.query?.from, 'from');
+  const to = toDateOnlyString(req.query?.to, 'to');
+
+  if (!staffId) {
+    throw buildValidationError('staff_id is required.');
+  }
+
+  const conditions = [`type = 'staff'`, `staff_id = $1`];
+  const values = [staffId];
+
+  if (from) {
+    values.push(from);
+    conditions.push(`date >= $${values.length}`);
+  }
+  if (to) {
+    values.push(to);
+    conditions.push(`date <= $${values.length}`);
+  }
+  if (branchId) {
+    values.push(branchId);
+    conditions.push(`branch_id = $${values.length}`);
+  }
+
+  const result = await requestPool.query(
+    `SELECT COALESCE(SUM(amount), 0)::numeric AS total
+     FROM expenses
+     WHERE ${conditions.join(' AND ')}`,
+    values
+  );
+
+  return Number(result.rows[0]?.total || 0);
+};
+
+module.exports = { addExpense, getExpenses, getDailyReport, getMonthlyReport, getStaffExpenseTotal };

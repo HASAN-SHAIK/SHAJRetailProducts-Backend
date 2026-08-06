@@ -56,11 +56,13 @@ const getTenantMe = async (req, res) => {
 
     const subscriptionRow = await loadActiveSubscription(tenant.id);
     const subscription = buildSubscriptionStatus(subscriptionRow);
+    const subscriptionStatus = subscription.is_expired ? 'expired' : 'active';
 
     return jsonOk(res, {
       id: tenant.id,
       shop_name: tenant.shop_name,
       gst_mode: tenant.gst_mode || 'INCLUSIVE',
+      subscription_status: subscriptionStatus,
       subscription,
       features: req.featureFlags || {}
     });

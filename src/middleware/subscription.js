@@ -7,6 +7,11 @@ const {
 
 const subscriptionMiddleware = async (req, res, next) => {
   try {
+    const publicTenantStatusPaths = new Set(['/tenant/me', '/banner']);
+    if (publicTenantStatusPaths.has(req.path)) {
+      return next();
+    }
+
     const tenantId = req.user?.tenant_id;
     if (!tenantId) return jsonError(res, 401, 'UNAUTHORIZED', 'Missing tenant_id');
 

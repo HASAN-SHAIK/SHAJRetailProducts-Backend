@@ -21,6 +21,11 @@ const setCached = (key, value) => {
   tenantCache.set(key, { value, expiresAt: Date.now() + cacheTtlMs });
 };
 
+const clearCachedTenant = (tenantId) => {
+  if (!tenantId) return;
+  tenantCache.delete(`tenant:${tenantId}`);
+};
+
 const loadTenant = async (tenantId) => {
   const cached = getCached(`tenant:${tenantId}`);
   if (cached) return cached;
@@ -93,4 +98,4 @@ const resolveTenantContext = async (tenantId) => {
   return { tenant, tenantPool, planFeatures };
 };
 
-module.exports = { resolveTenantContext, resolveTenantContextFromToken };
+module.exports = { resolveTenantContext, resolveTenantContextFromToken, clearCachedTenant };

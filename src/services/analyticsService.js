@@ -1,5 +1,8 @@
 const masterPool = require('../db/masterPool');
 
+const DASHBOARD_CACHE_TTL_MS = 60_000;
+let dashboardCache = { value: null, expiresAt: 0 };
+
 const getActiveSubscriptionCounts = async () => {
   const result = await masterPool.query(
     `WITH latest AS (
@@ -19,53 +22,53 @@ const getActiveSubscriptionCounts = async () => {
 };
 
 const getDashboardStats = async () => {
-  const totalTenantsRes = await masterPool.query('SELECT COUNT(*)::int AS count FROM tenants');
-  const activeTenantsRes = await masterPool.query(
-    'SELECT COUNT(*)::int AS count FROM tenants WHERE is_active = TRUE'
+  const now = Date.now();
+  if (dashboardCache.value && dashboardCache.expiresAt > now) {
+    return dashboardCache.value;
+  }
+
+  const result = await masterPool.query(
+    `SELECT
+       (SELECT COUNT(*)::int FROM tenants) AS total_tenants,
+       (SELECT COUNT(*)::int FROM tenants WHERE is_active = TRUE) AS active_tenants,
+       (SELECT COUNT(*)::int FROM tenants WHERE is_active = FALSE) AS inactive_tenants,
+       (SELECT COALESCE(SUM(amount), 0)::numeric FROM subscription_payments WHERE status = 'paid') AS total_revenue,
+       (SELECT COALESCE(SUM(amount), 0)::numeric
+        FROM subscription_payments
+        WHERE status = 'paid'
+          AND paid_at >= DATE_TRUNC('month', CURRENT_DATE)
+          AND paid_at < DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month') AS monthly_revenue,
+       (SELECT COUNT(*)::int FROM subscriptions WHERE payment_status = 'paid') AS paid_subscriptions,
+       (SELECT COUNT(*)::int
+        FROM tenants
+        WHERE created_at >= DATE_TRUNC('month', CURRENT_DATE)) AS new_tenants`
   );
-  const inactiveTenantsRes = await masterPool.query(
-    'SELECT COUNT(*)::int AS count FROM tenants WHERE is_active = FALSE'
-  );
-  const revenueRes = await masterPool.query(
-    `SELECT COALESCE(SUM(amount), 0)::numeric AS total_revenue
-     FROM subscription_payments
-     WHERE status = 'paid'`
-  );
-  const monthlyRevenueRes = await masterPool.query(
-    `SELECT COALESCE(SUM(amount), 0)::numeric AS monthly_revenue
-     FROM subscription_payments
-     WHERE status = 'paid'
-       AND paid_at >= DATE_TRUNC('month', CURRENT_DATE)
-       AND paid_at < DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month'`
-  );
-  const paidSubscriptionsRes = await masterPool.query(
-    `SELECT COUNT(*)::int AS paid_count
-     FROM subscriptions
-     WHERE payment_status = 'paid'`
-  );
-  const newTenantsRes = await masterPool.query(
-    `SELECT COUNT(*)::int AS count
-     FROM tenants
-     WHERE created_at >= DATE_TRUNC('month', CURRENT_DATE)`
-  );
+
   const { active_count, expired_count } = await getActiveSubscriptionCounts();
   const churnRate =
     Number(active_count) + Number(expired_count) === 0
       ? 0
       : Number(expired_count) / (Number(active_count) + Number(expired_count));
 
-  return {
-    total_tenants: totalTenantsRes.rows[0].count,
-    active_tenants: activeTenantsRes.rows[0].count,
-    inactive_tenants: inactiveTenantsRes.rows[0].count,
-    total_revenue: revenueRes.rows[0].total_revenue,
-    monthly_revenue: monthlyRevenueRes.rows[0].monthly_revenue,
+  const row = result.rows[0] || {};
+  const stats = {
+    total_tenants: row.total_tenants,
+    active_tenants: row.active_tenants,
+    inactive_tenants: row.inactive_tenants,
+    total_revenue: row.total_revenue,
+    monthly_revenue: row.monthly_revenue,
     active_subscriptions: Number(active_count),
     expired_subscriptions: Number(expired_count),
     churn_rate: churnRate,
-    paid_subscriptions: paidSubscriptionsRes.rows[0].paid_count,
-    new_tenants: newTenantsRes.rows[0].count
+    paid_subscriptions: row.paid_subscriptions,
+    new_tenants: row.new_tenants,
   };
+
+  dashboardCache = {
+    value: stats,
+    expiresAt: now + DASHBOARD_CACHE_TTL_MS,
+  };
+  return stats;
 };
 
 const getRevenueReport = async ({ from, to }) => {
@@ -117,8 +120,8 @@ const getRevenueReport = async ({ from, to }) => {
     by_plan: byPlanRes.rows,
     active_vs_expired: {
       active: Number(activeVsExpired.active_count),
-      expired: Number(activeVsExpired.expired_count)
-    }
+      expired: Number(activeVsExpired.expired_count),
+    },
   };
 };
 
@@ -149,7 +152,7 @@ const getRevenueSeries = async () => {
     const monthLabel = d.toLocaleString('en-US', { month: 'short' });
     series.push({
       month: monthLabel,
-      revenue: monthMap.get(key) ?? 0
+      revenue: monthMap.get(key) ?? 0,
     });
   }
 
@@ -167,7 +170,7 @@ const getRevenueByPlan = async () => {
   );
   return result.rows.map((row) => ({
     name: row.plan_name || 'Unknown',
-    value: Number(row.revenue)
+    value: Number(row.revenue),
   }));
 };
 
@@ -187,7 +190,7 @@ const getTopTenantsByRevenue = async (limit = 10) => {
 
   return result.rows.map((row) => ({
     name: row.tenant_name || 'Unknown',
-    revenue: Number(row.revenue)
+    revenue: Number(row.revenue),
   }));
 };
 
@@ -209,5 +212,5 @@ module.exports = {
   getRevenueSeries,
   getRevenueByPlan,
   getTopTenantsByRevenue,
-  getRecentActivityLogs
+  getRecentActivityLogs,
 };

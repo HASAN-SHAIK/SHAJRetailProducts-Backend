@@ -13,11 +13,13 @@ const { subscriptionMiddleware } = require('./middleware/subscription');
 const { mergeFeatureFlags } = require('./middleware/featureFlags');
 const { attachAuditDbContext } = require('./middleware/auditDbContext');
 const { errorHandler } = require('./middleware/errorHandler');
+const { apiV1AuthRouter, apiV1Router, swaggerRoutes } = require('./api/v1');
 const { getTenantMe, getPlatformBanner } = require('./controllers/tenantController');
 const { bootstrapMasterDatabase } = require('./services/masterBootstrap');
 const { startPoolWarmup } = require('./services/poolWarmup');
 const { startStockConsistencyJob } = require('./services/stockConsistencyJob');
 const { startOwnerDailyDigestJob } = require('./services/ownerDailyDigestJob');
+const { startSyncMessaging } = require('./services/syncMessagingBootstrap');
 const masterPool = require('./db/masterPool');
 require('dotenv').config();
 
@@ -148,6 +150,9 @@ app.use('/platform/auth', platformAuthRoutes);
 app.use('/platform', adminAuthMiddleware, platformRoutes);
 
 app.use('/api/auth', authRoutes);
+app.use('/api/v1/auth', apiV1AuthRouter);
+app.use('/api/v1/docs', swaggerRoutes);
+app.use('/api/v1', tenantAuthMiddleware, branchDeviceGuard, subscriptionMiddleware, mergeFeatureFlags, attachAuditDbContext, apiV1Router);
 app.use('/api', tenantAuthMiddleware, branchDeviceGuard, subscriptionMiddleware, mergeFeatureFlags, attachAuditDbContext, tenantRoutes);
 app.get('/api/banner', tenantAuthMiddleware, mergeFeatureFlags, getPlatformBanner);
 app.get('/tenant/me', tenantAuthMiddleware, mergeFeatureFlags, getTenantMe);
@@ -175,6 +180,9 @@ const startServer = async () => {
   if (process.env.NODE_ENV !== 'test') {
     startStockConsistencyJob();
     startOwnerDailyDigestJob();
+    startSyncMessaging().catch((error) => {
+      console.error('Sync messaging bootstrap failed:', error.message || error);
+    });
   }
 };
 

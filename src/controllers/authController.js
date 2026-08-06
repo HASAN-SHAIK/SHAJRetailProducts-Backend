@@ -1,26 +1,133 @@
 const bcrypt = require('bcryptjs');
-const { getTenantByDomain } = require('../services/tenantService');
+const { getTenantById, getTenantByDomain } = require('../services/tenantService');
 const { getTenantPool } = require('../db/tenantPool');
 const { jsonError, jsonOk } = require('../utils/responses');
 const {
   DEFAULT_TENANT_COOKIE,
+  DEFAULT_TENANT_REFRESH_COOKIE,
   signTenantToken,
   setAuthCookie,
   clearAuthCookie
 } = require('../utils/jwt');
+const { getPermissionsForRole, getStorePermissions } = require('../utils/rolePermissions');
+const {
+  createRefreshToken,
+  findValidRefreshToken,
+  touchRefreshToken,
+  revokeRefreshToken,
+  rotateRefreshToken,
+  getAccessTtlMs,
+  getRefreshTtlMs
+} = require('../services/authSessionService');
 const { ensureDeviceRegistration, sanitizeDeviceContext } = require('../utils/branchDeviceLicensing');
 require('dotenv').config();
+
+const parseRefreshTenantId = (rawToken) => {
+  const text = String(rawToken || '');
+  const separatorIndex = text.indexOf('.');
+  if (separatorIndex <= 0) return null;
+  return text.slice(0, separatorIndex);
+};
 
 const resolveTenantFromRequest = async ({ email }) => {
   if (email && email.includes('@')) {
     const domain = email.split('@')[1].trim().toLowerCase();
-    const cleanDomain = domain.replace(/\.com$/, ''); // Remove .com suffix if present
+    const cleanDomain = domain.replace(/\.com$/, '');
     if (cleanDomain) {
       console.log(`Resolving tenant for domain: ${cleanDomain}`);
       return getTenantByDomain(cleanDomain);
     }
   }
   return null;
+};
+
+const buildTenantTokenPayload = (user, tenant) => ({
+  type: 'tenant',
+  user_id: user.id,
+  tenant_id: tenant.id,
+  role: user.role,
+  user_name: user.name,
+  tenant_db: tenant.database_name,
+  tenant_name: tenant.shop_name,
+  tenant_owner: tenant.owner_name,
+  tenant_email: tenant.email,
+  tenant_mobile: tenant.mobile,
+  tenant_plan: tenant.plan_type,
+  tenant_active: tenant.is_active,
+  tenant_addons: tenant.addons || {},
+  tenant_gst_mode: tenant.gst_mode || 'INCLUSIVE',
+  branch_id: user.branch_id || null,
+  all_branch_access: user.all_branch_access !== false,
+  permissions: getPermissionsForRole(user.role),
+  store_permissions: getStorePermissions(user),
+});
+
+const buildSessionUser = (user, tenant) => ({
+  id: user.id,
+  name: user.name,
+  email: user.email,
+  role: user.role,
+  tenant_id: tenant?.id || user.tenant_id || null,
+  branch_id: user.branch_id || null,
+  all_branch_access: user.all_branch_access !== false,
+  permissions: getPermissionsForRole(user.role),
+  store_permissions: getStorePermissions(user),
+});
+
+const buildVerifiedSessionUser = (verified) => ({
+  ...verified,
+  id: verified.user_id || verified.id,
+  permissions: verified.permissions || getPermissionsForRole(verified.role),
+  store_permissions: verified.store_permissions || getStorePermissions(verified),
+});
+
+const setAccessAuthCookies = (res, accessToken) => {
+  setAuthCookie(res, accessToken, DEFAULT_TENANT_COOKIE, getAccessTtlMs());
+};
+
+const setRefreshAuthCookie = (res, refreshToken, rememberMe) => {
+  setAuthCookie(
+    res,
+    refreshToken,
+    DEFAULT_TENANT_REFRESH_COOKIE,
+    getRefreshTtlMs(rememberMe === true)
+  );
+};
+
+const clearSessionCookies = (res) => {
+  clearAuthCookie(res, DEFAULT_TENANT_COOKIE);
+  clearAuthCookie(res, DEFAULT_TENANT_REFRESH_COOKIE);
+};
+
+const issueAuthSession = async ({
+  res,
+  user,
+  tenant,
+  tenantPool,
+  rememberMe = false,
+  deviceId = null,
+  branchId = null,
+}) => {
+  const token = signTenantToken(buildTenantTokenPayload(user, tenant));
+  const refresh = await createRefreshToken(tenantPool, {
+    userId: user.id,
+    tenantId: tenant.id,
+    rememberMe,
+    deviceId,
+    branchId,
+  });
+
+  setAccessAuthCookies(res, token);
+  setRefreshAuthCookie(res, refresh.rawToken, rememberMe);
+
+  return {
+    token,
+    user: buildSessionUser(user, tenant),
+    tenant: { id: tenant.id, name: tenant.shop_name, plan: tenant.plan_type },
+    permissions: getPermissionsForRole(user.role),
+    store_permissions: getStorePermissions(user),
+    remember_me: rememberMe === true,
+  };
 };
 
 const register = async (req, res) => {
@@ -101,47 +208,91 @@ const login = async (req, res) => {
       }
     }
 
-    const token = signTenantToken({
-      type: 'tenant',
-      user_id: user.id,
-      tenant_id: tenant.id,
-      role: user.role,
-      user_name: user.name,
-      tenant_db: tenant.database_name,
-      tenant_name: tenant.shop_name,
-      tenant_owner: tenant.owner_name,
-      tenant_email: tenant.email,
-      tenant_mobile: tenant.mobile,
-      tenant_plan: tenant.plan_type,
-      tenant_active: tenant.is_active,
-      tenant_addons: tenant.addons || {},
-      tenant_gst_mode: tenant.gst_mode || 'INCLUSIVE',
-      branch_id: user.branch_id || null,
-      all_branch_access: user.all_branch_access !== false
+    const rememberMe =
+      req.body?.remember_me === undefined || req.body?.remember_me === null
+        ? true
+        : req.body?.remember_me === true ||
+          req.body?.remember_me === 1 ||
+          String(req.body?.remember_me).toLowerCase() === 'true';
+
+    const session = await issueAuthSession({
+      res,
+      user,
+      tenant,
+      tenantPool,
+      rememberMe,
+      deviceId,
+      branchId,
     });
 
-    setAuthCookie(
-      res,
-      token,
-      DEFAULT_TENANT_COOKIE,
-      Number(process.env.TOKEN_COOKIE_MAX_AGE_MS || 8 * 60 * 60 * 1000)
-    );
+    return res.status(200).json({
+      success: true,
+      ...session,
+    });
+  } catch (error) {
+    return jsonError(res, 500, 'LOGIN_FAILED', error.message);
+  }
+};
+
+const refresh = async (req, res) => {
+  try {
+    const rawRefreshToken = req?.cookies?.[DEFAULT_TENANT_REFRESH_COOKIE];
+    if (!rawRefreshToken) {
+      return jsonError(res, 401, 'UNAUTHORIZED', 'Refresh token missing');
+    }
+
+    const tenantId = parseRefreshTenantId(rawRefreshToken);
+    if (!tenantId) {
+      return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid refresh token');
+    }
+
+    const tenant = await getTenantById(tenantId);
+    if (!tenant) {
+      return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid refresh token');
+    }
+
+    const tenantPool = getTenantPool(tenant.database_name);
+    const match = await findValidRefreshToken(tenantPool, rawRefreshToken);
+    if (!match) {
+      return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid or expired refresh token');
+    }
+
+    const row = match.row;
+    await touchRefreshToken(tenantPool, match.tokenHash);
+
+    const user = {
+      id: row.user_id,
+      name: row.name,
+      email: row.email,
+      role: row.role,
+      branch_id: row.branch_id || null,
+      all_branch_access: row.all_branch_access !== false,
+    };
+
+    const rotated = await rotateRefreshToken(tenantPool, {
+      existingHash: match.tokenHash,
+      userId: user.id,
+      tenantId: tenant.id,
+      rememberMe: row.remember_me === true,
+      deviceId: row.device_id || null,
+      branchId: row.branch_id || null,
+    });
+
+    const token = signTenantToken(buildTenantTokenPayload(user, tenant));
+    setAccessAuthCookies(res, token);
+    setRefreshAuthCookie(res, rotated.rawToken, row.remember_me === true);
 
     return res.status(200).json({
       success: true,
       token,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        branch_id: user.branch_id || null,
-        all_branch_access: user.all_branch_access !== false
-      },
-      tenant: { id: tenant.id, name: tenant.shop_name, plan: tenant.plan_type }
+      user: buildSessionUser(user, tenant),
+      tenant: { id: tenant.id, name: tenant.shop_name, plan: tenant.plan_type },
+      permissions: getPermissionsForRole(user.role),
+      store_permissions: getStorePermissions(user),
+      remember_me: row.remember_me === true,
     });
   } catch (error) {
-    return jsonError(res, 500, 'LOGIN_FAILED', error.message);
+    return jsonError(res, 500, 'REFRESH_FAILED', error.message);
   }
 };
 
@@ -173,7 +324,12 @@ const getLogin = async (req, res) => {
         return jsonError(res, 403, 'DEVICE_NOT_ALLOWED', 'Access denied from this device');
       }
     }
-    return res.status(200).json({ success: true, user: req.user });
+    return res.status(200).json({
+      success: true,
+      user: buildVerifiedSessionUser(req.user),
+      permissions: getPermissionsForRole(req.user.role),
+      store_permissions: getStorePermissions(req.user),
+    });
   } catch (error) {
     return jsonError(res, 403, 'UNAUTHORIZED', 'Invalid token');
   }
@@ -181,11 +337,24 @@ const getLogin = async (req, res) => {
 
 const logout = async (req, res) => {
   try {
-    clearAuthCookie(res, DEFAULT_TENANT_COOKIE);
+    const rawRefreshToken = req?.cookies?.[DEFAULT_TENANT_REFRESH_COOKIE];
+    let tenantPool = req.tenantPool || null;
+    if (!tenantPool && rawRefreshToken) {
+      const tenantId = parseRefreshTenantId(rawRefreshToken);
+      const tenant = tenantId ? await getTenantById(tenantId) : null;
+      if (tenant) {
+        tenantPool = getTenantPool(tenant.database_name);
+      }
+    }
+    if (rawRefreshToken && tenantPool) {
+      await revokeRefreshToken(tenantPool, rawRefreshToken);
+    }
+    clearSessionCookies(res);
     return res.status(200).json({ success: true, message: 'Logged out' });
   } catch (error) {
+    clearSessionCookies(res);
     return jsonError(res, 500, 'LOGOUT_FAILED', error.message);
   }
 };
 
-module.exports = { register, login, getLogin, logout };
+module.exports = { register, login, refresh, getLogin, logout };

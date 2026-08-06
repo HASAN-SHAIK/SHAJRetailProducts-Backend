@@ -216,6 +216,7 @@ const importOfflineItems = async (req, payload = {}) => {
             await client.query(
               `UPDATE batches
                   SET quantity = COALESCE(quantity, 0) + $1,
+                      quantity_remaining = COALESCE(quantity_remaining, quantity, 0) + $1,
                       purchase_price = COALESCE($2, purchase_price),
                       selling_price = COALESCE($3, selling_price)
                 WHERE id = $4`,
@@ -224,8 +225,8 @@ const importOfflineItems = async (req, payload = {}) => {
           } else {
             await client.query(
               `INSERT INTO batches
-                (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity, quantity_remaining)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
               [
                 existingId,
                 branchId,

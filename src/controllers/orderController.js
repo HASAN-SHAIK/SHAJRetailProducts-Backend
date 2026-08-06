@@ -2715,16 +2715,25 @@ const normalizeTransactionType = (value) => String(value || '').trim().toLowerCa
 
 const hasValue = (value) => value !== undefined && value !== null && String(value).trim() !== '';
 
-const validateOrderPartyByType = (type, payload = {}) => {
+const validateOrderPartyByType = (type, payload = {}, options = {}) => {
   const hasSupplier = hasValue(payload.supplier_id ?? payload.supplierId);
   const hasCustomer = hasValue(payload.customer_id ?? payload.customerId);
+  const hasCustomerPayload =
+    hasCustomer ||
+    (
+      options.allowCustomerPayload === true &&
+      (
+        hasValue(payload.customer_name ?? payload.customerName) ||
+        hasValue(payload.customer_phone ?? payload.customer_mobile ?? payload.customerPhone)
+      )
+    );
 
   if (!['sale', 'purchase', 'personal'].includes(type)) {
     return 'transaction_type must be one of: sale, purchase, personal.';
   }
   if (type === 'sale') {
     if (hasSupplier) return 'supplier_id must be null/empty for sale.';
-    if (!hasCustomer) return 'customer_id is required for sale.';
+    if (!hasCustomerPayload) return 'customer_id is required for sale.';
   }
   if (type === 'purchase') {
     if (hasCustomer) return 'customer_id must be null/empty for purchase.';
@@ -2738,7 +2747,7 @@ const validateOfflineOrder = (order) => {
   if (!order.transaction_type) return 'transaction_type is required.';
 
   const type = normalizeTransactionType(order.transaction_type);
-  const partyValidation = validateOrderPartyByType(type, order);
+  const partyValidation = validateOrderPartyByType(type, order, { allowCustomerPayload: true });
   if (partyValidation) return partyValidation;
   const paymentMode = normalizePaymentMode(order);
   const items = Array.isArray(order.products)
@@ -2851,7 +2860,7 @@ const syncOfflineOrders = async (req, res) => {
            LIMIT 1`,
           [clientOrderId]
         );
-        if (existingOrderRes.rowCount > 0) {
+        if (existingOrderRes.rowCount > 0 || existingOrderRes.rows?.length > 0) {
           const existing = existingOrderRes.rows[0];
           await client.query('ROLLBACK');
           results.push({
@@ -3364,7 +3373,7 @@ const syncOfflineOrders = async (req, res) => {
              LIMIT 1`,
             [clientOrderId]
           );
-          if (existingOrderRes.rowCount > 0) {
+          if (existingOrderRes.rowCount > 0 || existingOrderRes.rows?.length > 0) {
             const existing = existingOrderRes.rows[0];
             results.push({
               client_order_id: clientOrderId,

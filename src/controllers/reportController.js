@@ -140,7 +140,8 @@ const getBestSellingProducts = async (db, fromDate, toDate) =>{
              WHERE o.order_status = ANY($3::text[])
                AND o.created_at BETWEEN $1 AND $2
              GROUP BY p.id
-             ORDER BY NoOfSold DESC`,
+             ORDER BY NoOfSold DESC
+             LIMIT 20`,
             [fromDate, toDate, SALES_STATUSES]
     );
     return bestSellingResult;
@@ -166,7 +167,8 @@ const getprofitByProductResult = async (db, fromDate, toDate) => {
          WHERE o.order_status = ANY($3::text[])
            AND o.created_at BETWEEN $1 AND $2
          GROUP BY p.id
-         ORDER BY Profit DESC`,
+         ORDER BY Profit DESC
+         LIMIT 20`,
         [fromDate, toDate, SALES_STATUSES]
     );
     return profitByProductResult;
@@ -182,12 +184,22 @@ const getInventoryReport = async (req, res) => {
         );
         // Low Stock Products (Threshold based)
         const lowStockResult = await requestPool.query(
-            "SELECT id as ProductId, name as Name,stock_quantity as Quantity, purchase_price as ActualPrice , company as Seller,time_for_delivery as TimeForDelivery FROM products WHERE stock_quantity > 0 AND stock_quantity <= $1 AND is_deleted = FALSE order by stock_quantity",
+            `SELECT id as ProductId, name as Name, stock_quantity as Quantity, purchase_price as ActualPrice,
+                    company as Seller, time_for_delivery as TimeForDelivery
+             FROM products
+             WHERE stock_quantity > 0 AND stock_quantity <= $1 AND is_deleted = FALSE
+             ORDER BY stock_quantity
+             LIMIT 500`,
             [threshold]
         );
         // Out of Stock Products
         const outOfStockResult = await requestPool.query(
-            "SELECT id as ProductId, name as Name, purchase_price as ActualPrice , company as Seller,time_for_delivery as TimeForDelivery FROM products WHERE stock_quantity = 0 AND is_deleted = FALSE;"
+            `SELECT id as ProductId, name as Name, purchase_price as ActualPrice,
+                    company as Seller, time_for_delivery as TimeForDelivery
+             FROM products
+             WHERE stock_quantity = 0 AND is_deleted = FALSE
+             ORDER BY name
+             LIMIT 500`
         );
         // Total Inventory Value
         const stockValueResult = await requestPool.query(
@@ -303,6 +315,8 @@ const getDailySalesReport = async (req, res) => {
             return res.status(400).json({ message: "Invalid date. Use YYYY-MM-DD." });
         }
         salesDate.setHours(0, 0, 0, 0);
+        let endOfDay = new Date(salesDate);
+        endOfDay.setHours(23, 59, 59, 999);
         // Total Sales Revenue for the day
         const salesResult = await requestPool.query(
             `SELECT SUM(GREATEST(oi.quantity - COALESCE(r.returned_qty, 0), 0) * oi.selling_price - COALESCE(oi.discount_amount, 0)) AS total_revenue
@@ -314,11 +328,17 @@ const getDailySalesReport = async (req, res) => {
                JOIN order_return_items ori ON ori.return_id = r.id
                GROUP BY r.order_id, ori.product_id
              ) r ON r.order_id = o.id AND r.product_id = oi.product_id
-             WHERE o.order_status = ANY($2::text[])
-               AND DATE(o.created_at) = $1;`,
-            [salesDate, SALES_STATUSES]
+             WHERE o.order_status = ANY($3::text[])
+               AND o.created_at >= $1 AND o.created_at <= $2;`,
+            [salesDate, endOfDay, SALES_STATUSES]
         );
-        const totalOrderRes = await requestPool.query(`select count(*) as total_orders from orders where order_status = ANY($2::text[]) and Date(created_at) = $1`,[salesDate, SALES_STATUSES]);
+        const totalOrderRes = await requestPool.query(
+            `SELECT count(*) AS total_orders
+             FROM orders
+             WHERE order_status = ANY($3::text[])
+               AND created_at >= $1 AND created_at <= $2`,
+            [salesDate, endOfDay, SALES_STATUSES]
+        );
         // Best-Selling Products
         const bestSellingProducts = await requestPool.query(
             `SELECT p.name, SUM(GREATEST(oi.quantity - COALESCE(r.returned_qty, 0), 0)) AS total_sold
@@ -332,12 +352,11 @@ const getDailySalesReport = async (req, res) => {
                GROUP BY r.order_id, ori.product_id
              ) r ON r.order_id = o.id AND r.product_id = oi.product_id
              WHERE o.order_status = ANY($1::text[])
+               AND o.created_at >= $2 AND o.created_at <= $3
              GROUP BY p.name
              ORDER BY total_sold DESC;`,
-            [SALES_STATUSES]
+            [SALES_STATUSES, salesDate, endOfDay]
         );
-        let endOfDay = new Date(salesDate);
-        endOfDay.setHours(23, 59, 59, 999);
         const profitResult = await requestPool.query(
             `SELECT COALESCE(SUM(
                 GREATEST(oi.quantity - COALESCE(r.returned_qty, 0), 0)

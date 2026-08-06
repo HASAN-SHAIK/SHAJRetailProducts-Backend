@@ -1,15 +1,12 @@
 const pool = require('../db');
+const { jsonError, jsonOk } = require('../utils/responses');
+const { buildPaginationMeta, parsePagination, parsePositiveInt } = require('../utils/queryParams');
+
 const getRequestPool = (req) => req.tenantPool || pool;
 
 const DEFAULT_LOW_STOCK_THRESHOLD = 5;
 const DEFAULT_LOW_STOCK_LIMIT = 50;
 const SALES_STATUSES = ['completed', 'partially_returned', 'fully_returned'];
-
-const parsePositiveInt = (value, fallback) => {
-  const parsed = Number.parseInt(value, 10);
-  if (Number.isFinite(parsed) && parsed > 0) return parsed;
-  return fallback;
-};
 
 const getMobileDashboard = async (req, res) => {
   try {
@@ -67,14 +64,14 @@ const getMobileDashboard = async (req, res) => {
          GROUP BY o.id, o.total_price, o.order_status, o.created_at, o.product_count
          ORDER BY o.created_at DESC
          LIMIT 5`
-      )
+      ),
     ]);
 
     const todayRow = todayRes.rows[0] || {};
     const profitRow = profitRes.rows[0] || {};
     const lowStockRow = lowStockRes.rows[0] || {};
 
-    res.json({
+    return jsonOk(res, {
       today_sales: Number(todayRow.today_sales || 0),
       today_orders: Number(todayRow.today_orders || 0),
       today_profit: Number(profitRow.today_profit || 0),
@@ -84,12 +81,12 @@ const getMobileDashboard = async (req, res) => {
         total: Number(row.total || 0),
         items: Number(row.items || 0),
         status: row.status,
-        created_at: row.created_at
-      }))
+        created_at: row.created_at,
+      })),
     });
   } catch (error) {
     console.error('Mobile dashboard failed:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    return jsonError(res, 500, 'MOBILE_DASHBOARD_FAILED', 'Internal server error');
   }
 };
 
@@ -97,7 +94,19 @@ const getMobileLowStock = async (req, res) => {
   try {
     const requestPool = getRequestPool(req);
     const threshold = parsePositiveInt(req.query?.threshold, DEFAULT_LOW_STOCK_THRESHOLD);
-    const limit = parsePositiveInt(req.query?.limit, DEFAULT_LOW_STOCK_LIMIT);
+    const { page, limit, offset } = parsePagination(req, {
+      defaultLimit: DEFAULT_LOW_STOCK_LIMIT,
+      maxLimit: 200,
+    });
+
+    const countRes = await requestPool.query(
+      `SELECT COUNT(*)::int AS total
+       FROM products
+       WHERE is_deleted = FALSE
+         AND stock_quantity <= $1`,
+      [threshold]
+    );
+    const total = Number(countRes.rows[0]?.total || 0);
 
     const productsRes = await requestPool.query(
       `SELECT id,
@@ -107,28 +116,33 @@ const getMobileLowStock = async (req, res) => {
        WHERE is_deleted = FALSE
          AND stock_quantity <= $1
        ORDER BY stock_quantity ASC
-       LIMIT $2`,
-      [threshold, limit]
+       LIMIT $2 OFFSET $3`,
+      [threshold, limit, offset]
     );
 
-    res.json({
-      products: productsRes.rows.map((row) => ({
-        id: row.id,
-        name: row.name,
-        stock: Number(row.stock || 0),
-        threshold
-      }))
-    });
+    return jsonOk(
+      res,
+      {
+        products: productsRes.rows.map((row) => ({
+          id: row.id,
+          name: row.name,
+          stock: Number(row.stock || 0),
+          threshold,
+        })),
+      },
+      null,
+      buildPaginationMeta({ page, limit, total })
+    );
   } catch (error) {
     console.error('Mobile low stock failed:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    return jsonError(res, 500, 'MOBILE_LOW_STOCK_FAILED', 'Internal server error');
   }
 };
 
 const getMobileSalesSummary = async (req, res) => {
   try {
     const requestPool = getRequestPool(req);
-  const summaryRes = await requestPool.query(
+    const summaryRes = await requestPool.query(
       `SELECT
          COALESCE(SUM(CASE
            WHEN created_at >= CURRENT_DATE
@@ -156,21 +170,20 @@ const getMobileSalesSummary = async (req, res) => {
     );
 
     const row = summaryRes.rows[0] || {};
-    res.json({
+    return jsonOk(res, {
       today: Number(row.today || 0),
       yesterday: Number(row.yesterday || 0),
       week: Number(row.week || 0),
-      month: Number(row.month || 0)
+      month: Number(row.month || 0),
     });
   } catch (error) {
     console.error('Mobile sales summary failed:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    return jsonError(res, 500, 'MOBILE_SALES_SUMMARY_FAILED', 'Internal server error');
   }
 };
 
 module.exports = {
   getMobileDashboard,
   getMobileLowStock,
-  getMobileSalesSummary
+  getMobileSalesSummary,
 };
-

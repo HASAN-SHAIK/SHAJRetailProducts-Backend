@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 
 const DEFAULT_TENANT_COOKIE = 'token';
+const DEFAULT_TENANT_REFRESH_COOKIE = 'refresh_token';
 const DEFAULT_ADMIN_COOKIE = 'admin_token';
 
 const normalizeTokenValue = (value) => {
@@ -24,7 +25,7 @@ const getAdminJwtSecret = () => process.env.ADMIN_JWT_SECRET || process.env.JWT_
 
 const signTenantToken = (payload, options = {}) => {
   return jwt.sign(payload, getTenantJwtSecret(), {
-    expiresIn: process.env.TOKEN_EXPIRY ? Number(process.env.TOKEN_EXPIRY) : '8h',
+    expiresIn: process.env.ACCESS_TOKEN_EXPIRY || process.env.TOKEN_EXPIRY || '15m',
     ...options
   });
 };
@@ -62,6 +63,7 @@ const clearAuthCookie = (res, cookieName) => {
 
 module.exports = {
   DEFAULT_TENANT_COOKIE,
+  DEFAULT_TENANT_REFRESH_COOKIE,
   DEFAULT_ADMIN_COOKIE,
   getTokenFromRequest,
   signTenantToken,

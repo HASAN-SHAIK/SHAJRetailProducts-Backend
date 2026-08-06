@@ -50,7 +50,44 @@ const HEADER_MAP = {
   quantity: 'stock_quantity',
   qty: 'stock_quantity',
   stock: 'stock_quantity',
+  'stock quantity': 'stock_quantity',
   stock_quantity: 'stock_quantity',
+  'current stock': 'stock_quantity',
+  current_stock: 'stock_quantity',
+  currentstock: 'stock_quantity',
+  'current quantity': 'stock_quantity',
+  current_quantity: 'stock_quantity',
+  currentquantity: 'stock_quantity',
+  'current qty': 'stock_quantity',
+  current_qty: 'stock_quantity',
+  currentqty: 'stock_quantity',
+  'opening stock': 'stock_quantity',
+  opening_stock: 'stock_quantity',
+  openingstock: 'stock_quantity',
+  'opening quantity': 'stock_quantity',
+  opening_quantity: 'stock_quantity',
+  openingquantity: 'stock_quantity',
+  'opening qty': 'stock_quantity',
+  opening_qty: 'stock_quantity',
+  openingqty: 'stock_quantity',
+  'closing stock': 'stock_quantity',
+  closing_stock: 'stock_quantity',
+  closingstock: 'stock_quantity',
+  'closing quantity': 'stock_quantity',
+  closing_quantity: 'stock_quantity',
+  closingquantity: 'stock_quantity',
+  'closing qty': 'stock_quantity',
+  closing_qty: 'stock_quantity',
+  closingqty: 'stock_quantity',
+  'available stock': 'stock_quantity',
+  available_stock: 'stock_quantity',
+  availablestock: 'stock_quantity',
+  'available quantity': 'stock_quantity',
+  available_quantity: 'stock_quantity',
+  availablequantity: 'stock_quantity',
+  'available qty': 'stock_quantity',
+  available_qty: 'stock_quantity',
+  availableqty: 'stock_quantity',
   hsn: 'hsn_code',
   hsn_code: 'hsn_code',
   gst: 'gst_percentage',
@@ -60,6 +97,11 @@ const HEADER_MAP = {
   batch_number: 'batch_number',
   batchno: 'batch_number',
   'batch no': 'batch_number',
+  'is weight based': 'is_weight_based',
+  is_weight_based: 'is_weight_based',
+  weight_based: 'is_weight_based',
+  weightbased: 'is_weight_based',
+  type: 'is_weight_based',
   expiry: 'expiry_date',
   'expiry date': 'expiry_date',
   expiry_date: 'expiry_date',
@@ -101,8 +143,8 @@ const normalizeBoolean = (value, defaultValue = false) => {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'number') return value !== 0;
   const raw = String(value).trim().toLowerCase();
-  if (['yes', 'y', 'true', '1'].includes(raw)) return true;
-  if (['no', 'n', 'false', '0'].includes(raw)) return false;
+  if (['yes', 'y', 'true', '1', 'weight', 'weighted', 'weight based', 'weight-based', 'kg', 'kgs', 'gram', 'grams'].includes(raw)) return true;
+  if (['no', 'n', 'false', '0', 'piece', 'pieces', 'piece based', 'piece-based', 'unit', 'units'].includes(raw)) return false;
   return defaultValue;
 };
 
@@ -315,7 +357,7 @@ const importProducts = async (req, file) => {
                  hsn_code = COALESCE($6, p.hsn_code),
                  gst_percentage = COALESCE($7, p.gst_percentage),
                  barcode = COALESCE($8, p.barcode),
-                 stock_quantity = CASE WHEN $13 THEN p.stock_quantity ELSE p.stock_quantity + COALESCE($9, 0) END,
+                 stock_quantity = p.stock_quantity + COALESCE($9, 0),
                  expiry_date = COALESCE($10, p.expiry_date),
                  is_batch_enabled = CASE WHEN $11 THEN TRUE ELSE p.is_batch_enabled END,
                  branch_id = COALESCE(p.branch_id, $12),
@@ -346,11 +388,11 @@ const importProducts = async (req, file) => {
           if (updateRes.rowCount > 0) {
             updated += 1;
             if (!isOpeningCompleted) inventoryValue += (stock_quantity || 0) * (resolvedPurchasePrice || 0);
-            if (hasBatch && !isOpeningCompleted) {
+            if (hasBatch && stock_quantity > 0) {
               await client.query(
                 `INSERT INTO batches
-                  (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                  (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity, quantity_remaining)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
                 [
                   updateRes.rows[0].id,
                   branchId,
@@ -379,7 +421,7 @@ const importProducts = async (req, file) => {
                 hsn_code,
                 gst_percentage,
                 barcode,
-                isOpeningCompleted ? 0 : stock_quantity,
+                stock_quantity,
                 expiry_date,
                 hasBatch,
                 branchId,
@@ -387,11 +429,11 @@ const importProducts = async (req, file) => {
                 time_for_delivery
               ]
             );
-            if (hasBatch && !isOpeningCompleted) {
+            if (hasBatch && stock_quantity > 0) {
               await client.query(
                 `INSERT INTO batches
-                  (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                  (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity, quantity_remaining)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
                 [
                   insertRes.rows[0].id,
                   branchId,
@@ -422,7 +464,7 @@ const importProducts = async (req, file) => {
               hsn_code,
               gst_percentage,
               barcode,
-              isOpeningCompleted ? 0 : stock_quantity,
+              stock_quantity,
               expiry_date,
               hasBatch,
               branchId,
@@ -430,11 +472,11 @@ const importProducts = async (req, file) => {
               time_for_delivery
             ]
           );
-          if (hasBatch && !isOpeningCompleted) {
+          if (hasBatch && stock_quantity > 0) {
             await client.query(
               `INSERT INTO batches
-                (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity, quantity_remaining)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
               [
                 insertRes.rows[0].id,
                 branchId,
@@ -569,7 +611,7 @@ const importProductsFromRows = async (req, rows = []) => {
                  hsn_code = COALESCE($7, p.hsn_code),
                  gst_percentage = COALESCE($8, p.gst_percentage),
                  barcode = COALESCE($9, p.barcode),
-                 stock_quantity = CASE WHEN $13 THEN p.stock_quantity ELSE p.stock_quantity + COALESCE($10, 0) END,
+                 stock_quantity = p.stock_quantity + COALESCE($10, 0),
                  expiry_date = COALESCE($11, p.expiry_date),
                  is_batch_enabled = CASE WHEN $12 THEN TRUE ELSE p.is_batch_enabled END,
                  branch_id = COALESCE(p.branch_id, $14),
@@ -601,11 +643,11 @@ const importProductsFromRows = async (req, rows = []) => {
           if (updateRes.rowCount > 0) {
             updated += 1;
             if (!isOpeningCompleted) inventoryValue += (stock_quantity || 0) * (purchase_price || 0);
-            if (hasBatch && !isOpeningCompleted) {
+            if (hasBatch && stock_quantity > 0) {
               await client.query(
                 `INSERT INTO batches
-                  (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                  (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity, quantity_remaining)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
                 [
                   updateRes.rows[0].id,
                   branchId,
@@ -633,7 +675,7 @@ const importProductsFromRows = async (req, rows = []) => {
                 hsn_code,
                 gst_percentage,
                 barcode,
-                isOpeningCompleted ? 0 : stock_quantity,
+                stock_quantity,
                 expiry_date,
                 hasBatch,
                 branchId,
@@ -641,11 +683,11 @@ const importProductsFromRows = async (req, rows = []) => {
                 time_for_delivery
               ]
             );
-            if (hasBatch && !isOpeningCompleted) {
+            if (hasBatch && stock_quantity > 0) {
               await client.query(
                 `INSERT INTO batches
-                  (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                  (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity, quantity_remaining)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
                 [
                   insertRes.rows[0].id,
                   branchId,
@@ -676,7 +718,7 @@ const importProductsFromRows = async (req, rows = []) => {
               hsn_code,
               gst_percentage,
               barcode,
-              isOpeningCompleted ? 0 : stock_quantity,
+              stock_quantity,
               expiry_date,
               hasBatch,
               branchId,
@@ -684,11 +726,11 @@ const importProductsFromRows = async (req, rows = []) => {
               time_for_delivery
             ]
           );
-          if (hasBatch && !isOpeningCompleted) {
+          if (hasBatch && stock_quantity > 0) {
             await client.query(
               `INSERT INTO batches
-                (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                (product_id, branch_id, batch_number, expiry_date, purchase_price, selling_price, quantity, quantity_remaining)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
               [
                 insertRes.rows[0].id,
                 branchId,
@@ -726,5 +768,8 @@ const importProductsFromRows = async (req, rows = []) => {
 };
 
 module.exports = { importProducts, importProductsFromRows };
+
+
+
 
 

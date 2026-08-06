@@ -1,6 +1,6 @@
 require("dotenv").config();
 const { Pool } = require('pg');
-const { normalizePassword, attachQueryTimer } = require('./db/poolUtils');
+const { normalizePassword, attachQueryTimer, getPoolTuning } = require('./db/poolUtils');
 
 // Determine pool configuration - support both URL and individual details
 const primaryDatabaseUrl =
@@ -22,9 +22,22 @@ const poolConfig = primaryDatabaseUrl
         ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
     };
 
+const resolvePrimaryPoolMax = () => {
+  const raw = process.env.DB_POOL_MAX;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : 5;
+};
+
 const MAX_RETRIES = 5;
 const RETRY_DELAY = 2000; // ms
-const pool = attachQueryTimer(new Pool(poolConfig), 'primary');
+const pool = attachQueryTimer(
+  new Pool({
+    ...poolConfig,
+    max: resolvePrimaryPoolMax(),
+    ...getPoolTuning('DB'),
+  }),
+  'primary'
+);
 
 async function connectWithRetry(retries = MAX_RETRIES, delay = RETRY_DELAY) {
     // console.log('DB_PASSWORD type:', typeof process.env.DB_PASSWORD);

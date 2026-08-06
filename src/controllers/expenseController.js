@@ -63,6 +63,16 @@ const getMonthlyReport = async (req, res) => {
   }
 };
 
+const getStaffExpenseTotal = async (req, res) => {
+  try {
+    const total = await expenseService.getStaffExpenseTotal(req);
+    return res.status(200).json({ success: true, total });
+  } catch (error) {
+    const status = error.status || 500;
+    return res.status(status).json({ success: false, error: error.message || 'Internal Server Error' });
+  }
+};
+
 module.exports = {
   addExpense,
   updateExpense,
@@ -70,4 +80,5 @@ module.exports = {
   getExpenses,
   getDailyReport,
   getMonthlyReport,
+  getStaffExpenseTotal,
 };

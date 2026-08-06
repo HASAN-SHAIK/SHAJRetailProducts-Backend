@@ -1,5 +1,6 @@
 const pool = require('../db');
 const { resolveBranchIdFromRequest } = require('../utils/branch');
+const { buildPaginationMeta, parsePagination } = require('../utils/queryParams');
 
 const getRequestPool = (req) => req.tenantPool || pool;
 
@@ -42,6 +43,14 @@ const listEway = async (req, res) => {
   try {
     const requestPool = getRequestPool(req);
     const branchId = resolveBranchIdFromRequest(req);
+    const { page, limit, offset } = parsePagination(req, { defaultLimit: 50, maxLimit: 200 });
+    const countResult = await requestPool.query(
+      `SELECT COUNT(*)::int AS total
+       FROM eway_bills eb
+       LEFT JOIN orders o ON o.id = eb.bill_id
+       WHERE ($1::uuid IS NULL OR o.branch_id = $1)`,
+      [branchId]
+    );
     const result = await requestPool.query(
       `SELECT id AS "ewayId",
               bill_id AS "billId",
@@ -52,12 +61,18 @@ const listEway = async (req, res) => {
               status,
               created_at AS "createdAt",
               updated_at AS "updatedAt"
-       FROM eway_bills
-       WHERE ($1::uuid IS NULL OR bill_id IN (SELECT id FROM orders WHERE branch_id = $1))
-       ORDER BY created_at DESC`,
-      [branchId]
+       FROM eway_bills eb
+       LEFT JOIN orders o ON o.id = eb.bill_id
+       WHERE ($1::uuid IS NULL OR o.branch_id = $1)
+       ORDER BY eb.created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [branchId, limit, offset]
     );
-    return res.status(200).json({ success: true, ewayBills: result.rows });
+    return res.status(200).json({
+      success: true,
+      ewayBills: result.rows,
+      pagination: buildPaginationMeta({ page, limit, total: countResult.rows[0]?.total || 0 }),
+    });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || 'Internal Server Error' });
   }

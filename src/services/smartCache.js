@@ -36,6 +36,7 @@ const buildRecentOrdersKey = (tenantId, branchId) =>
   `tenant:${tenantId}:branch:${normalizeSegment(branchId)}:orders:recent`;
 
 const logEvent = (type, key, meta) => {
+  if (process.env.SMART_CACHE_DEBUG !== 'true') return;
   const suffix = meta ? ` ${meta}` : '';
   console.log(`[Cache ${type}] ${key}${suffix}`);
 };

@@ -15,6 +15,22 @@ ALTER TABLE IF EXISTS users
 ALTER TABLE IF EXISTS users
   ADD COLUMN IF NOT EXISTS all_branch_access BOOLEAN NOT NULL DEFAULT TRUE;
 
+CREATE TABLE IF NOT EXISTS user_refresh_tokens (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  remember_me BOOLEAN NOT NULL DEFAULT FALSE,
+  device_id TEXT,
+  branch_id UUID,
+  expires_at TIMESTAMPTZ NOT NULL,
+  revoked_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_used_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_refresh_tokens_user_id ON user_refresh_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_refresh_tokens_token_hash ON user_refresh_tokens(token_hash);
+
 CREATE TABLE IF NOT EXISTS shop_details (
   id SERIAL PRIMARY KEY,
   shop_name VARCHAR(255) NOT NULL,
@@ -65,6 +81,16 @@ ALTER TABLE IF EXISTS settings
   ADD COLUMN IF NOT EXISTS is_opening_completed BOOLEAN DEFAULT FALSE;
 ALTER TABLE IF EXISTS settings
   ADD COLUMN IF NOT EXISTS opening_completed_at TIMESTAMP NULL;
+
+CREATE TABLE IF NOT EXISTS app_settings (
+  id SERIAL PRIMARY KEY,
+  setting_key VARCHAR(100) NOT NULL UNIQUE,
+  value_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC'),
+  updated_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC')
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_settings_key ON app_settings (setting_key);
 
 CREATE TABLE IF NOT EXISTS opening_setup (
   id SERIAL PRIMARY KEY,

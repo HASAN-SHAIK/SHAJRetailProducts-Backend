@@ -1,6 +1,6 @@
 require('dotenv').config();
 const { Pool } = require('pg');
-const { getEnvPassword, attachQueryTimer } = require('./poolUtils');
+const { getEnvPassword, getPoolTuning, attachQueryTimer } = require('./poolUtils');
 
 const adminDbName = process.env.MASTER_DB_NAME || process.env.DB_NAME || 'postgres';
 
@@ -18,7 +18,19 @@ const poolConfig = (process.env.ADMIN_DATABASE_URL || process.env.MASTER_DATABAS
       ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false
     };
 
-const adminPool = attachQueryTimer(new Pool(poolConfig), 'admin');
+const resolveAdminPoolMax = () => {
+  const raw = process.env.ADMIN_DB_POOL_MAX ?? process.env.MASTER_DB_POOL_MAX ?? process.env.DB_POOL_MAX;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : 5;
+};
+
+const tunedConfig = {
+  ...poolConfig,
+  max: resolveAdminPoolMax(),
+  ...getPoolTuning('ADMIN_DB'),
+};
+
+const adminPool = attachQueryTimer(new Pool(tunedConfig), 'admin');
 
 adminPool.on('error', (err) => {
   console.error('Admin DB pool error:', err);
