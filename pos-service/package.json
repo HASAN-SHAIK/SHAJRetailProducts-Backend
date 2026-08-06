@@ -1,0 +1,25 @@
+{
+  "name": "shajretail-pos-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lightweight local POS service for SHAJRetailProducts",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "migrate": "node src/db/migrate.js",
+    "test": "node --test"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "helmet": "^8.1.0",
+    "pino": "^9.6.0",
+    "pino-http": "^10.4.0",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": { "nodemon": "^3.1.11" }
+}
