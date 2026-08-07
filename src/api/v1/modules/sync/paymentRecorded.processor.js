@@ -32,8 +32,8 @@ const processPaymentRecorded = async (client, event) => {
   await client.query(
     `INSERT INTO pos_sale_payments(
        payment_id,order_id,client_payment_id,mode,direction,amount_minor,currency,status,
-       reference,provider,source_created_at
-     ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       reference,provider,provider_payload_json,recorded_by,source_created_at
+     ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13)
      ON CONFLICT(payment_id) DO UPDATE SET
        order_id=EXCLUDED.order_id,
        client_payment_id=EXCLUDED.client_payment_id,
@@ -44,6 +44,8 @@ const processPaymentRecorded = async (client, event) => {
        status=EXCLUDED.status,
        reference=EXCLUDED.reference,
        provider=EXCLUDED.provider,
+       provider_payload_json=EXCLUDED.provider_payload_json,
+       recorded_by=EXCLUDED.recorded_by,
        source_created_at=EXCLUDED.source_created_at`,
     [
       paymentId,
@@ -56,15 +58,13 @@ const processPaymentRecorded = async (client, event) => {
       requiredString(payment.status, 'payment.status'),
       payment.reference || null,
       payment.provider || null,
+      JSON.stringify(payment.provider_payload ?? null),
+      payment.recorded_by || null,
       payment.created_at || null,
     ]
   );
 
-  return {
-    payment_id: paymentId,
-    order_id: orderId,
-    status: payment.status,
-  };
+  return { payment_id: paymentId, order_id: orderId, status: payment.status };
 };
 
 module.exports = { processPaymentRecorded };
