@@ -4,6 +4,7 @@ const platformRoutes = require('./routes/platform.routes');
 const platformAuthRoutes = require('./routes/platform.auth.routes');
 const tenantRoutes = require('./routes/tenant.routes');
 const authRoutes = require('./routes/authRoutes');
+const posSyncRoutes = require('./routes/posSyncRoutes');
 const app = express();
 const cookieParser = require('cookie-parser');
 const { tenantAuthMiddleware } = require('./middleware/tenantAuthMiddleware');
@@ -12,6 +13,7 @@ const { adminAuthMiddleware } = require('./middleware/adminAuthMiddleware');
 const { subscriptionMiddleware } = require('./middleware/subscription');
 const { mergeFeatureFlags } = require('./middleware/featureFlags');
 const { attachAuditDbContext } = require('./middleware/auditDbContext');
+const { posSyncAuth } = require('./middleware/posSyncAuth');
 const { errorHandler } = require('./middleware/errorHandler');
 const { apiV1AuthRouter, apiV1Router, swaggerRoutes } = require('./api/v1');
 const { getTenantMe, getPlatformBanner } = require('./controllers/tenantController');
@@ -144,6 +146,9 @@ const handleHealth = async (req, res) => {
 
 app.get('/health', handleHealth);
 app.get('/api/health', handleHealth);
+
+// Store-local POS machines authenticate independently from tenant user sessions.
+app.use('/api/v1/sync', posSyncAuth, posSyncRoutes);
 
 // Public routes
 app.use('/platform/auth', platformAuthRoutes);
