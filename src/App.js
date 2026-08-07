@@ -16,6 +16,7 @@ const { attachAuditDbContext } = require('./middleware/auditDbContext');
 const { posSyncAuth } = require('./middleware/posSyncAuth');
 const { errorHandler } = require('./middleware/errorHandler');
 const { apiV1AuthRouter, apiV1Router, swaggerRoutes } = require('./api/v1');
+const posSyncRoutes = require('./api/v1/modules/sync/posSync.routes');
 const { getTenantMe, getPlatformBanner } = require('./controllers/tenantController');
 const { bootstrapMasterDatabase } = require('./services/masterBootstrap');
 const { startPoolWarmup } = require('./services/poolWarmup');
@@ -157,6 +158,9 @@ app.use('/platform', adminAuthMiddleware, platformRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/v1/auth', apiV1AuthRouter);
 app.use('/api/v1/docs', swaggerRoutes);
+// POS-to-central machine sync uses dedicated tenant/device credentials rather
+// than an interactive tenant JWT. Mount it before the JWT-protected v1 router.
+app.use('/api/v1/sync', posSyncRoutes);
 app.use('/api/v1', tenantAuthMiddleware, branchDeviceGuard, subscriptionMiddleware, mergeFeatureFlags, attachAuditDbContext, apiV1Router);
 app.use('/api', tenantAuthMiddleware, branchDeviceGuard, subscriptionMiddleware, mergeFeatureFlags, attachAuditDbContext, tenantRoutes);
 app.get('/api/banner', tenantAuthMiddleware, mergeFeatureFlags, getPlatformBanner);
