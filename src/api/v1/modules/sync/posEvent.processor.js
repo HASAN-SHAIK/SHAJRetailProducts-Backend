@@ -1,5 +1,6 @@
 const { processSaleCompleted } = require('./saleCompleted.processor');
 const { processPaymentRecorded } = require('./paymentRecorded.processor');
+const { processInventoryMovementRecorded } = require('./inventoryMovementRecorded.processor');
 
 const processPosEvent = async (client, event) => {
   switch (event.event_type) {
@@ -12,6 +13,8 @@ const processPosEvent = async (client, event) => {
       return processSaleCompleted(client, event);
     case 'payment.recorded':
       return processPaymentRecorded(client, event);
+    case 'inventory.movement.recorded':
+      return processInventoryMovementRecorded(client, event);
     default: {
       const error = new Error(`unsupported POS event_type: ${event.event_type}`);
       error.code = 'UNSUPPORTED_POS_EVENT';
