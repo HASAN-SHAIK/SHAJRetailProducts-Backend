@@ -3,29 +3,6 @@ const { posSyncAuth } = require('./posSyncAuth');
 
 const router = express.Router();
 
-const ensureSyncTable = async (pool) => {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS pos_sync_events (
-      event_id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      device_id TEXT NOT NULL,
-      event_type TEXT NOT NULL,
-      aggregate_type TEXT NOT NULL,
-      aggregate_id TEXT NOT NULL,
-      aggregate_version INT NOT NULL,
-      schema_version INT NOT NULL,
-      ordering_key TEXT,
-      payload_json JSONB NOT NULL,
-      metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-      source_created_at TIMESTAMPTZ,
-      received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      processed_at TIMESTAMPTZ
-    )
-  `);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_pos_sync_events_aggregate ON pos_sync_events (aggregate_type, aggregate_id, aggregate_version)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_pos_sync_events_received_at ON pos_sync_events (received_at DESC)`);
-};
-
 router.post('/events', posSyncAuth, async (req, res, next) => {
   const body = req.body || {};
   const eventId = String(body.event_id || '').trim();
@@ -51,8 +28,6 @@ router.post('/events', posSyncAuth, async (req, res, next) => {
   const client = await req.tenantPool.connect();
   try {
     await client.query('BEGIN');
-    await ensureSyncTable(client);
-
     const insert = await client.query(
       `INSERT INTO pos_sync_events(
          event_id,tenant_id,device_id,event_type,aggregate_type,aggregate_id,aggregate_version,
