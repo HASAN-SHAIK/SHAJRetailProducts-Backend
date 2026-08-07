@@ -1,5 +1,6 @@
 const express = require('express');
 const { posSyncAuth } = require('./posSyncAuth');
+const { processPosEvent } = require('./saleCompleted.processor');
 
 const router = express.Router();
 
@@ -25,6 +26,13 @@ router.post('/events', posSyncAuth, async (req, res, next) => {
     return res.status(400).json({ code: 'INVALID_SYNC_EVENT', message: 'schema_version and aggregate_version must be positive integers' });
   }
 
+  const event = {
+    ...body,
+    event_id: eventId,
+    schema_version: schemaVersion,
+    aggregate_version: aggregateVersion,
+  };
+
   const client = await req.tenantPool.connect();
   try {
     await client.query('BEGIN');
@@ -39,25 +47,33 @@ router.post('/events', posSyncAuth, async (req, res, next) => {
         eventId,
         req.tenant_id,
         req.posDeviceId,
-        body.event_type,
-        body.aggregate_type,
-        body.aggregate_id,
+        event.event_type,
+        event.aggregate_type,
+        event.aggregate_id,
         aggregateVersion,
         schemaVersion,
-        body.ordering_key || null,
-        JSON.stringify(body.payload ?? {}),
-        JSON.stringify(body.metadata ?? {}),
-        body.created_at || null,
+        event.ordering_key || null,
+        JSON.stringify(event.payload ?? {}),
+        JSON.stringify(event.metadata ?? {}),
+        event.created_at || null,
       ]
     );
 
-    await client.query('COMMIT');
     if (insert.rowCount === 0) {
+      await client.query('ROLLBACK');
       return res.status(409).json({ code: 'SYNC_EVENT_ALREADY_RECEIVED', event_id: eventId });
     }
-    return res.status(202).json({ status: 'accepted', event_id: eventId });
+
+    const projection = await processPosEvent(client, event);
+    await client.query(`UPDATE pos_sync_events SET processed_at=NOW() WHERE event_id=$1`, [eventId]);
+    await client.query('COMMIT');
+
+    return res.status(202).json({ status: 'accepted', event_id: eventId, projection });
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
+    if (error.code === 'INVALID_SALE_COMPLETED_PAYLOAD') {
+      return res.status(400).json({ code: error.code, message: error.message });
+    }
     return next(error);
   } finally {
     client.release();
