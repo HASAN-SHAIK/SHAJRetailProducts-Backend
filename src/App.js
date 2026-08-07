@@ -68,13 +68,21 @@ const getWindowMinutes = () => ({
 });
 
 const isWithinWarmupWindow = () => {
-  if (!toBoolean(process.env.HEALTH_WARMUP_WINDOW_ENABLED, false)) return true;
+  if (!toBoolean(process.env.HEALTH_WARMUP_WINDOW_ENABLED, false)) {
+    return true;
+  }
+
   const offsetMinutes = toNumber(process.env.HEALTH_WARMUP_TZ_OFFSET_MINUTES, 0);
-  const localDate = new Date(Date.now() + offsetMinutes * 60 * 1000);
+  const nowUtcMs = Date.now();
+  const localMs = nowUtcMs + offsetMinutes * 60 * 1000;
+  const localDate = new Date(localMs);
   const nowMinutes = localDate.getUTCHours() * 60 + localDate.getUTCMinutes();
   const { start, end } = getWindowMinutes();
+
   if (start === end) return true;
-  if (start < end) return nowMinutes >= start && nowMinutes < end;
+  if (start < end) {
+    return nowMinutes >= start && nowMinutes < end;
+  }
   return nowMinutes >= start || nowMinutes < end;
 };
 
@@ -84,22 +92,55 @@ const isWarmupAuthorized = (req) => {
   const providedKey = req.query?.key || req.headers['x-warmup-key'];
   return typeof providedKey === 'string' && providedKey === expectedKey;
 };
-const isWarmupRequested = (req) => String((req.query || {}).warm_db ?? (req.query || {}).db ?? '0') === '1';
-const performHealthWarmup = async () => { await masterPool.query('SELECT 1'); };
+
+const isWarmupRequested = (req) => {
+  const query = req.query || {};
+  const warmDbValue = query.warm_db ?? query.db;
+  return String(warmDbValue || '0') === '1';
+};
+
+const performHealthWarmup = async () => {
+  await masterPool.query('SELECT 1');
+};
 
 const handleHealth = async (req, res) => {
   const response = {
-    status: 'ok', uptime: process.uptime(), timestamp: new Date().toISOString(),
-    db: { warm_requested: false, warmed: false, window_enabled: toBoolean(process.env.HEALTH_WARMUP_WINDOW_ENABLED, false), reason: 'not_requested' },
+    status: 'ok',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+    db: {
+      warm_requested: false,
+      warmed: false,
+      window_enabled: toBoolean(process.env.HEALTH_WARMUP_WINDOW_ENABLED, false),
+      reason: 'not_requested',
+    },
   };
-  if (!isWarmupRequested(req)) return res.status(200).json(response);
+
+  if (!isWarmupRequested(req)) {
+    return res.status(200).json(response);
+  }
+
   response.db.warm_requested = true;
-  if (!isWarmupAuthorized(req)) { response.db.reason = 'unauthorized'; return res.status(200).json(response); }
-  if (!isWithinWarmupWindow()) { response.db.reason = 'outside_window'; return res.status(200).json(response); }
+
+  if (!isWarmupAuthorized(req)) {
+    response.db.reason = 'unauthorized';
+    return res.status(200).json(response);
+  }
+
+  if (!isWithinWarmupWindow()) {
+    response.db.reason = 'outside_window';
+    return res.status(200).json(response);
+  }
+
   try {
-    await performHealthWarmup(); response.db.warmed = true; response.db.reason = 'warmed'; return res.status(200).json(response);
+    await performHealthWarmup();
+    response.db.warmed = true;
+    response.db.reason = 'warmed';
+    return res.status(200).json(response);
   } catch (error) {
-    response.status = 'degraded'; response.db.reason = 'query_failed'; return res.status(503).json(response);
+    response.status = 'degraded';
+    response.db.reason = 'query_failed';
+    return res.status(503).json(response);
   }
 };
 
@@ -107,12 +148,12 @@ app.get('/health', handleHealth);
 app.get('/api/health', handleHealth);
 
 // Store-local POS machines authenticate independently from tenant user sessions.
-// This route is intentionally mounted before the normal tenant JWT middleware.
 app.use('/api/v1/sync', posSyncAuth, posSyncRoutes);
 
 // Public routes
 app.use('/platform/auth', platformAuthRoutes);
 app.use('/platform', adminAuthMiddleware, platformRoutes);
+
 app.use('/api/auth', authRoutes);
 app.use('/api/v1/auth', apiV1AuthRouter);
 app.use('/api/v1/docs', swaggerRoutes);
@@ -122,19 +163,37 @@ app.get('/api/banner', tenantAuthMiddleware, mergeFeatureFlags, getPlatformBanne
 app.get('/tenant/me', tenantAuthMiddleware, mergeFeatureFlags, getTenantMe);
 app.get('/api/tenant/me', tenantAuthMiddleware, mergeFeatureFlags, getTenantMe);
 
-app.get('/', (req, res) => { res.send('SHAJ NextGen Technologies API is running...'); });
+app.get('/', (req, res) => {
+  res.send('SHAJ NextGen Technologies API is running...');
+});
+
+// Start server
 app.use(errorHandler);
 
 const startServer = async () => {
-  try { await bootstrapMasterDatabase(); } catch (error) { console.error('Master DB bootstrap skipped:', error.message || error); }
-  app.listen(PORT, () => { console.log(`Server running on http://localhost:${PORT}`); });
+  try {
+    await bootstrapMasterDatabase();
+  } catch (error) {
+    console.error('Master DB bootstrap skipped:', error.message || error);
+  }
+
+  app.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+
   startPoolWarmup();
   if (process.env.NODE_ENV !== 'test') {
     startStockConsistencyJob();
     startOwnerDailyDigestJob();
-    startSyncMessaging().catch((error) => { console.error('Sync messaging bootstrap failed:', error.message || error); });
+    startSyncMessaging().catch((error) => {
+      console.error('Sync messaging bootstrap failed:', error.message || error);
+    });
   }
 };
 
-startServer().catch((error) => { console.error('Failed to start server:', error); process.exit(1); });
+startServer().catch((error) => {
+  console.error('Failed to start server:', error);
+  process.exit(1);
+});
+
 module.exports = app;
