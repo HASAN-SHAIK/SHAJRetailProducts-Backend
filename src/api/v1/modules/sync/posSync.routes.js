@@ -52,7 +52,7 @@ router.post('/events', posSyncAuth, async (req, res, next) => {
     return res.status(202).json({ status: 'accepted', event_id: eventId, projection });
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
-    if (['INVALID_SALE_COMPLETED_PAYLOAD', 'INVALID_PAYMENT_RECORDED_PAYLOAD', 'INVALID_INVENTORY_MOVEMENT_PAYLOAD'].includes(error.code)) {
+    if (['INVALID_SALE_COMPLETED_PAYLOAD', 'INVALID_PAYMENT_RECORDED_PAYLOAD', 'INVALID_INVENTORY_MOVEMENT_PAYLOAD', 'INVALID_RECEIPT_ISSUED_PAYLOAD'].includes(error.code)) {
       return res.status(400).json({ code: error.code, message: error.message });
     }
     if (error.code === 'UNSUPPORTED_POS_EVENT') {
