@@ -29,7 +29,32 @@ const envelope = {
   aggregate_id: 'ord-1',
   aggregate_version: 2,
   ordering_key: 'sales_order:ord-1',
-  payload: { order: { id: 'ord-1' } },
+  payload: {
+    order: {
+      id: 'ord-1', client_order_id: 'client-order-1', store_id: 'store-1', terminal_id: 'terminal-1',
+      status: 'confirmed', currency: 'INR', subtotal_minor: 12500, discount_minor: 0, tax_minor: 0,
+      total_minor: 12500, version: 2, completed_at: '2026-08-07T10:00:00Z',
+      created_at: '2026-08-07T09:59:00Z', updated_at: '2026-08-07T10:00:00Z',
+      items: [{
+        id: 'itm-1', line_no: 1, product_id: 'product-1', product_name: 'Milk', quantity_milli: 1000,
+        unit_price_minor: 12500, discount_minor: 0, tax_minor: 0, line_total_minor: 12500,
+      }],
+    },
+    receipt: {
+      id: 'rcpt-1', receipt_number: 'R-1', document_type: 'sale', store_id: 'store-1', terminal_id: 'terminal-1',
+      currency: 'INR', total_minor: 12500, paid_minor: 12500, balance_minor: 0,
+      snapshot: { order_id: 'ord-1' }, snapshot_sha256: 'abc123', issued_at: '2026-08-07T10:00:00Z',
+    },
+    payments: [{
+      id: 'pay-1', client_payment_id: 'client-payment-1', mode: 'cash', direction: 'in', amount_minor: 12500,
+      currency: 'INR', status: 'captured', created_at: '2026-08-07T10:00:00Z',
+    }],
+    inventory_movements: [{
+      id: 'mov-1', store_id: 'store-1', product_id: 'product-1', movement_type: 'sale', quantity_delta_milli: -1000,
+      reference_type: 'sale_order', reference_id: 'ord-1', order_item_id: 'itm-1', balance_after_milli: 9000,
+      occurred_at: '2026-08-07T10:00:00Z',
+    }],
+  },
   metadata: { source: 'pos_service' },
   created_at: '2026-08-07T10:00:00Z',
 };
@@ -40,6 +65,16 @@ const authHeaders = {
   'X-POS-Sync-Token': 'sync-secret',
   'Idempotency-Key': 'evt-1',
 };
+
+const successfulClient = () => ({
+  query: jest.fn(async (sql) => {
+    if (String(sql).includes('INSERT INTO pos_sync_events')) {
+      return { rowCount: 1, rows: [{ event_id: 'evt-1' }] };
+    }
+    return { rowCount: 1, rows: [] };
+  }),
+  release: jest.fn(),
+});
 
 describe('POS central sync ingestion', () => {
   beforeEach(() => {
@@ -56,58 +91,61 @@ describe('POS central sync ingestion', () => {
   });
 
   test('rejects requests without machine credentials', async () => {
-    const response = await request(buildApp())
-      .post('/api/v1/sync/events')
-      .send(envelope);
-
+    const response = await request(buildApp()).post('/api/v1/sync/events').send(envelope);
     expect(response.status).toBe(401);
     expect(tenantPool.connect).not.toHaveBeenCalled();
   });
 
-  test('persists a new event once and returns accepted', async () => {
-    const client = {
-      query: jest.fn(async (sql) => {
-        if (String(sql).includes('INSERT INTO pos_sync_events')) {
-          return { rowCount: 1, rows: [{ event_id: 'evt-1' }] };
-        }
-        return { rowCount: 0, rows: [] };
-      }),
-      release: jest.fn(),
-    };
+  test('atomically persists and projects a completed sale', async () => {
+    const client = successfulClient();
     tenantPool.connect.mockResolvedValue(client);
 
-    const response = await request(buildApp())
-      .post('/api/v1/sync/events')
-      .set(authHeaders)
-      .send(envelope);
+    const response = await request(buildApp()).post('/api/v1/sync/events').set(authHeaders).send(envelope);
 
     expect(response.status).toBe(202);
-    expect(response.body).toEqual({ status: 'accepted', event_id: 'evt-1' });
+    expect(response.body.status).toBe('accepted');
+    expect(response.body.event_id).toBe('evt-1');
+    expect(response.body.projection).toMatchObject({ order_id: 'ord-1', items: 1, payments: 1, inventory_movements: 1, receipt_id: 'rcpt-1' });
     expect(client.query).toHaveBeenCalledWith('BEGIN');
     expect(client.query).toHaveBeenCalledWith('COMMIT');
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO pos_sales'))).toBe(true);
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO pos_sale_items'))).toBe(true);
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO pos_sale_payments'))).toBe(true);
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO pos_sale_receipts'))).toBe(true);
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO pos_inventory_movements'))).toBe(true);
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('processed_at=NOW()'))).toBe(true);
     expect(client.release).toHaveBeenCalledTimes(1);
   });
 
-  test('returns conflict when the same event id is replayed', async () => {
-    const client = {
-      query: jest.fn(async (sql) => {
-        if (String(sql).includes('INSERT INTO pos_sync_events')) {
-          return { rowCount: 0, rows: [] };
-        }
-        return { rowCount: 0, rows: [] };
-      }),
-      release: jest.fn(),
-    };
+  test('returns conflict without re-projecting when the event id is replayed', async () => {
+    const client = successfulClient();
+    client.query.mockImplementation(async (sql) => {
+      if (String(sql).includes('INSERT INTO pos_sync_events')) return { rowCount: 0, rows: [] };
+      return { rowCount: 0, rows: [] };
+    });
     tenantPool.connect.mockResolvedValue(client);
 
-    const response = await request(buildApp())
-      .post('/api/v1/sync/events')
-      .set(authHeaders)
-      .send(envelope);
+    const response = await request(buildApp()).post('/api/v1/sync/events').set(authHeaders).send(envelope);
 
     expect(response.status).toBe(409);
     expect(response.body.code).toBe('SYNC_EVENT_ALREADY_RECEIVED');
-    expect(client.query).toHaveBeenCalledWith('COMMIT');
+    expect(client.query).toHaveBeenCalledWith('ROLLBACK');
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO pos_sales'))).toBe(false);
+    expect(client.release).toHaveBeenCalledTimes(1);
+  });
+
+  test('rolls back the event when sale payload projection is invalid', async () => {
+    const client = successfulClient();
+    tenantPool.connect.mockResolvedValue(client);
+    const invalid = JSON.parse(JSON.stringify(envelope));
+    delete invalid.payload.receipt;
+
+    const response = await request(buildApp()).post('/api/v1/sync/events').set(authHeaders).send(invalid);
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe('INVALID_SALE_COMPLETED_PAYLOAD');
+    expect(client.query).toHaveBeenCalledWith('ROLLBACK');
+    expect(client.query).not.toHaveBeenCalledWith('COMMIT');
     expect(client.release).toHaveBeenCalledTimes(1);
   });
 });
