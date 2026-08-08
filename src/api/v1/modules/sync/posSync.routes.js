@@ -1,6 +1,7 @@
 const express = require('express');
 const { posSyncAuth } = require('./posSyncAuth');
 const { processPosEvent } = require('./posEvent.processor');
+const { getPosChanges } = require('../../../../services/posSyncGateway');
 
 const router = express.Router();
 
@@ -61,6 +62,22 @@ router.post('/events', posSyncAuth, async (req, res, next) => {
     return next(error);
   } finally {
     client.release();
+  }
+});
+
+router.get('/changes', posSyncAuth, async (req, res, next) => {
+  try {
+    const result = await getPosChanges({
+      tenantPool: req.tenantPool,
+      cursorValue: req.query.cursor,
+      limit: req.query.limit,
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    if (error.code === 'INVALID_CURSOR') {
+      return res.status(400).json({ code: error.code, message: error.message });
+    }
+    return next(error);
   }
 });
 

@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS pos_sale_payments (
   status TEXT NOT NULL,
   reference TEXT,
   provider TEXT,
+  provider_payload_json JSONB,
+  recorded_by TEXT,
   source_created_at TIMESTAMPTZ,
   UNIQUE(order_id, client_payment_id)
 );

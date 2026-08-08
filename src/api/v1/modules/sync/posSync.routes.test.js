@@ -1,14 +1,19 @@
 const express = require('express');
 const request = require('supertest');
 
-const tenantPool = { connect: jest.fn() };
+const mockTenantPool = { connect: jest.fn() };
+const mockGetPosChanges = jest.fn();
 
 jest.mock('../../../../config/tenantDbResolver', () => ({
   resolveTenantContext: jest.fn(async (tenantId) => ({
     tenant: { id: tenantId, is_active: true },
-    tenantPool,
+    tenantPool: mockTenantPool,
     planFeatures: {},
   })),
+}));
+
+jest.mock('../../../../services/posSyncGateway', () => ({
+  getPosChanges: mockGetPosChanges,
 }));
 
 const router = require('./posSync.routes');
@@ -79,6 +84,7 @@ const successfulClient = () => ({
 describe('POS central sync ingestion', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockGetPosChanges.mockReset();
     process.env.POS_SYNC_TENANT_ID = 'tenant-1';
     process.env.POS_SYNC_TOKEN = 'sync-secret';
     delete process.env.POS_SYNC_TOKENS_JSON;
@@ -93,12 +99,12 @@ describe('POS central sync ingestion', () => {
   test('rejects requests without machine credentials', async () => {
     const response = await request(buildApp()).post('/api/v1/sync/events').send(envelope);
     expect(response.status).toBe(401);
-    expect(tenantPool.connect).not.toHaveBeenCalled();
+    expect(mockTenantPool.connect).not.toHaveBeenCalled();
   });
 
   test('atomically persists and projects a completed sale', async () => {
     const client = successfulClient();
-    tenantPool.connect.mockResolvedValue(client);
+    mockTenantPool.connect.mockResolvedValue(client);
 
     const response = await request(buildApp()).post('/api/v1/sync/events').set(authHeaders).send(envelope);
 
@@ -123,7 +129,7 @@ describe('POS central sync ingestion', () => {
       if (String(sql).includes('INSERT INTO pos_sync_events')) return { rowCount: 0, rows: [] };
       return { rowCount: 0, rows: [] };
     });
-    tenantPool.connect.mockResolvedValue(client);
+    mockTenantPool.connect.mockResolvedValue(client);
 
     const response = await request(buildApp()).post('/api/v1/sync/events').set(authHeaders).send(envelope);
 
@@ -136,7 +142,7 @@ describe('POS central sync ingestion', () => {
 
   test('rolls back the event when sale payload projection is invalid', async () => {
     const client = successfulClient();
-    tenantPool.connect.mockResolvedValue(client);
+    mockTenantPool.connect.mockResolvedValue(client);
     const invalid = JSON.parse(JSON.stringify(envelope));
     delete invalid.payload.receipt;
 
@@ -147,5 +153,35 @@ describe('POS central sync ingestion', () => {
     expect(client.query).toHaveBeenCalledWith('ROLLBACK');
     expect(client.query).not.toHaveBeenCalledWith('COMMIT');
     expect(client.release).toHaveBeenCalledTimes(1);
+  });
+
+  test('returns change feed records for an authenticated POS device', async () => {
+    mockGetPosChanges.mockResolvedValue({
+      cursor: 'next-cursor',
+      has_more: false,
+      changes: [
+        { type: 'catalog.product.upsert' },
+        { type: 'catalog.barcode.upsert' },
+        { type: 'catalog.price.upsert' },
+      ],
+    });
+
+    const response = await request(buildApp())
+      .get('/api/v1/sync/changes?limit=1')
+      .set(authHeaders);
+
+    expect(response.status).toBe(200);
+    expect(mockGetPosChanges).toHaveBeenCalledWith({
+      tenantPool: mockTenantPool,
+      cursorValue: undefined,
+      limit: '1',
+    });
+    expect(response.body.has_more).toBe(false);
+    expect(response.body.cursor).toBeTruthy();
+    expect(response.body.changes.map((change) => change.type)).toEqual([
+      'catalog.product.upsert',
+      'catalog.barcode.upsert',
+      'catalog.price.upsert',
+    ]);
   });
 });

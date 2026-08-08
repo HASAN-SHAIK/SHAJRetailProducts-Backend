@@ -30,6 +30,10 @@ const processInventoryMovementRecorded = async (client, event) => {
 
   const orderId = requiredString(movement.reference_id, 'movement.reference_id');
   if (movement.reference_type !== 'sale_order') throw invalid('sale inventory movement must reference sale_order');
+  const sale = await client.query('SELECT 1 FROM pos_sales WHERE order_id=$1 LIMIT 1', [orderId]);
+  if (sale.rowCount === 0) {
+    return { movement_id: movementId, order_id: orderId, product_id: movement.product_id, deferred: true, reason: 'sale_projection_missing' };
+  }
 
   await client.query(
     `INSERT INTO pos_inventory_movements(

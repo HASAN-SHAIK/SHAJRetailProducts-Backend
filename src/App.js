@@ -4,7 +4,6 @@ const platformRoutes = require('./routes/platform.routes');
 const platformAuthRoutes = require('./routes/platform.auth.routes');
 const tenantRoutes = require('./routes/tenant.routes');
 const authRoutes = require('./routes/authRoutes');
-const posSyncRoutes = require('./routes/posSyncRoutes');
 const app = express();
 const cookieParser = require('cookie-parser');
 const { tenantAuthMiddleware } = require('./middleware/tenantAuthMiddleware');
@@ -13,7 +12,6 @@ const { adminAuthMiddleware } = require('./middleware/adminAuthMiddleware');
 const { subscriptionMiddleware } = require('./middleware/subscription');
 const { mergeFeatureFlags } = require('./middleware/featureFlags');
 const { attachAuditDbContext } = require('./middleware/auditDbContext');
-const { posSyncAuth } = require('./middleware/posSyncAuth');
 const { errorHandler } = require('./middleware/errorHandler');
 const { apiV1AuthRouter, apiV1Router, swaggerRoutes } = require('./api/v1');
 const posSyncRoutes = require('./api/v1/modules/sync/posSync.routes');
@@ -33,7 +31,9 @@ const allowedOrigins = rawCorsOrigins
   ? rawCorsOrigins.split(',').map((origin) => origin.trim()).filter(Boolean)
   : [process.env.FRONTEND_ADMIN_URL, process.env.FRONTEND_TENANT_URL].filter(Boolean);
 const allowAllOrigins = allowedOrigins.includes('*');
-const PORT = process.env.PORT || 5000;
+const APP_ENVIRONMENT = process.env.APP_ENVIRONMENT || process.env.NODE_ENV || 'development';
+const isTestRuntime = () => APP_ENVIRONMENT === 'test' || process.env.NODE_ENV === 'test' || Boolean(process.env.JEST_WORKER_ID);
+const PORT = process.env.APP_PORT || process.env.PORT || 5000;
 
 app.use(
   cors({
@@ -148,9 +148,6 @@ const handleHealth = async (req, res) => {
 app.get('/health', handleHealth);
 app.get('/api/health', handleHealth);
 
-// Store-local POS machines authenticate independently from tenant user sessions.
-app.use('/api/v1/sync', posSyncAuth, posSyncRoutes);
-
 // Public routes
 app.use('/platform/auth', platformAuthRoutes);
 app.use('/platform', adminAuthMiddleware, platformRoutes);
@@ -186,7 +183,7 @@ const startServer = async () => {
   });
 
   startPoolWarmup();
-  if (process.env.NODE_ENV !== 'test') {
+  if (!isTestRuntime()) {
     startStockConsistencyJob();
     startOwnerDailyDigestJob();
     startSyncMessaging().catch((error) => {
@@ -195,9 +192,11 @@ const startServer = async () => {
   }
 };
 
-startServer().catch((error) => {
-  console.error('Failed to start server:', error);
-  process.exit(1);
-});
+if (!isTestRuntime()) {
+  startServer().catch((error) => {
+    console.error('Failed to start server:', error);
+    process.exit(1);
+  });
+}
 
 module.exports = app;

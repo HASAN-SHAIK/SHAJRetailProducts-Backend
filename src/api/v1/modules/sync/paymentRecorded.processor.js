@@ -29,6 +29,11 @@ const processPaymentRecorded = async (client, event) => {
   }
 
   const orderId = requiredString(payment.order_id, 'payment.order_id');
+  const sale = await client.query('SELECT 1 FROM pos_sales WHERE order_id=$1 LIMIT 1', [orderId]);
+  if (sale.rowCount === 0) {
+    return { payment_id: paymentId, order_id: orderId, deferred: true, reason: 'sale_projection_missing' };
+  }
+
   await client.query(
     `INSERT INTO pos_sale_payments(
        payment_id,order_id,client_payment_id,mode,direction,amount_minor,currency,status,

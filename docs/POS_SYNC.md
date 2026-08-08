@@ -4,11 +4,11 @@ The store-local service talks to the central enterprise server over HTTPS. It do
 
 ## Authentication
 
-Configure the backend with `POS_SYNC_SHARED_SECRET`. Each store installation is provisioned with:
+Configure the backend with `POS_SYNC_TOKEN` and `POS_SYNC_TENANT_ID`, or `POS_SYNC_TOKENS_JSON` for tenant-token maps. Each store installation is provisioned with:
 
 - `POS_CENTRAL_API_URL`
-- `POS_CENTRAL_TENANT_ID`
-- `POS_CENTRAL_SYNC_TOKEN` (the shared secret for the current deployment; rotate through deployment tooling)
+- `POS_SYNC_TENANT_ID`
+- `POS_SYNC_TOKEN` (the shared secret for the current deployment; rotate through deployment tooling)
 
 Every POS sync request sends `X-POS-Tenant-ID`, `X-POS-Device-ID`, and `X-POS-Sync-Token`. The backend resolves the tenant database only after constant-time token validation. These endpoints are mounted before tenant-user JWT middleware because a headless store service has no interactive user session.
 

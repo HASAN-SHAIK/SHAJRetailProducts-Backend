@@ -29,6 +29,11 @@ const processReceiptIssued = async (client, event) => {
   }
 
   const orderId = requiredString(receipt.order_id, 'receipt.order_id');
+  const sale = await client.query('SELECT 1 FROM pos_sales WHERE order_id=$1 LIMIT 1', [orderId]);
+  if (sale.rowCount === 0) {
+    return { receipt_id: receiptId, order_id: orderId, deferred: true, reason: 'sale_projection_missing' };
+  }
+
   await client.query(
     `INSERT INTO pos_sale_receipts(
        receipt_id,order_id,receipt_number,document_type,store_id,terminal_id,customer_id,currency,
