@@ -3,7 +3,8 @@ const jwt = require('jsonwebtoken');
 const { getPermissionsForRole, getStorePermissions } = require('../utils/rolePermissions');
 const { jsonError } = require('../utils/responses');
 
-const getOfflineGrantSecret = () => String(process.env.POS_OFFLINE_GRANT_SECRET || '').trim();
+const normalizePem = (value) => String(value || '').trim().replace(/\\n/g, '\n');
+const getOfflineGrantPrivateKey = () => normalizePem(process.env.POS_OFFLINE_GRANT_PRIVATE_KEY);
 
 const issueOfflineGrant = async (req, res) => {
   try {
@@ -11,8 +12,8 @@ const issueOfflineGrant = async (req, res) => {
       return jsonError(res, 401, 'UNAUTHORIZED', 'Not authenticated');
     }
 
-    const secret = getOfflineGrantSecret();
-    if (!secret) {
+    const privateKey = getOfflineGrantPrivateKey();
+    if (!privateKey) {
       return jsonError(res, 503, 'OFFLINE_GRANT_DISABLED', 'Offline POS grants are not configured');
     }
 
@@ -37,12 +38,13 @@ const issueOfflineGrant = async (req, res) => {
         store_permissions: storePermissions,
         grant_id: crypto.randomUUID(),
       },
-      secret,
+      privateKey,
       {
-        algorithm: 'HS256',
+        algorithm: 'RS256',
         expiresIn: process.env.POS_OFFLINE_GRANT_EXPIRY || '7d',
         issuer: 'shajtech-central',
         audience: 'shajtech-pos-edge',
+        keyid: process.env.POS_OFFLINE_GRANT_KEY_ID || 'pos-offline-v1',
       }
     );
 
