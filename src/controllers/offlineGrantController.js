@@ -17,6 +17,11 @@ const issueOfflineGrant = async (req, res) => {
       return jsonError(res, 503, 'OFFLINE_GRANT_DISABLED', 'Offline POS grants are not configured');
     }
 
+    const deviceId = String(req.body?.device_id || '').trim();
+    if (!deviceId) {
+      return jsonError(res, 400, 'POS_DEVICE_REQUIRED', 'device_id is required for offline POS authorization');
+    }
+
     const userId = req.user.user_id || req.user.id;
     const tenantId = req.user.tenant_id;
     const role = String(req.user.role || '').toLowerCase();
@@ -32,6 +37,7 @@ const issueOfflineGrant = async (req, res) => {
         user_id: userId,
         tenant_id: tenantId,
         role,
+        device_id: deviceId,
         branch_id: req.user.branch_id || null,
         all_branch_access: req.user.all_branch_access !== false,
         permissions,
@@ -52,6 +58,7 @@ const issueOfflineGrant = async (req, res) => {
       success: true,
       offline_grant: grant,
       user_id: userId,
+      device_id: deviceId,
       expires_in: process.env.POS_OFFLINE_GRANT_EXPIRY || '7d',
     });
   } catch (error) {
