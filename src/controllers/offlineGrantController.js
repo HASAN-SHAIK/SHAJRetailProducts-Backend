@@ -1,0 +1,60 @@
+const crypto = require('crypto');
+const jwt = require('jsonwebtoken');
+const { getPermissionsForRole, getStorePermissions } = require('../utils/rolePermissions');
+const { jsonError } = require('../utils/responses');
+
+const getOfflineGrantSecret = () => String(process.env.POS_OFFLINE_GRANT_SECRET || '').trim();
+
+const issueOfflineGrant = async (req, res) => {
+  try {
+    if (!req.user) {
+      return jsonError(res, 401, 'UNAUTHORIZED', 'Not authenticated');
+    }
+
+    const secret = getOfflineGrantSecret();
+    if (!secret) {
+      return jsonError(res, 503, 'OFFLINE_GRANT_DISABLED', 'Offline POS grants are not configured');
+    }
+
+    const userId = req.user.user_id || req.user.id;
+    const tenantId = req.user.tenant_id;
+    const role = String(req.user.role || '').toLowerCase();
+    if (!userId || !tenantId || !role) {
+      return jsonError(res, 401, 'UNAUTHORIZED', 'Authenticated user context is incomplete');
+    }
+
+    const permissions = req.user.permissions || getPermissionsForRole(role);
+    const storePermissions = req.user.store_permissions || getStorePermissions(req.user);
+    const grant = jwt.sign(
+      {
+        type: 'pos_offline_grant',
+        user_id: userId,
+        tenant_id: tenantId,
+        role,
+        branch_id: req.user.branch_id || null,
+        all_branch_access: req.user.all_branch_access !== false,
+        permissions,
+        store_permissions: storePermissions,
+        grant_id: crypto.randomUUID(),
+      },
+      secret,
+      {
+        algorithm: 'HS256',
+        expiresIn: process.env.POS_OFFLINE_GRANT_EXPIRY || '7d',
+        issuer: 'shajtech-central',
+        audience: 'shajtech-pos-edge',
+      }
+    );
+
+    return res.status(200).json({
+      success: true,
+      offline_grant: grant,
+      user_id: userId,
+      expires_in: process.env.POS_OFFLINE_GRANT_EXPIRY || '7d',
+    });
+  } catch (error) {
+    return jsonError(res, 500, 'OFFLINE_GRANT_FAILED', error.message);
+  }
+};
+
+module.exports = { issueOfflineGrant };
