@@ -26,6 +26,11 @@ const requiredString = (value, name) => {
   return result;
 };
 
+const optionalString = (value) => {
+  const result = String(value ?? '').trim();
+  return result || null;
+};
+
 const integer = (value, name) => {
   const result = Number(value);
   if (!Number.isSafeInteger(result)) {
@@ -49,21 +54,24 @@ const canonicalOrderStatus = (status) => {
   return normalized || 'pending';
 };
 
-const projectCanonicalOrder = async (client, event, order, receipt, items) => {
+const projectCanonicalOrder = async (client, event, order, receipt, items, actor) => {
   const sourceOrderId = requiredString(order.id, 'order.id');
   const sourceVersion = integer(order.version, 'order.version');
   const customerId = centralIntegerId(order.customer_id);
+  const actorUserId = optionalString(actor?.user_id);
+  const createdByUserId = optionalString(order.created_by_user_id) || actorUserId;
+  const completedByUserId = optionalString(order.completed_by_user_id) || actorUserId;
 
   const upsert = await client.query(
     `INSERT INTO orders(
        client_order_id,customer_id,total_price,total_paid,order_status,transaction_type,billing_type,
        created_at,updated_at,is_deleted,source_channel,source_order_id,source_store_id,source_terminal_id,
        source_customer_id,source_event_id,source_version,currency,subtotal_minor,discount_minor,tax_minor,
-       total_minor,completed_at,notes
+       total_minor,completed_at,notes,source_created_by_user_id,source_completed_by_user_id
      ) VALUES(
        $1,$2,($3::numeric / 100.0),($4::numeric / 100.0),$5,'sale','retail',
        COALESCE($6::timestamptz,NOW()),COALESCE($7::timestamptz,NOW()),FALSE,'pos',$8,$9,$10,
-       $11,$12,$13,$14,$15,$16,$17,$18,$19::timestamptz,$20
+       $11,$12,$13,$14,$15,$16,$17,$18,$19::timestamptz,$20,$21,$22
      )
      ON CONFLICT(source_channel,source_order_id) WHERE source_channel IS NOT NULL AND source_order_id IS NOT NULL
      DO UPDATE SET
@@ -84,7 +92,9 @@ const projectCanonicalOrder = async (client, event, order, receipt, items) => {
        tax_minor=EXCLUDED.tax_minor,
        total_minor=EXCLUDED.total_minor,
        completed_at=EXCLUDED.completed_at,
-       notes=EXCLUDED.notes
+       notes=EXCLUDED.notes,
+       source_created_by_user_id=COALESCE(EXCLUDED.source_created_by_user_id,orders.source_created_by_user_id),
+       source_completed_by_user_id=COALESCE(EXCLUDED.source_completed_by_user_id,orders.source_completed_by_user_id)
      WHERE COALESCE(orders.source_version,0) <= EXCLUDED.source_version
      RETURNING id,source_version`,
     [
@@ -108,6 +118,8 @@ const projectCanonicalOrder = async (client, event, order, receipt, items) => {
       integer(order.total_minor, 'order.total_minor'),
       order.completed_at || null,
       order.notes || null,
+      createdByUserId,
+      completedByUserId,
     ]
   );
 
@@ -173,6 +185,9 @@ const processSaleCompleted = async (client, event) => {
   const payments = asArray(payload.payments, 'payload.payments');
   const inventory = asArray(payload.inventory_movements, 'payload.inventory_movements');
   const items = asArray(order.items, 'payload.order.items');
+  const actor = payload.actor && typeof payload.actor === 'object' && !Array.isArray(payload.actor)
+    ? payload.actor
+    : null;
 
   const orderId = requiredString(order.id, 'order.id');
   if (orderId !== event.aggregate_id) {
@@ -182,7 +197,7 @@ const processSaleCompleted = async (client, event) => {
   }
 
   // Canonical central model: every sale, regardless of channel, lands in orders/order_items.
-  const canonical = await projectCanonicalOrder(client, event, order, receipt, items);
+  const canonical = await projectCanonicalOrder(client, event, order, receipt, items, actor);
 
   // Compatibility projection: keep the existing POS-specific tables during migration so
   // payment, receipt and inventory processors continue to function while they are moved
@@ -303,6 +318,7 @@ const processSaleCompleted = async (client, event) => {
     order_id: orderId,
     central_order_id: canonical.central_order_id,
     canonical_applied: canonical.canonical_applied,
+    cashier_user_id: optionalString(order.completed_by_user_id) || optionalString(actor?.user_id),
     items: items.length,
     payments: payments.length,
     inventory_movements: inventory.length,
