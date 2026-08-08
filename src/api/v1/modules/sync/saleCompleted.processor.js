@@ -36,6 +36,136 @@ const integer = (value, name) => {
   return result;
 };
 
+const centralIntegerId = (value) => {
+  const raw = String(value ?? '').trim();
+  if (!/^\d+$/.test(raw)) return null;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+};
+
+const canonicalOrderStatus = (status) => {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (normalized === 'confirmed' || normalized === 'completed') return 'completed';
+  return normalized || 'pending';
+};
+
+const projectCanonicalOrder = async (client, event, order, receipt, items) => {
+  const sourceOrderId = requiredString(order.id, 'order.id');
+  const sourceVersion = integer(order.version, 'order.version');
+  const customerId = centralIntegerId(order.customer_id);
+
+  const upsert = await client.query(
+    `INSERT INTO orders(
+       client_order_id,customer_id,total_price,total_paid,order_status,transaction_type,billing_type,
+       created_at,updated_at,is_deleted,source_channel,source_order_id,source_store_id,source_terminal_id,
+       source_customer_id,source_event_id,source_version,currency,subtotal_minor,discount_minor,tax_minor,
+       total_minor,completed_at,notes
+     ) VALUES(
+       $1,$2,($3::numeric / 100.0),($4::numeric / 100.0),$5,'sale','retail',
+       COALESCE($6::timestamptz,NOW()),COALESCE($7::timestamptz,NOW()),FALSE,'pos',$8,$9,$10,
+       $11,$12,$13,$14,$15,$16,$17,$18,$19::timestamptz,$20
+     )
+     ON CONFLICT(source_channel,source_order_id) WHERE source_channel IS NOT NULL AND source_order_id IS NOT NULL
+     DO UPDATE SET
+       client_order_id=EXCLUDED.client_order_id,
+       customer_id=COALESCE(EXCLUDED.customer_id,orders.customer_id),
+       total_price=EXCLUDED.total_price,
+       total_paid=EXCLUDED.total_paid,
+       order_status=EXCLUDED.order_status,
+       updated_at=EXCLUDED.updated_at,
+       source_store_id=EXCLUDED.source_store_id,
+       source_terminal_id=EXCLUDED.source_terminal_id,
+       source_customer_id=EXCLUDED.source_customer_id,
+       source_event_id=EXCLUDED.source_event_id,
+       source_version=EXCLUDED.source_version,
+       currency=EXCLUDED.currency,
+       subtotal_minor=EXCLUDED.subtotal_minor,
+       discount_minor=EXCLUDED.discount_minor,
+       tax_minor=EXCLUDED.tax_minor,
+       total_minor=EXCLUDED.total_minor,
+       completed_at=EXCLUDED.completed_at,
+       notes=EXCLUDED.notes
+     WHERE COALESCE(orders.source_version,0) <= EXCLUDED.source_version
+     RETURNING id,source_version`,
+    [
+      requiredString(order.client_order_id, 'order.client_order_id'),
+      customerId,
+      integer(order.total_minor, 'order.total_minor'),
+      integer(receipt.paid_minor, 'receipt.paid_minor'),
+      canonicalOrderStatus(order.status),
+      order.created_at || null,
+      order.updated_at || null,
+      sourceOrderId,
+      requiredString(order.store_id, 'order.store_id'),
+      order.terminal_id || null,
+      order.customer_id || null,
+      event.event_id,
+      sourceVersion,
+      requiredString(order.currency, 'order.currency'),
+      integer(order.subtotal_minor, 'order.subtotal_minor'),
+      integer(order.discount_minor, 'order.discount_minor'),
+      integer(order.tax_minor, 'order.tax_minor'),
+      integer(order.total_minor, 'order.total_minor'),
+      order.completed_at || null,
+      order.notes || null,
+    ]
+  );
+
+  let centralOrderId;
+  let applied = true;
+  if (upsert.rowCount > 0) {
+    centralOrderId = upsert.rows[0].id;
+  } else {
+    const existing = await client.query(
+      `SELECT id,source_version FROM orders WHERE source_channel='pos' AND source_order_id=$1 LIMIT 1`,
+      [sourceOrderId]
+    );
+    if (existing.rowCount === 0) {
+      const error = new Error('canonical POS order projection could not be resolved');
+      error.code = 'CANONICAL_ORDER_PROJECTION_FAILED';
+      throw error;
+    }
+    centralOrderId = existing.rows[0].id;
+    applied = Number(existing.rows[0].source_version || 0) <= sourceVersion;
+  }
+
+  if (applied) {
+    await client.query('DELETE FROM order_items WHERE order_id=$1', [centralOrderId]);
+
+    for (const item of items) {
+      const productId = centralIntegerId(item.product_id);
+      await client.query(
+        `INSERT INTO order_items(
+           order_id,product_id,quantity,selling_price,discount_amount,gst_percent,
+           source_item_id,source_product_id,line_no,sku_snapshot,product_name_snapshot,barcode_snapshot,
+           quantity_milli,unit_price_minor,source_discount_minor,tax_minor,line_total_minor,tax_code
+         ) VALUES(
+           $1,$2,($3::numeric / 1000.0),($4::numeric / 100.0),($5::numeric / 100.0),0,
+           $6,$7,$8,$9,$10,$11,$3,$4,$5,$12,$13,$14
+         )`,
+        [
+          centralOrderId,
+          productId,
+          integer(item.quantity_milli, 'item.quantity_milli'),
+          integer(item.unit_price_minor, 'item.unit_price_minor'),
+          integer(item.discount_minor, 'item.discount_minor'),
+          requiredString(item.id, 'item.id'),
+          requiredString(item.product_id, 'item.product_id'),
+          integer(item.line_no, 'item.line_no'),
+          item.sku || null,
+          requiredString(item.product_name, 'item.product_name'),
+          item.barcode || null,
+          integer(item.tax_minor, 'item.tax_minor'),
+          integer(item.line_total_minor, 'item.line_total_minor'),
+          item.tax_code || null,
+        ]
+      );
+    }
+  }
+
+  return { central_order_id: centralOrderId, canonical_applied: applied };
+};
+
 const processSaleCompleted = async (client, event) => {
   const payload = asObject(event.payload, 'payload');
   const order = asObject(payload.order, 'payload.order');
@@ -51,6 +181,12 @@ const processSaleCompleted = async (client, event) => {
     throw error;
   }
 
+  // Canonical central model: every sale, regardless of channel, lands in orders/order_items.
+  const canonical = await projectCanonicalOrder(client, event, order, receipt, items);
+
+  // Compatibility projection: keep the existing POS-specific tables during migration so
+  // payment, receipt and inventory processors continue to function while they are moved
+  // to canonical order references in a subsequent change.
   await client.query(
     `INSERT INTO pos_sales(
        order_id,client_order_id,store_id,terminal_id,customer_id,status,currency,
@@ -165,6 +301,8 @@ const processSaleCompleted = async (client, event) => {
 
   return {
     order_id: orderId,
+    central_order_id: canonical.central_order_id,
+    canonical_applied: canonical.canonical_applied,
     items: items.length,
     payments: payments.length,
     inventory_movements: inventory.length,
