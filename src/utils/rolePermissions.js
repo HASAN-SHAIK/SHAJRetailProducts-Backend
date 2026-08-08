@@ -1,5 +1,42 @@
+const POS_PERMISSIONS = Object.freeze({
+  SALE: 'pos:sale',
+  DISCOUNT: 'pos:discount',
+  VOID: 'pos:void',
+  REFUND: 'pos:refund',
+  APPROVE: 'pos:approve',
+});
+
 const ROLE_PERMISSIONS = {
   admin: ['*'],
+  manager: [
+    'products:read',
+    'products:write',
+    'orders:read',
+    'orders:write',
+    'customers:read',
+    'customers:write',
+    'inventory:read',
+    'inventory:write',
+    'suppliers:read',
+    'expenses:read',
+    'reports:read',
+    POS_PERMISSIONS.SALE,
+    POS_PERMISSIONS.DISCOUNT,
+    POS_PERMISSIONS.VOID,
+    POS_PERMISSIONS.REFUND,
+    POS_PERMISSIONS.APPROVE,
+  ],
+  cashier: [
+    'products:read',
+    'orders:read',
+    'customers:read',
+    'customers:write',
+    'inventory:read',
+    POS_PERMISSIONS.SALE,
+  ],
+  // Transitional general store role. Keep the existing central permissions so
+  // current staff accounts do not lose access while new installations move to
+  // explicit cashier/manager roles.
   staff: [
     'products:read',
     'products:write',
@@ -15,6 +52,8 @@ const ROLE_PERMISSIONS = {
     'expenses:write',
     'reports:read',
     'settings:read',
+    POS_PERMISSIONS.SALE,
+    POS_PERMISSIONS.DISCOUNT,
   ],
 };
 
@@ -40,6 +79,7 @@ const hasPermission = (user, permission) => {
 };
 
 module.exports = {
+  POS_PERMISSIONS,
   ROLE_PERMISSIONS,
   getPermissionsForRole,
   getStorePermissions,
