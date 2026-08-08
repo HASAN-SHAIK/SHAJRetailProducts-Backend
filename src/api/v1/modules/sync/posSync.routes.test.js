@@ -73,8 +73,12 @@ const authHeaders = {
 
 const successfulClient = () => ({
   query: jest.fn(async (sql) => {
-    if (String(sql).includes('INSERT INTO pos_sync_events')) {
+    const statement = String(sql);
+    if (statement.includes('INSERT INTO pos_sync_events')) {
       return { rowCount: 1, rows: [{ event_id: 'evt-1' }] };
+    }
+    if (statement.includes('INSERT INTO orders(')) {
+      return { rowCount: 1, rows: [{ id: 101, source_version: 2 }] };
     }
     return { rowCount: 1, rows: [] };
   }),
@@ -111,9 +115,15 @@ describe('POS central sync ingestion', () => {
     expect(response.status).toBe(202);
     expect(response.body.status).toBe('accepted');
     expect(response.body.event_id).toBe('evt-1');
-    expect(response.body.projection).toMatchObject({ order_id: 'ord-1', items: 1, payments: 1, inventory_movements: 1, receipt_id: 'rcpt-1' });
+    expect(response.body.projection).toMatchObject({
+      order_id: 'ord-1', central_order_id: 101, canonical_applied: true,
+      items: 1, payments: 1, inventory_movements: 1, receipt_id: 'rcpt-1',
+    });
     expect(client.query).toHaveBeenCalledWith('BEGIN');
     expect(client.query).toHaveBeenCalledWith('COMMIT');
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO orders('))).toBe(true);
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('DELETE FROM order_items'))).toBe(true);
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO order_items('))).toBe(true);
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO pos_sales'))).toBe(true);
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO pos_sale_items'))).toBe(true);
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO pos_sale_payments'))).toBe(true);
@@ -136,6 +146,7 @@ describe('POS central sync ingestion', () => {
     expect(response.status).toBe(409);
     expect(response.body.code).toBe('SYNC_EVENT_ALREADY_RECEIVED');
     expect(client.query).toHaveBeenCalledWith('ROLLBACK');
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO orders('))).toBe(false);
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO pos_sales'))).toBe(false);
     expect(client.release).toHaveBeenCalledTimes(1);
   });
