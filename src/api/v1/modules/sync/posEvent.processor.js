@@ -1,5 +1,6 @@
 const { processSaleCompleted } = require('./saleCompleted.processor');
 const { processSaleReturned } = require('./saleReturned.processor');
+const { processSalePartialReturned } = require('./salePartialReturned.processor');
 const { processPaymentRecorded } = require('./paymentRecorded.processor');
 const { processInventoryMovementRecorded } = require('./inventoryMovementRecorded.processor');
 const { processReceiptIssued } = require('./receiptIssued.processor');
@@ -16,6 +17,8 @@ const processPosEvent = async (client, event) => {
       return processSaleCompleted(client, event);
     case 'sale.returned':
       return processSaleReturned(client, event);
+    case 'sale.partial_returned':
+      return processSalePartialReturned(client, event);
     case 'payment.recorded':
       return processPaymentRecorded(client, event);
     case 'inventory.movement.recorded':
