@@ -25,6 +25,8 @@ const processSaleReturned = async (client, event) => {
 
   const orderId = requiredString(order.id, 'order.id');
   const sourceVersion = integer(order.version, 'order.version');
+  const approvedByUserID = requiredString(payload.approved_by_user_id, 'payload.approved_by_user_id');
+  const approvalReason = requiredString(payload.approval_reason, 'payload.approval_reason');
   if (event.aggregate_type !== 'sales_order' || event.aggregate_id !== orderId) {
     throw invalid('sale.returned aggregate must match payload.order.id');
   }
@@ -52,8 +54,8 @@ const processSaleReturned = async (client, event) => {
       orderId,
       event.event_id,
       sourceVersion,
-      order.approved_by_user_id || null,
-      order.approval_reason || null,
+      approvedByUserID,
+      approvalReason,
       order.updated_at || null,
     ]
   );
