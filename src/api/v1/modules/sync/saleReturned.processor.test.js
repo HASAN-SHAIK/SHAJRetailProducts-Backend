@@ -13,10 +13,10 @@ describe('sale.returned projection', () => {
         id: 'ord-1',
         status: 'returned',
         version: 3,
-        approved_by_user_id: 'manager-1',
-        approval_reason: 'customer returned all items',
         updated_at: '2026-08-09T00:00:00Z',
       },
+      approved_by_user_id: 'manager-1',
+      approval_reason: 'customer returned all items',
       payments: [],
       inventory_movements: [],
     },
@@ -75,7 +75,7 @@ describe('sale.returned projection', () => {
     });
   });
 
-  test('rejects mismatched aggregate/version/status contracts', async () => {
+  test('rejects mismatched aggregate/version/status/audit contracts', async () => {
     const client = { query: jest.fn() };
 
     await expect(processSaleReturned(client, { ...event, aggregate_id: 'other' })).rejects.toMatchObject({
@@ -87,6 +87,10 @@ describe('sale.returned projection', () => {
     await expect(processSaleReturned(client, {
       ...event,
       payload: { ...event.payload, order: { ...event.payload.order, status: 'paid' } },
+    })).rejects.toMatchObject({ code: 'INVALID_SALE_RETURNED_PAYLOAD' });
+    await expect(processSaleReturned(client, {
+      ...event,
+      payload: { ...event.payload, approved_by_user_id: '' },
     })).rejects.toMatchObject({ code: 'INVALID_SALE_RETURNED_PAYLOAD' });
     expect(client.query).not.toHaveBeenCalled();
   });
