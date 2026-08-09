@@ -72,8 +72,9 @@ const processSalePartialReturned = async (client, event) => {
   if (positiveInteger(event.aggregate_version, 'aggregate_version') !== sourceVersion) {
     throw invalid('aggregate_version must match order.version');
   }
-  if (String(order.status || '').trim().toLowerCase() !== 'completed') {
-    throw invalid('partial return order.status must remain completed');
+  const orderStatus = String(order.status || '').trim().toLowerCase();
+  if (!['completed', 'returned'].includes(orderStatus)) {
+    throw invalid('partial return order.status must be completed or returned');
   }
   if (!Array.isArray(payload.lines) || payload.lines.length === 0) {
     throw invalid('payload.lines must be a non-empty array');
@@ -124,7 +125,7 @@ const processSalePartialReturned = async (client, event) => {
       central_order_id: centralOrderId,
       canonical_applied: false,
       replayed: true,
-      status: 'completed',
+      status: orderStatus,
     };
   }
 
@@ -177,7 +178,7 @@ const processSalePartialReturned = async (client, event) => {
     central_order_id: centralOrderId,
     canonical_applied: true,
     replayed: false,
-    status: 'completed',
+    status: orderStatus,
   };
 };
 
