@@ -27,6 +27,22 @@ router.post('/events', posSyncAuth, async (req, res, next) => {
   }
 
   const event = { ...body, event_id: eventId, schema_version: schemaVersion, aggregate_version: aggregateVersion };
+  const payloadJson = JSON.stringify(event.payload ?? {});
+  const metadataJson = JSON.stringify(event.metadata ?? {});
+  const eventValues = [
+    eventId,
+    req.tenant_id,
+    req.posDeviceId,
+    event.event_type,
+    event.aggregate_type,
+    event.aggregate_id,
+    aggregateVersion,
+    schemaVersion,
+    event.ordering_key || null,
+    payloadJson,
+    metadataJson,
+    event.created_at || null,
+  ];
   const client = await req.tenantPool.connect();
   try {
     await client.query('BEGIN');
@@ -37,14 +53,32 @@ router.post('/events', posSyncAuth, async (req, res, next) => {
        ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12)
        ON CONFLICT(event_id) DO NOTHING
        RETURNING event_id`,
-      [eventId, req.tenant_id, req.posDeviceId, event.event_type, event.aggregate_type, event.aggregate_id,
-       aggregateVersion, schemaVersion, event.ordering_key || null, JSON.stringify(event.payload ?? {}),
-       JSON.stringify(event.metadata ?? {}), event.created_at || null]
+      eventValues
     );
 
     if (insert.rowCount === 0) {
+      const existing = await client.query(
+        `SELECT (
+           tenant_id = $2 AND device_id = $3 AND event_type = $4 AND aggregate_type = $5 AND
+           aggregate_id = $6 AND aggregate_version = $7 AND schema_version = $8 AND
+           ordering_key IS NOT DISTINCT FROM $9 AND payload_json = $10::jsonb AND
+           metadata_json = $11::jsonb AND source_created_at IS NOT DISTINCT FROM $12::timestamptz
+         ) AS exact_match
+         FROM pos_sync_events
+         WHERE event_id = $1`,
+        eventValues
+      );
       await client.query('ROLLBACK');
-      return res.status(409).json({ code: 'SYNC_EVENT_ALREADY_RECEIVED', event_id: eventId });
+
+      if (existing.rows[0]?.exact_match === true) {
+        return res.status(409).json({ code: 'SYNC_EVENT_ALREADY_RECEIVED', event_id: eventId });
+      }
+
+      return res.status(409).json({
+        code: 'SYNC_EVENT_ID_COLLISION',
+        event_id: eventId,
+        message: 'event_id is already bound to a different sync event',
+      });
     }
 
     const projection = await processPosEvent(client, event);
