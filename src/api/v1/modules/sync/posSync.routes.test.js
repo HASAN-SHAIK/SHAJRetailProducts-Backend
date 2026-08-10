@@ -133,10 +133,14 @@ describe('POS central sync ingestion', () => {
     expect(client.release).toHaveBeenCalledTimes(1);
   });
 
-  test('returns conflict without re-projecting when the event id is replayed', async () => {
+  test('returns conflict without re-projecting when the exact event is replayed', async () => {
     const client = successfulClient();
     client.query.mockImplementation(async (sql) => {
-      if (String(sql).includes('INSERT INTO pos_sync_events')) return { rowCount: 0, rows: [] };
+      const statement = String(sql);
+      if (statement.includes('INSERT INTO pos_sync_events')) return { rowCount: 0, rows: [] };
+      if (statement.includes('FROM pos_sync_events') && statement.includes('exact_match')) {
+        return { rowCount: 1, rows: [{ exact_match: true }] };
+      }
       return { rowCount: 0, rows: [] };
     });
     mockTenantPool.connect.mockResolvedValue(client);
@@ -145,6 +149,31 @@ describe('POS central sync ingestion', () => {
 
     expect(response.status).toBe(409);
     expect(response.body.code).toBe('SYNC_EVENT_ALREADY_RECEIVED');
+    expect(response.body.event_id).toBe('evt-1');
+    expect(client.query).toHaveBeenCalledWith('ROLLBACK');
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO orders('))).toBe(false);
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO pos_sales'))).toBe(false);
+    expect(client.release).toHaveBeenCalledTimes(1);
+  });
+
+  test('fails closed when an event id is replayed with different durable facts', async () => {
+    const client = successfulClient();
+    client.query.mockImplementation(async (sql) => {
+      const statement = String(sql);
+      if (statement.includes('INSERT INTO pos_sync_events')) return { rowCount: 0, rows: [] };
+      if (statement.includes('FROM pos_sync_events') && statement.includes('exact_match')) {
+        return { rowCount: 1, rows: [{ exact_match: false }] };
+      }
+      return { rowCount: 0, rows: [] };
+    });
+    mockTenantPool.connect.mockResolvedValue(client);
+    const changed = JSON.parse(JSON.stringify(envelope));
+    changed.payload.order.total_minor = 9999;
+
+    const response = await request(buildApp()).post('/api/v1/sync/events').set(authHeaders).send(changed);
+
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({ code: 'SYNC_EVENT_ID_COLLISION', event_id: 'evt-1' });
     expect(client.query).toHaveBeenCalledWith('ROLLBACK');
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO orders('))).toBe(false);
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO pos_sales'))).toBe(false);
