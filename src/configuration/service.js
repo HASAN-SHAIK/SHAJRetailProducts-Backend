@@ -4,7 +4,7 @@ const { CATALOG, CATALOG_BY_KEY, publicCatalog } = require('./catalog');
 const { ensureConfigurationSchema } = require('./schema');
 const { buildNestedConfig, mergeLayers, validateSettingValue, errorWithStatus } = require('./validation');
 const { readLegacyTenantValues, readScopeLayer, readAudit } = require('./readRepository');
-const { upsertLegacySetting, writeGenericOverride, removeGenericOverride } = require('./writeRepository');
+const { upsertLegacySetting, recordAuditChange, writeGenericOverride, removeGenericOverride } = require('./writeRepository');
 const { getRequestPool, getTenantScopeId, resolveBranch, resolveDevice, resolveTarget } = require('./targets');
 
 const actorId = (req) => String(req?.user?.user_id || req?.user?.id || req?.posDeviceId || 'system');
@@ -120,13 +120,14 @@ const updateScopeConfiguration = async (req, scopeTypeInput, scopeIdInput, rawVa
     const value = validateSettingValue(key, rawValue);
 
     if (target.scopeType === 'tenant' && meta.legacy) {
-      await upsertLegacySetting(requestPool, meta, value);
-      revisions[key] = 'legacy';
+      const oldValue = await upsertLegacySetting(requestPool, meta, value);
+      revisions[key] = await recordAuditChange(requestPool, target, key, oldValue, value, changedBy);
       continue;
     }
     if (target.scopeType === 'tenant' && key === 'tax.gst_mode') {
+      const oldValue = String(req?.tenant?.gst_mode || meta.default).toUpperCase();
       await updateTenantGstMode(req, value);
-      revisions[key] = 'legacy';
+      revisions[key] = await recordAuditChange(requestPool, target, key, oldValue, value, changedBy);
       continue;
     }
     revisions[key] = await writeGenericOverride(requestPool, target, key, value, changedBy);
