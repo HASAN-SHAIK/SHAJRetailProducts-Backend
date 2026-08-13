@@ -19,6 +19,7 @@ const {
 const { importProducts, importProductsFromRows } = require('../controllers/productImport.controller');
 const { authMiddleware } = require('../middleware/authMiddleware');
 const isAdmin = require('../middleware/isAdmin');
+const hydrateProductWeight = require('../middleware/hydrateProductWeight');
 const multer = require('multer');
 
 const upload = multer({
@@ -26,13 +27,13 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 }
 });
 
-router.get('/', getProducts);
-router.get('/search', searchProductsForSale);
-router.get('/search/sale', searchProductsForSale);
+router.get('/', hydrateProductWeight, getProducts);
+router.get('/search', hydrateProductWeight, searchProductsForSale);
+router.get('/search/sale', hydrateProductWeight, searchProductsForSale);
 router.get('/search/purchase', searchProductsForPurchase);
 router.get('/cache', getProductsCache);
 router.get('/cache-db', getProductsCacheDB);
-router.get('/pos-lite', getProductsPosLite);
+router.get('/pos-lite', hydrateProductWeight, getProductsPosLite);
 router.get('/extra-details', getProductsExtraDetails);
 router.get('/barcode', getProductByBarcodeForSale);
 router.get('/barcode/:barcode', getProductByBarcodeForSale);
