@@ -1,8 +1,9 @@
-name: Effective configuration CI
+name: Retail control plane CI
 
 on:
   push:
     branches:
+      - main
       - agent/retail-settings-config
   pull_request:
     branches:
@@ -24,5 +25,7 @@ jobs:
       - run: npm install
       - name: Configuration unit tests
         run: npm test -- --runInBand tests/configuration.validation.test.js
-      - name: Load configuration modules
-        run: node -e "require('./src/configuration/catalog');require('./src/configuration/validation');require('./src/configuration/schema');require('./src/configuration/readRepository');require('./src/configuration/writeRepository');require('./src/configuration/targets');require('./src/configuration/service');require('./src/controllers/configurationController');require('./src/routes/configurationRoutes');require('./src/api/v1/modules/sync/posConfig.routes')"
+      - name: Tenant user management tests
+        run: npm test -- --runInBand tests/tenantUserController.test.js
+      - name: Load retail control plane modules
+        run: node -e "require('./src/configuration/catalog');require('./src/configuration/validation');require('./src/configuration/schema');require('./src/configuration/readRepository');require('./src/configuration/writeRepository');require('./src/configuration/targets');require('./src/configuration/service');require('./src/controllers/configurationController');require('./src/controllers/tenant/userController');require('./src/routes/configurationRoutes');require('./src/api/v1/modules/sync/posConfig.routes');require('./src/routes/tenant.routes')"
