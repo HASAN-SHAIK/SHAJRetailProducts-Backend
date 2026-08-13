@@ -1,0 +1,29 @@
+name: Effective configuration CI
+
+on:
+  push:
+    branches:
+      - agent/retail-settings-config
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm install
+      - name: Configuration unit tests
+        run: npm test -- --runInBand tests/configuration.validation.test.js
+      - name: Load configuration modules
+        run: node -e "require('./src/configuration/catalog');require('./src/configuration/validation');require('./src/configuration/schema');require('./src/configuration/readRepository');require('./src/configuration/writeRepository');require('./src/configuration/targets');require('./src/configuration/service');require('./src/controllers/configurationController');require('./src/routes/configurationRoutes');require('./src/api/v1/modules/sync/posConfig.routes')"
