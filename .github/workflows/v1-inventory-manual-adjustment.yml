@@ -7,6 +7,7 @@ on:
       - 'src/controllers/stockController.js'
       - 'src/routes/stockRoutes.js'
       - 'src/services/stockService.v1ManualAdjustmentAcceptance.test.js'
+      - 'src/services/stockService.v1BranchIsolationAcceptance.test.js'
       - '.github/workflows/v1-inventory-manual-adjustment.yml'
 
 jobs:
@@ -21,5 +22,5 @@ jobs:
           node-version: '20'
       - name: Install dependencies
         run: npm install --ignore-scripts --no-audit --no-fund
-      - name: Run manual inventory adjustment acceptance
-        run: npx jest src/services/stockService.v1ManualAdjustmentAcceptance.test.js --runInBand
+      - name: Run V1 inventory stock acceptance
+        run: npx jest src/services/stockService.v1ManualAdjustmentAcceptance.test.js src/services/stockService.v1BranchIsolationAcceptance.test.js --runInBand

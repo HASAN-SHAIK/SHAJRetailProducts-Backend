@@ -23,6 +23,7 @@ const getBranchStock = async (req, productIdRaw) => {
     throw buildValidationError('product_id is required.');
   }
 
+  const branchId = resolveBranchIdFromRequest(req);
   const result = await requestPool.query(
     `WITH batch_totals AS (
         SELECT branch_id, COALESCE(SUM(COALESCE(quantity_remaining, quantity)), 0)::numeric AS qty
@@ -38,8 +39,9 @@ const getBranchStock = async (req, productIdRaw) => {
      FROM branches b
      LEFT JOIN batch_totals bt ON bt.branch_id = b.id
      LEFT JOIN products p ON p.id = $1
+     WHERE ($2::uuid IS NULL OR b.id = $2::uuid)
      ORDER BY b.name ASC`,
-    [productId]
+    [productId, branchId]
   );
 
   return result.rows.map((row) => ({
