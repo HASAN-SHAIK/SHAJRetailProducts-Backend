@@ -1,0 +1,25 @@
+name: V1 inventory manual adjustment
+
+on:
+  pull_request:
+    paths:
+      - 'src/services/stockService.js'
+      - 'src/controllers/stockController.js'
+      - 'src/routes/stockRoutes.js'
+      - 'src/services/stockService.v1ManualAdjustmentAcceptance.test.js'
+      - '.github/workflows/v1-inventory-manual-adjustment.yml'
+
+jobs:
+  manual-adjustment-acceptance:
+    runs-on: ubuntu-latest
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Run manual inventory adjustment acceptance
+        run: npx jest src/services/stockService.v1ManualAdjustmentAcceptance.test.js --runInBand
