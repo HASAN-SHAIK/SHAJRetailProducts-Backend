@@ -1,4 +1,5 @@
 const productImportService = require('../services/productImport.service');
+const productImportRowsWeightedService = require('../services/productImportRowsWeighted.service');
 
 const importProducts = async (req, res) => {
   try {
@@ -14,7 +15,7 @@ const importProducts = async (req, res) => {
 const importProductsFromRows = async (req, res) => {
   try {
     const rows = req.body?.rows || [];
-    const summary = await productImportService.importProductsFromRows(req, rows);
+    const summary = await productImportRowsWeightedService.importProductsFromRows(req, rows);
     return res.status(200).json({ success: true, summary });
   } catch (error) {
     const status = error.status || 500;
