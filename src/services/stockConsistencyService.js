@@ -156,8 +156,12 @@ const runConsistencyForAllActiveTenants = async () => {
     const tenantPool = getTenantPool(tenant.database_name);
     const client = await tenantPool.connect();
     try {
+      // POS inventory movements currently update canonical product stock without
+      // a batch identity. Until batch-aware sale/return convergence is certified,
+      // scheduled consistency runs must diagnose product-vs-batch divergence but
+      // must not overwrite canonical product stock from stale batch totals.
       const result = await runConsistencyCheckForPool(client, {
-        autoHeal: true,
+        autoHeal: false,
         source: 'scheduled',
         runBy: `system:${tenant.id}`
       });
