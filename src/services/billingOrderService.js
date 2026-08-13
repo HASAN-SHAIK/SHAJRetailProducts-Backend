@@ -52,7 +52,7 @@ const createOrder = async (req, payload) => {
     await client.query('BEGIN');
 
     const productsRes = await client.query(
-      `SELECT id, hsn_code, gst_percentage
+      `SELECT id, hsn_code, gst_percentage, is_weight_based
        FROM products
        WHERE id = ANY($1::int[])
          AND is_deleted = FALSE
@@ -95,6 +95,9 @@ const createOrder = async (req, payload) => {
       const product = productsById.get(productId);
       if (!product) {
         throw buildValidationError(`Product ID ${productId} not found or deleted.`);
+      }
+      if (Number(product.is_weight_based) !== 1 && !Number.isInteger(qty)) {
+        throw buildValidationError('Non-integer quantity not allowed for piece based items');
       }
 
       let resolvedGstPercentage = 0;
