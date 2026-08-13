@@ -1,23 +1,23 @@
 jest.mock('../db', () => ({ connect: jest.fn(), query: jest.fn() }));
 
-const masterQuery = jest.fn();
-const connect = jest.fn();
+const mockMasterQuery = jest.fn();
+const mockConnect = jest.fn();
 
-jest.mock('../db/masterPool', () => ({ query: (...args) => masterQuery(...args) }));
+jest.mock('../db/masterPool', () => ({ query: (...args) => mockMasterQuery(...args) }));
 jest.mock('../db/tenantPool', () => ({
-  getTenantPool: jest.fn(() => ({ connect: (...args) => connect(...args) }))
+  getTenantPool: jest.fn(() => ({ connect: (...args) => mockConnect(...args) }))
 }));
 
 const { runConsistencyForAllActiveTenants, runConsistencyCheckForPool } = require('./stockConsistencyService');
 
 describe('V1 scheduled batch reconciliation safety acceptance', () => {
   beforeEach(() => {
-    masterQuery.mockReset();
-    connect.mockReset();
+    mockMasterQuery.mockReset();
+    mockConnect.mockReset();
   });
 
   test('scheduled consistency diagnoses product-vs-batch divergence without restoring product stock', async () => {
-    masterQuery.mockResolvedValue({
+    mockMasterQuery.mockResolvedValue({
       rowCount: 1,
       rows: [{ id: 'tenant-1', database_name: 'tenant_1' }]
     });
@@ -37,7 +37,7 @@ describe('V1 scheduled batch reconciliation safety acceptance', () => {
         .mockResolvedValueOnce({ rowCount: 1 })
         .mockResolvedValueOnce({ rowCount: 1 })
     };
-    connect.mockResolvedValue(client);
+    mockConnect.mockResolvedValue(client);
 
     const summary = await runConsistencyForAllActiveTenants();
 
