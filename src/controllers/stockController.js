@@ -11,4 +11,14 @@ const getStockByBranch = async (req, res) => {
   }
 };
 
-module.exports = { getStockByBranch };
+const adjustStock = async (req, res) => {
+  try {
+    const adjustment = await stockService.adjustStock(req, req.body || {});
+    return res.status(200).json({ success: true, adjustment });
+  } catch (error) {
+    const status = error.status || 500;
+    return res.status(status).json({ success: false, error: error.message || 'Internal Server Error' });
+  }
+};
+
+module.exports = { getStockByBranch, adjustStock };
