@@ -1,4 +1,4 @@
-name: V1 inventory manual adjustment
+name: V1 inventory stock acceptance
 
 on:
   pull_request:
@@ -8,10 +8,12 @@ on:
       - 'src/routes/stockRoutes.js'
       - 'src/services/stockService.v1ManualAdjustmentAcceptance.test.js'
       - 'src/services/stockService.v1BranchIsolationAcceptance.test.js'
+      - 'src/services/stockConsistencyService.js'
+      - 'src/services/stockConsistencyService.v1ScheduledSafetyAcceptance.test.js'
       - '.github/workflows/v1-inventory-manual-adjustment.yml'
 
 jobs:
-  manual-adjustment-acceptance:
+  inventory-stock-acceptance:
     runs-on: ubuntu-latest
     env:
       PUPPETEER_SKIP_DOWNLOAD: 'true'
@@ -23,4 +25,9 @@ jobs:
       - name: Install dependencies
         run: npm install --ignore-scripts --no-audit --no-fund
       - name: Run V1 inventory stock acceptance
-        run: npx jest src/services/stockService.v1ManualAdjustmentAcceptance.test.js src/services/stockService.v1BranchIsolationAcceptance.test.js --runInBand
+        run: >-
+          npx jest
+          src/services/stockService.v1ManualAdjustmentAcceptance.test.js
+          src/services/stockService.v1BranchIsolationAcceptance.test.js
+          src/services/stockConsistencyService.v1ScheduledSafetyAcceptance.test.js
+          --runInBand
