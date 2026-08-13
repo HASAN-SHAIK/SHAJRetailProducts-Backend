@@ -43,7 +43,7 @@ const { getLocationSummaryController } = require('../controllers/tenant/location
 const { getLocationsList } = require('../controllers/tenant/locationListController');
 const customerRoutes = require('../modules/customers/routes');
 const supplierRoutes = require('../modules/suppliers/routes');
-const { updateUserRole } = require('../controllers/tenant/userController');
+const { listUsers, createUser, updateUserRole, updateUserAccess } = require('../controllers/tenant/userController');
 const {
   getSupportCases,
   getSupportCase,
@@ -108,6 +108,9 @@ router.post('/support/cases', createSupportCase);
 router.get('/support/category', getSupportCategories);
 router.use('/customers', customerRoutes);
 router.use('/suppliers', supplierRoutes);
+router.get('/users', isAdmin, listUsers);
+router.post('/users', isAdmin, createUser);
 router.patch('/users/:id/role', isAdmin, updateUserRole);
+router.patch('/users/:id/access', isAdmin, updateUserAccess);
 
 module.exports = router;
