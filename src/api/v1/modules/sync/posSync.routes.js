@@ -2,8 +2,11 @@ const express = require('express');
 const { posSyncAuth } = require('./posSyncAuth');
 const { processPosEvent } = require('./posEvent.processor');
 const { getPosChanges } = require('../../../../services/posSyncGateway');
+const posConfigRoutes = require('./posConfig.routes');
 
 const router = express.Router();
+
+router.use('/config', posConfigRoutes);
 
 router.post('/events', posSyncAuth, async (req, res, next) => {
   const body = req.body || {};
