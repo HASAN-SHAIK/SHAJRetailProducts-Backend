@@ -12,6 +12,19 @@ const attachGst = (product) => {
 };
 
 const attachGstList = (products) => Array.isArray(products) ? products.map(attachGst) : products;
+const normalizeProductTypeFlag = (value, fallback = false) => {
+    if (value === null || value === undefined || value === '') return fallback;
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') return value !== 0;
+    const normalized = String(value).trim().toLowerCase();
+    if (['1', 'true', 'yes', 'y', 'weight', 'weighted', 'weight based', 'weight-based'].includes(normalized)) {
+        return true;
+    }
+    if (['0', 'false', 'no', 'n', 'piece', 'pieces', 'piece based', 'piece-based'].includes(normalized)) {
+        return false;
+    }
+    return fallback;
+};
 const fetchFullProductForCache = async (requestPool, id) => {
     if (!id) return null;
     const barcodeSelect = (await hasBarcodeColumn(requestPool))
@@ -577,7 +590,7 @@ const updateProduct = async (req, res) => {
             selling_price ?? product.selling_price,
             purchase_price ?? product.purchase_price,
             stock_quantity ?? product.stock_quantity,
-            is_weight_based ?? product.is_weight_based ?? 0
+            normalizeProductTypeFlag(is_weight_based, product.is_weight_based ?? false)
         ];
         if (hsn_code) {
             updateFields.push(`hsn_code = $${updateValues.length + 1}`);
@@ -1496,6 +1509,9 @@ async function bulkUpdateProducts(req, res) {
                     throw new Error('stock_quantity must be >= 0');
                 }
                 addField('stock_quantity', stockQuantity);
+            }
+            if (item.hasOwnProperty('is_weight_based')) {
+                addField('is_weight_based', normalizeProductTypeFlag(item.is_weight_based, false));
             }
 
             if (fields.length === 0) {
