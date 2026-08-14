@@ -115,7 +115,7 @@ const categoryIdentity = (value) => {
   return name ? { id: encodeURIComponent(name), name } : null;
 };
 
-const loadChangeRecords = async (pool, cursor, fetchLimit) => {
+const loadChangeRecords = async (pool, cursor, fetchLimit, branchId = null) => {
   const since = new Date(cursor.t);
   if (Number.isNaN(since.getTime())) throw Object.assign(new Error('Invalid cursor timestamp.'), { code: 'INVALID_CURSOR' });
 
@@ -126,8 +126,9 @@ const loadChangeRecords = async (pool, cursor, fetchLimit) => {
               COALESCE(updated_at, created_at, NOW()) AS updated_at
        FROM products
        WHERE COALESCE(updated_at, created_at, NOW()) >= $1
+         AND ($3::text IS NULL OR branch_id IS NULL OR branch_id::text = $3)
        ORDER BY COALESCE(updated_at, created_at, NOW()), id
-       LIMIT $2`, [since, fetchLimit]
+       LIMIT $2`, [since, fetchLimit, branchId]
     ),
     pool.query(
       `SELECT id, name, COALESCE(phone, mobile) AS phone,
@@ -150,14 +151,16 @@ const loadChangeRecords = async (pool, cursor, fetchLimit) => {
     .sort((a, b) => recordKey(a).localeCompare(recordKey(b)));
 };
 
-const loadCategorySnapshot = async (pool) => {
+const loadCategorySnapshot = async (pool, branchId = null) => {
   const result = await pool.query(
     `SELECT TRIM(category) AS name
      FROM products
      WHERE COALESCE(is_deleted, FALSE) = FALSE
        AND category IS NOT NULL AND TRIM(category) <> ''
+       AND ($1::text IS NULL OR branch_id IS NULL OR branch_id::text = $1)
      GROUP BY TRIM(category)
-     ORDER BY name ASC`
+     ORDER BY name ASC`,
+    [branchId]
   );
   return result.rows.map((row) => categoryIdentity(row.name)).filter(Boolean);
 };
@@ -224,15 +227,15 @@ const customerMessages = (row) => {
   }];
 };
 
-const getPosChanges = async ({ tenantPool, cursorValue, limit = 100 }) => {
+const getPosChanges = async ({ tenantPool, cursorValue, limit = 100, branchId = null }) => {
   const cursor = decodeCursor(cursorValue);
   const entityLimit = Math.max(1, Math.min(Number(limit) || 100, 100));
-  const records = await loadChangeRecords(tenantPool, cursor, Math.max(entityLimit * 3, 100));
+  const records = await loadChangeRecords(tenantPool, cursor, Math.max(entityLimit * 3, 100), branchId);
   const selected = records.slice(0, entityLimit);
   const changes = selected.flatMap((record) => record.source === 'product' ? productMessages(record) : customerMessages(record));
   const selectedProducts = selected.filter((record) => record.source === 'product');
   if (selectedProducts.length > 0) {
-    const categories = await loadCategorySnapshot(tenantPool);
+    const categories = await loadCategorySnapshot(tenantPool, branchId);
     const trigger = selectedProducts[selectedProducts.length - 1];
     changes.push(categorySnapshotMessage(categories, trigger));
   }
