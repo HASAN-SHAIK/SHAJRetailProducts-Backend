@@ -6,6 +6,11 @@ const { normalizePrivateKeyPem } = require('../utils/pem');
 
 const getOfflineGrantPrivateKey = () => normalizePrivateKeyPem(process.env.POS_OFFLINE_GRANT_PRIVATE_KEY);
 
+const normalizeClaimId = (value) => {
+  if (value === null || value === undefined || value === '') return null;
+  return String(value).trim() || null;
+};
+
 const issueOfflineGrant = async (req, res) => {
   try {
     if (!req.user) {
@@ -22,8 +27,9 @@ const issueOfflineGrant = async (req, res) => {
       return jsonError(res, 400, 'POS_DEVICE_REQUIRED', 'device_id is required for offline POS authorization');
     }
 
-    const userId = req.user.user_id || req.user.id;
-    const tenantId = req.user.tenant_id;
+    const userId = normalizeClaimId(req.user.user_id || req.user.id);
+    const tenantId = normalizeClaimId(req.user.tenant_id);
+    const branchId = normalizeClaimId(req.user.branch_id);
     const role = String(req.user.role || '').toLowerCase();
     if (!userId || !tenantId || !role) {
       return jsonError(res, 401, 'UNAUTHORIZED', 'Authenticated user context is incomplete');
@@ -38,7 +44,7 @@ const issueOfflineGrant = async (req, res) => {
         tenant_id: tenantId,
         role,
         device_id: deviceId,
-        branch_id: req.user.branch_id || null,
+        branch_id: branchId,
         all_branch_access: req.user.all_branch_access !== false,
         permissions,
         store_permissions: storePermissions,
