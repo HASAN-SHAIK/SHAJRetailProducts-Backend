@@ -1,6 +1,7 @@
 const express = require('express');
 const { posSyncAuth } = require('./posSyncAuth');
 const { processPosEvent } = require('./posEvent.processor');
+const { resolvePosInventoryDeviceContext } = require('./posInventoryDeviceContext');
 const { getPosChanges } = require('../../../../services/posSyncGateway');
 const posConfigRoutes = require('./posConfig.routes');
 
@@ -84,12 +85,19 @@ router.post('/events', posSyncAuth, async (req, res, next) => {
       });
     }
 
-    const projection = await processPosEvent(client, event);
+    const projectionContext = {};
+    if (event.event_type === 'inventory.movement.recorded') {
+      projectionContext.inventoryDevice = await resolvePosInventoryDeviceContext(client, req.posDeviceId);
+    }
+    const projection = await processPosEvent(client, event, projectionContext);
     await client.query('UPDATE pos_sync_events SET processed_at=NOW() WHERE event_id=$1', [eventId]);
     await client.query('COMMIT');
     return res.status(202).json({ status: 'accepted', event_id: eventId, projection });
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
+    if (error.code === 'POS_SYNC_DEVICE_NOT_REGISTERED') {
+      return res.status(403).json({ code: error.code, message: error.message });
+    }
     if (['INVALID_SALE_COMPLETED_PAYLOAD', 'INVALID_SALE_RETURNED_PAYLOAD', 'INVALID_SALE_PARTIAL_RETURNED_PAYLOAD', 'INVALID_PAYMENT_RECORDED_PAYLOAD', 'INVALID_INVENTORY_MOVEMENT_PAYLOAD', 'INVALID_RECEIPT_ISSUED_PAYLOAD', 'INVALID_CUSTOMER_CHANGED_PAYLOAD'].includes(error.code)) {
       return res.status(400).json({ code: error.code, message: error.message });
     }
