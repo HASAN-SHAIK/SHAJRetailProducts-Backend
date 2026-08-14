@@ -51,7 +51,7 @@ const applySaleIssue = async (client, movement, branchId) => {
     const quantityMilli = Math.min(availableMilli, remainingMilli);
     await client.query(
       `UPDATE batches
-       SET quantity_remaining=COALESCE(quantity_remaining,quantity) - ($1::numeric / 1000.0),
+       SET quantity_remaining=ROUND(COALESCE(quantity_remaining,quantity) - ($1::numeric / 1000.0), 3),
            updated_at=NOW()
        WHERE id=$2 AND product_id=$3 AND branch_id=$4`,
       [quantityMilli, batch.id, movement.productId, branchId]
@@ -107,7 +107,7 @@ const applySaleReturn = async (client, movement, branchId) => {
     if (allocation.allocation_kind === 'batch') {
       const restored = await client.query(
         `UPDATE batches
-         SET quantity_remaining=COALESCE(quantity_remaining,quantity) + ($1::numeric / 1000.0),
+         SET quantity_remaining=ROUND(COALESCE(quantity_remaining,quantity) + ($1::numeric / 1000.0), 3),
              updated_at=NOW()
          WHERE id=$2 AND product_id=$3 AND branch_id=$4 AND is_deleted=FALSE
          RETURNING id`,
