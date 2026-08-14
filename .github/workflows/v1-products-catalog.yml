@@ -5,6 +5,9 @@ on:
     paths:
       - 'src/services/posSyncGateway.js'
       - 'src/services/posSyncGateway.v1CatalogAcceptance.test.js'
+      - 'src/api/v1/modules/sync/posSync.routes.js'
+      - 'src/api/v1/modules/sync/posCatalogDeviceContext.js'
+      - 'src/api/v1/modules/sync/posCatalogDeviceContext.test.js'
       - '.github/workflows/v1-products-catalog.yml'
   workflow_dispatch:
 
@@ -21,4 +24,4 @@ jobs:
       - name: Install dependencies
         run: npm install --ignore-scripts --no-audit --no-fund
       - name: Run V1 Products/Catalog acceptance
-        run: npx jest src/services/posSyncGateway.v1CatalogAcceptance.test.js --runInBand
+        run: npx jest src/services/posSyncGateway.v1CatalogAcceptance.test.js src/api/v1/modules/sync/posCatalogDeviceContext.test.js --runInBand
