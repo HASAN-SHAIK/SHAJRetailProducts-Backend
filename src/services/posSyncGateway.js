@@ -110,6 +110,10 @@ const decodeCursor = (value) => {
 const iso = (value) => new Date(value || 0).toISOString();
 const versionFrom = (value) => Math.max(1, Math.floor(new Date(value || Date.now()).getTime()));
 const recordKey = (record) => `${iso(record.updated_at)}|${record.source}|${String(record.id)}`;
+const categoryIdentity = (value) => {
+  const name = String(value || '').trim();
+  return name ? { id: encodeURIComponent(name), name } : null;
+};
 
 const loadChangeRecords = async (pool, cursor, fetchLimit) => {
   const since = new Date(cursor.t);
@@ -146,19 +150,50 @@ const loadChangeRecords = async (pool, cursor, fetchLimit) => {
     .sort((a, b) => recordKey(a).localeCompare(recordKey(b)));
 };
 
-const productMessages = (row) => {
+const loadCategorySnapshot = async (pool, branchId = null) => {
+  const result = await pool.query(
+    `SELECT TRIM(category) AS name
+     FROM products
+     WHERE COALESCE(is_deleted, FALSE) = FALSE
+       AND category IS NOT NULL AND TRIM(category) <> ''
+       AND ($1::text IS NULL OR branch_id IS NULL OR branch_id::text = $1)
+     GROUP BY TRIM(category)
+     ORDER BY name ASC`,
+    [branchId]
+  );
+  return result.rows.map((row) => categoryIdentity(row.name)).filter(Boolean);
+};
+
+const productMessages = (row, branchId = null) => {
   const updatedAt = iso(row.updated_at);
   const version = versionFrom(row.updated_at);
   const prefix = `product:${row.id}:${updatedAt}`;
-  const messages = [{
+  const appliesToBranch = !branchId || !row.branch_id || String(row.branch_id) === String(branchId);
+  if (!appliesToBranch) {
+    return [{
+      id: `${prefix}:remove`, type: 'catalog.product.remove', schema_version: 1, source: 'central',
+      payload: { id: String(row.id), version, source_updated_at: updatedAt },
+    }];
+  }
+
+  const category = categoryIdentity(row.category);
+  const messages = [];
+  if (category) messages.push({
+    id: `${prefix}:category`, type: 'catalog.category.upsert', schema_version: 1, source: 'central',
+    payload: {
+      id: category.id, parent_id: null, name: category.name, code: null,
+      sort_order: 0, is_active: true, version, source_updated_at: updatedAt,
+    },
+  });
+  messages.push({
     id: `${prefix}:product`, type: 'catalog.product.upsert', schema_version: 1, source: 'central',
     payload: {
-      id: String(row.id), category_id: null, sku: null, name: row.name,
+      id: String(row.id), category_id: category?.id || null, sku: null, name: row.name,
       description: null, unit_of_measure: 'unit', tax_code: null,
       is_active: !row.is_deleted, allow_manual_price: true, track_inventory: true,
       version, source_updated_at: updatedAt,
     },
-  }];
+  });
   if (row.barcode) messages.push({
     id: `${prefix}:barcode`, type: 'catalog.barcode.upsert', schema_version: 1, source: 'central',
     payload: { barcode: String(row.barcode), product_id: String(row.id), barcode_type: 'EAN', is_primary: true },
@@ -176,6 +211,16 @@ const productMessages = (row) => {
   return messages;
 };
 
+const categorySnapshotMessage = (categories, trigger) => {
+  const updatedAt = iso(trigger.updated_at);
+  const version = versionFrom(trigger.updated_at);
+  return {
+    id: `catalog-categories:${Buffer.from(recordKey(trigger), 'utf8').toString('base64url')}`,
+    type: 'catalog.categories.snapshot', schema_version: 1, source: 'central',
+    payload: { categories, version, source_updated_at: updatedAt },
+  };
+};
+
 const customerMessages = (row) => {
   const updatedAt = iso(row.updated_at);
   return [{
@@ -189,12 +234,18 @@ const customerMessages = (row) => {
   }];
 };
 
-const getPosChanges = async ({ tenantPool, cursorValue, limit = 100 }) => {
+const getPosChanges = async ({ tenantPool, cursorValue, limit = 100, branchId = null }) => {
   const cursor = decodeCursor(cursorValue);
   const entityLimit = Math.max(1, Math.min(Number(limit) || 100, 100));
   const records = await loadChangeRecords(tenantPool, cursor, Math.max(entityLimit * 3, 100));
   const selected = records.slice(0, entityLimit);
-  const changes = selected.flatMap((record) => record.source === 'product' ? productMessages(record) : customerMessages(record));
+  const changes = selected.flatMap((record) => record.source === 'product' ? productMessages(record, branchId) : customerMessages(record));
+  const selectedProducts = selected.filter((record) => record.source === 'product');
+  if (selectedProducts.length > 0) {
+    const categories = await loadCategorySnapshot(tenantPool, branchId);
+    const trigger = selectedProducts[selectedProducts.length - 1];
+    changes.push(categorySnapshotMessage(categories, trigger));
+  }
   const last = selected[selected.length - 1];
   const nextCursor = last ? encodeCursor({ t: iso(last.updated_at), k: recordKey(last) }) : (cursorValue || encodeCursor(cursor));
   return { cursor: nextCursor, has_more: records.length > selected.length, changes };

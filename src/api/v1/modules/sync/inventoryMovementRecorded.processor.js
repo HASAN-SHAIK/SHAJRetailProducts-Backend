@@ -1,3 +1,5 @@
+const { applyPosInventoryBatchMovement } = require('./posInventoryBatchAllocator');
+
 const invalid = (message) => {
   const error = new Error(message);
   error.code = 'INVALID_INVENTORY_MOVEMENT_PAYLOAD';
@@ -34,6 +36,25 @@ const timestampMillis = (value) => {
   return Number.isFinite(millis) ? millis : NaN;
 };
 
+const stockAuditReason = (movementType) => {
+  if (movementType === 'sale_issue') return 'sale';
+  if (movementType === 'sale_return') return 'refund';
+  return movementType;
+};
+
+const setPosInventoryStockAuditContext = async (client, movement, inventoryDevice) => {
+  await client.query(
+    `SELECT
+       set_config('app.actor_user_id', '', true),
+       set_config('app.actor_role', 'pos_device', true),
+       set_config('app.actor_name', $1, true),
+       set_config('app.stock_reason', $2, true),
+       set_config('app.stock_source', 'pos_sync', true),
+       set_config('app.stock_reference', $3, true)`,
+    [String(inventoryDevice?.deviceId || ''), stockAuditReason(movement.movementType), movement.movementId]
+  );
+};
+
 const sameExistingMovement = (row, movement) =>
   String(row.order_id) === movement.orderId &&
   String(row.store_id) === movement.storeId &&
@@ -46,7 +67,7 @@ const sameExistingMovement = (row, movement) =>
   Number(row.balance_after_milli) === movement.balanceAfterMilli &&
   timestampMillis(row.occurred_at) === timestampMillis(movement.occurredAt);
 
-const processInventoryMovementRecorded = async (client, event) => {
+const processInventoryMovementRecorded = async (client, event, inventoryDevice = null) => {
   if (event.schema_version !== 1) throw invalid('unsupported inventory.movement.recorded schema_version');
   const payload = event.payload;
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw invalid('payload must be an object');
@@ -95,7 +116,8 @@ const processInventoryMovementRecorded = async (client, event) => {
 
   const existing = await client.query(
     `SELECT movement_id,order_id,store_id,product_id,movement_type,quantity_delta_milli,
-            reference_type,reference_id,order_item_id,balance_after_milli,occurred_at,canonical_applied_at
+            reference_type,reference_id,order_item_id,balance_after_milli,occurred_at,canonical_applied_at,
+            canonical_device_id,canonical_branch_id
      FROM pos_inventory_movements
      WHERE movement_id=$1
      FOR UPDATE`,
@@ -121,13 +143,20 @@ const processInventoryMovementRecorded = async (client, event) => {
   if (!productId) {
     throw canonicalFailure(`POS product ${movement.productId} cannot be resolved to a canonical Central product`);
   }
+  if (!inventoryDevice?.deviceId || !inventoryDevice?.branchId) {
+    throw canonicalFailure('trusted POS device and branch context are required for canonical inventory projection');
+  }
+
+  const batch = await applyPosInventoryBatchMovement(client, { ...movement, productId }, inventoryDevice);
 
   const claimed = await client.query(
     `UPDATE pos_inventory_movements
-     SET canonical_applied_at=NOW()
+     SET canonical_applied_at=NOW(),
+         canonical_device_id=$2,
+         canonical_branch_id=$3
      WHERE movement_id=$1 AND canonical_applied_at IS NULL
      RETURNING movement_id`,
-    [movement.movementId]
+    [movement.movementId, String(inventoryDevice.deviceId), inventoryDevice.branchId]
   );
   if (claimed.rowCount === 0) {
     return {
@@ -138,6 +167,8 @@ const processInventoryMovementRecorded = async (client, event) => {
       already_applied: true,
     };
   }
+
+  await setPosInventoryStockAuditContext(client, movement, inventoryDevice);
 
   const stock = await client.query(
     `UPDATE products
@@ -157,6 +188,7 @@ const processInventoryMovementRecorded = async (client, event) => {
     product_id: movement.productId,
     canonical_applied: true,
     canonical_stock_quantity: stock.rows[0].stock_quantity,
+    batch,
   };
 };
 

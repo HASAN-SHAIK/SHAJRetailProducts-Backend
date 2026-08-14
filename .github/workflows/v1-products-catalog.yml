@@ -1,0 +1,33 @@
+name: V1 products catalog acceptance
+
+on:
+  pull_request:
+    paths:
+      - 'src/services/posSyncGateway.js'
+      - 'src/services/posSyncGateway.v1CatalogAcceptance.test.js'
+      - 'src/services/productImport.service.js'
+      - 'src/services/productImport.v1CatalogAcceptance.test.js'
+      - 'src/api/v1/modules/products/product.service.js'
+      - 'src/api/v1/modules/products/product.repository.js'
+      - 'src/api/v1/modules/products/product.routes.js'
+      - 'src/api/v1/modules/products/product.v1CrudAcceptance.test.js'
+      - 'src/api/v1/modules/sync/posSync.routes.js'
+      - 'src/api/v1/modules/sync/posCatalogDeviceContext.js'
+      - 'src/api/v1/modules/sync/posCatalogDeviceContext.test.js'
+      - '.github/workflows/v1-products-catalog.yml'
+  workflow_dispatch:
+
+jobs:
+  catalog-change-feed:
+    runs-on: ubuntu-latest
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Run V1 Products/Catalog acceptance
+        run: npx jest src/services/posSyncGateway.v1CatalogAcceptance.test.js src/services/productImport.v1CatalogAcceptance.test.js src/api/v1/modules/products/product.v1CrudAcceptance.test.js src/api/v1/modules/sync/posCatalogDeviceContext.test.js --runInBand

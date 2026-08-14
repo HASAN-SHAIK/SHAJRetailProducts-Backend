@@ -6,7 +6,7 @@ const { processInventoryMovementRecorded } = require('./inventoryMovementRecorde
 const { processReceiptIssued } = require('./receiptIssued.processor');
 const { processCustomerChanged } = require('./customerChanged.processor');
 
-const processPosEvent = async (client, event) => {
+const processPosEvent = async (client, event, context = {}) => {
   switch (event.event_type) {
     case 'sale.completed':
       if (event.schema_version !== 1) {
@@ -22,7 +22,7 @@ const processPosEvent = async (client, event) => {
     case 'payment.recorded':
       return processPaymentRecorded(client, event);
     case 'inventory.movement.recorded':
-      return processInventoryMovementRecorded(client, event);
+      return processInventoryMovementRecorded(client, event, context.inventoryDevice || null);
     case 'receipt.issued':
       return processReceiptIssued(client, event);
     case 'customer.changed':
