@@ -36,6 +36,7 @@ const {
   updateSupportCasePriority,
   replySupportCaseAdmin
 } = require('../controllers/platformSupportController');
+const { getInventoryReconciliationAdmin } = require('../controllers/inventoryReconciliationController');
 
 const router = express.Router();
 
@@ -72,5 +73,6 @@ router.patch('/support/cases/:id/status', updateSupportCaseStatus);
 router.patch('/support/cases/:id/assign', updateSupportCaseAssignee);
 router.patch('/support/cases/:id/priority', updateSupportCasePriority);
 router.post('/support/cases/:id/reply', replySupportCaseAdmin);
+router.get('/support/inventory-reconciliation', getInventoryReconciliationAdmin);
 
 module.exports = router;
