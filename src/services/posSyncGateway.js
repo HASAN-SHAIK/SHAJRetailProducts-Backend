@@ -122,6 +122,7 @@ const loadChangeRecords = async (pool, cursor, fetchLimit) => {
   const [products, customers] = await Promise.all([
     pool.query(
       `SELECT id, name, barcode, selling_price, category, stock_quantity, branch_id,
+              hsn_code, gst_percentage,
               COALESCE(is_deleted, FALSE) AS is_deleted,
               COALESCE(updated_at, created_at, NOW()) AS updated_at
        FROM products
@@ -189,7 +190,8 @@ const productMessages = (row, branchId = null) => {
     id: `${prefix}:product`, type: 'catalog.product.upsert', schema_version: 1, source: 'central',
     payload: {
       id: String(row.id), category_id: category?.id || null, sku: null, name: row.name,
-      description: null, unit_of_measure: 'unit', tax_code: null,
+      description: null, unit_of_measure: 'unit', tax_code: row.hsn_code || null,
+      gst_rate_percent: row.gst_percentage === null || row.gst_percentage === undefined ? null : Number(row.gst_percentage),
       is_active: !row.is_deleted, allow_manual_price: true, track_inventory: true,
       version, source_updated_at: updatedAt,
     },
