@@ -68,8 +68,8 @@ describe('V1 Products/Catalog change-feed acceptance', () => {
       version: new Date('2026-08-14T06:30:00.000Z').getTime(),
     });
 
-    expect(tenantPool.query.mock.calls[0][0]).toContain('branch_id IS NULL OR branch_id::text = $3');
-    expect(tenantPool.query.mock.calls[0][1][2]).toBe('branch-1');
+    expect(tenantPool.query.mock.calls[0][0]).not.toContain('branch_id IS NULL OR branch_id::text = $3');
+    expect(tenantPool.query.mock.calls[0][1]).toHaveLength(2);
     expect(tenantPool.query.mock.calls[2][0]).toContain('branch_id IS NULL OR branch_id::text = $1');
     expect(tenantPool.query.mock.calls[2][1]).toEqual(['branch-1']);
   });
@@ -92,6 +92,31 @@ describe('V1 Products/Catalog change-feed acceptance', () => {
       type: 'catalog.categories.snapshot',
       payload: { categories: [] },
     });
+  });
+
+  test('emits only an ID/version removal tombstone when a changed product no longer applies to the trusted branch', async () => {
+    const movedAt = new Date('2026-08-14T06:32:00.000Z');
+    const tenantPool = poolFor([
+      product({ branch_id: 'branch-2', name: 'Secret Branch Product', barcode: '9999999999999', selling_price: '99.99', updated_at: movedAt }),
+    ], ['Fresh Produce & Dairy']);
+
+    const result = await getPosChanges({ tenantPool, limit: 10, branchId: 'branch-1' });
+
+    expect(result.changes[0]).toEqual({
+      id: `product:101:${movedAt.toISOString()}:remove`,
+      type: 'catalog.product.remove',
+      schema_version: 1,
+      source: 'central',
+      payload: {
+        id: '101',
+        version: movedAt.getTime(),
+        source_updated_at: movedAt.toISOString(),
+      },
+    });
+    expect(JSON.stringify(result.changes[0])).not.toContain('Secret Branch Product');
+    expect(JSON.stringify(result.changes[0])).not.toContain('9999999999999');
+    expect(JSON.stringify(result.changes[0])).not.toContain('99.99');
+    expect(result.changes[1].type).toBe('catalog.categories.snapshot');
   });
 
   test('snapshot reflects the current global and trusted-branch category set', async () => {
