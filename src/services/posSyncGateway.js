@@ -110,6 +110,10 @@ const decodeCursor = (value) => {
 const iso = (value) => new Date(value || 0).toISOString();
 const versionFrom = (value) => Math.max(1, Math.floor(new Date(value || Date.now()).getTime()));
 const recordKey = (record) => `${iso(record.updated_at)}|${record.source}|${String(record.id)}`;
+const categoryIdentity = (value) => {
+  const name = String(value || '').trim();
+  return name ? { id: encodeURIComponent(name), name } : null;
+};
 
 const loadChangeRecords = async (pool, cursor, fetchLimit) => {
   const since = new Date(cursor.t);
@@ -150,15 +154,24 @@ const productMessages = (row) => {
   const updatedAt = iso(row.updated_at);
   const version = versionFrom(row.updated_at);
   const prefix = `product:${row.id}:${updatedAt}`;
-  const messages = [{
+  const category = categoryIdentity(row.category);
+  const messages = [];
+  if (category) messages.push({
+    id: `${prefix}:category`, type: 'catalog.category.upsert', schema_version: 1, source: 'central',
+    payload: {
+      id: category.id, parent_id: null, name: category.name, code: null,
+      sort_order: 0, is_active: true, version, source_updated_at: updatedAt,
+    },
+  });
+  messages.push({
     id: `${prefix}:product`, type: 'catalog.product.upsert', schema_version: 1, source: 'central',
     payload: {
-      id: String(row.id), category_id: null, sku: null, name: row.name,
+      id: String(row.id), category_id: category?.id || null, sku: null, name: row.name,
       description: null, unit_of_measure: 'unit', tax_code: null,
       is_active: !row.is_deleted, allow_manual_price: true, track_inventory: true,
       version, source_updated_at: updatedAt,
     },
-  }];
+  });
   if (row.barcode) messages.push({
     id: `${prefix}:barcode`, type: 'catalog.barcode.upsert', schema_version: 1, source: 'central',
     payload: { barcode: String(row.barcode), product_id: String(row.id), barcode_type: 'EAN', is_primary: true },
