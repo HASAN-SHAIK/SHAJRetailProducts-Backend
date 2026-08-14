@@ -36,6 +36,25 @@ const timestampMillis = (value) => {
   return Number.isFinite(millis) ? millis : NaN;
 };
 
+const stockAuditReason = (movementType) => {
+  if (movementType === 'sale_issue') return 'sale';
+  if (movementType === 'sale_return') return 'refund';
+  return movementType;
+};
+
+const setPosInventoryStockAuditContext = async (client, movement, inventoryDevice) => {
+  await client.query(
+    `SELECT
+       set_config('app.actor_user_id', '', true),
+       set_config('app.actor_role', 'pos_device', true),
+       set_config('app.actor_name', $1, true),
+       set_config('app.stock_reason', $2, true),
+       set_config('app.stock_source', 'pos_sync', true),
+       set_config('app.stock_reference', $3, true)`,
+    [String(inventoryDevice?.deviceId || ''), stockAuditReason(movement.movementType), movement.movementId]
+  );
+};
+
 const sameExistingMovement = (row, movement) =>
   String(row.order_id) === movement.orderId &&
   String(row.store_id) === movement.storeId &&
@@ -142,6 +161,8 @@ const processInventoryMovementRecorded = async (client, event, inventoryDevice =
       already_applied: true,
     };
   }
+
+  await setPosInventoryStockAuditContext(client, movement, inventoryDevice);
 
   const stock = await client.query(
     `UPDATE products
