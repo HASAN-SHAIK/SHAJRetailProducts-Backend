@@ -37,10 +37,6 @@ router.post('/events', posSyncAuth, async (req, res, next) => {
   const client = await req.tenantPool.connect();
   try {
     await client.query('BEGIN');
-    const projectionContext = {};
-    if (event.event_type === 'inventory.movement.recorded') {
-      projectionContext.inventoryDevice = await resolvePosInventoryDeviceContext(client, req.posDeviceId);
-    }
     const insert = await client.query(
       `INSERT INTO pos_sync_events(
          event_id,tenant_id,device_id,event_type,aggregate_type,aggregate_id,aggregate_version,
@@ -65,6 +61,11 @@ router.post('/events', posSyncAuth, async (req, res, next) => {
       await client.query('ROLLBACK');
       if (existing.rows[0]?.exact_match === true) return res.status(409).json({ code: 'SYNC_EVENT_ALREADY_RECEIVED', event_id: eventId });
       return res.status(409).json({ code: 'SYNC_EVENT_ID_COLLISION', event_id: eventId, message: 'event_id is already bound to a different sync event' });
+    }
+
+    const projectionContext = {};
+    if (event.event_type === 'inventory.movement.recorded') {
+      projectionContext.inventoryDevice = await resolvePosInventoryDeviceContext(client, req.posDeviceId);
     }
     const projection = await processPosEvent(client, event, projectionContext);
     await client.query('UPDATE pos_sync_events SET processed_at=NOW() WHERE event_id=$1', [eventId]);
