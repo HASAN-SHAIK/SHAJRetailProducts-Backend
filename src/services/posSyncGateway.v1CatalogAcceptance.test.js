@@ -146,4 +146,67 @@ describe('V1 Products/Catalog change-feed acceptance', () => {
     expect(replay.cursor).toBe(first.cursor);
     expect(replayPool.query).toHaveBeenCalledTimes(2);
   });
+
+  test('orders mixed catalog/customer entities across pages without duplicates at the cursor boundary', async () => {
+    const firstProduct = product({ id: 101, updated_at: new Date('2026-08-14T06:30:00.000Z') });
+    const laterProduct = product({
+      id: 102,
+      name: 'Later Milk',
+      barcode: '8901234567892',
+      updated_at: new Date('2026-08-14T06:32:00.000Z'),
+    });
+    const middleCustomer = {
+      id: 501,
+      name: 'Middle Customer',
+      phone: '9999999999',
+      credit_limit: '0',
+      current_balance: '0',
+      updated_at: new Date('2026-08-14T06:31:00.000Z'),
+    };
+
+    const firstPool = {
+      query: jest.fn()
+        .mockResolvedValueOnce({ rows: [firstProduct, laterProduct] })
+        .mockResolvedValueOnce({ rows: [middleCustomer] })
+        .mockResolvedValueOnce({ rows: [{ name: 'Fresh Produce & Dairy' }] }),
+    };
+    const first = await getPosChanges({ tenantPool: firstPool, limit: 2, branchId: 'branch-1' });
+
+    expect(first.has_more).toBe(true);
+    expect(first.changes.some((change) => change.type === 'catalog.product.upsert' && change.payload.id === '101')).toBe(true);
+    expect(first.changes.some((change) => change.type === 'customer.upsert' && change.payload.id === '501')).toBe(true);
+    expect(first.changes.some((change) => change.type === 'catalog.product.upsert' && change.payload.id === '102')).toBe(false);
+
+    const secondPool = {
+      query: jest.fn()
+        .mockResolvedValueOnce({ rows: [laterProduct] })
+        .mockResolvedValueOnce({ rows: [middleCustomer] })
+        .mockResolvedValueOnce({ rows: [{ name: 'Fresh Produce & Dairy' }] }),
+    };
+    const second = await getPosChanges({
+      tenantPool: secondPool,
+      cursorValue: first.cursor,
+      limit: 2,
+      branchId: 'branch-1',
+    });
+
+    expect(second.has_more).toBe(false);
+    expect(second.changes.some((change) => change.type === 'catalog.product.upsert' && change.payload.id === '102')).toBe(true);
+    expect(second.changes.some((change) => change.type === 'catalog.product.upsert' && change.payload.id === '101')).toBe(false);
+    expect(second.changes.some((change) => change.type === 'customer.upsert' && change.payload.id === '501')).toBe(false);
+
+    const replayPool = {
+      query: jest.fn()
+        .mockResolvedValueOnce({ rows: [laterProduct] })
+        .mockResolvedValueOnce({ rows: [] }),
+    };
+    const replay = await getPosChanges({
+      tenantPool: replayPool,
+      cursorValue: second.cursor,
+      limit: 2,
+      branchId: 'branch-1',
+    });
+    expect(replay.changes).toEqual([]);
+    expect(replay.cursor).toBe(second.cursor);
+  });
 });
