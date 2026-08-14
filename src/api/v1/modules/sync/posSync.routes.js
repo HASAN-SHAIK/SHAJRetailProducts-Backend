@@ -2,6 +2,7 @@ const express = require('express');
 const { posSyncAuth } = require('./posSyncAuth');
 const { processPosEvent } = require('./posEvent.processor');
 const { resolvePosInventoryDeviceContext } = require('./posInventoryDeviceContext');
+const { resolvePosCatalogDeviceContext } = require('./posCatalogDeviceContext');
 const { getPosChanges } = require('../../../../services/posSyncGateway');
 const posConfigRoutes = require('./posConfig.routes');
 
@@ -112,15 +113,20 @@ router.post('/events', posSyncAuth, async (req, res, next) => {
 
 router.get('/changes', posSyncAuth, async (req, res, next) => {
   try {
+    const catalogDevice = await resolvePosCatalogDeviceContext(req.tenantPool, req.posDeviceId);
     const result = await getPosChanges({
       tenantPool: req.tenantPool,
       cursorValue: req.query.cursor,
       limit: req.query.limit,
+      branchId: catalogDevice.branchId,
     });
     return res.status(200).json(result);
   } catch (error) {
     if (error.code === 'INVALID_CURSOR') {
       return res.status(400).json({ code: error.code, message: error.message });
+    }
+    if (error.code === 'POS_SYNC_DEVICE_NOT_REGISTERED') {
+      return res.status(403).json({ code: error.code, message: error.message });
     }
     return next(error);
   }
