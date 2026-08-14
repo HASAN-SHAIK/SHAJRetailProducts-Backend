@@ -29,7 +29,7 @@ describe('V1 Products/Catalog change-feed acceptance', () => {
   test('emits Central category identity before the product, preserves barcode/price facts, then emits the authoritative category snapshot', async () => {
     const tenantPool = poolFor([product()], ['Fresh Produce & Dairy']);
 
-    const result = await getPosChanges({ tenantPool, limit: 10 });
+    const result = await getPosChanges({ tenantPool, limit: 10, branchId: 'branch-1' });
 
     expect(result.changes.map((change) => change.type)).toEqual([
       'catalog.category.upsert',
@@ -67,12 +67,17 @@ describe('V1 Products/Catalog change-feed acceptance', () => {
       categories: [{ id: expectedCategoryId, name: 'Fresh Produce & Dairy' }],
       version: new Date('2026-08-14T06:30:00.000Z').getTime(),
     });
+
+    expect(tenantPool.query.mock.calls[0][0]).toContain('branch_id IS NULL OR branch_id::text = $3');
+    expect(tenantPool.query.mock.calls[0][1][2]).toBe('branch-1');
+    expect(tenantPool.query.mock.calls[2][0]).toContain('branch_id IS NULL OR branch_id::text = $1');
+    expect(tenantPool.query.mock.calls[2][1]).toEqual(['branch-1']);
   });
 
   test('propagates Central soft-delete and an empty authoritative snapshot when no categories remain', async () => {
     const tenantPool = poolFor([product({ category: null, barcode: null, selling_price: null, is_deleted: true })], []);
 
-    const result = await getPosChanges({ tenantPool, limit: 10 });
+    const result = await getPosChanges({ tenantPool, limit: 10, branchId: 'branch-1' });
 
     expect(result.changes).toHaveLength(2);
     expect(result.changes[0]).toMatchObject({
@@ -89,13 +94,13 @@ describe('V1 Products/Catalog change-feed acceptance', () => {
     });
   });
 
-  test('snapshot reflects the full current Central category set after a rename-triggering product change', async () => {
+  test('snapshot reflects the current global and trusted-branch category set', async () => {
     const tenantPool = poolFor(
       [product({ category: 'New Dairy', updated_at: new Date('2026-08-14T06:31:00.000Z') })],
       ['Bakery', 'New Dairy']
     );
 
-    const result = await getPosChanges({ tenantPool, limit: 10 });
+    const result = await getPosChanges({ tenantPool, limit: 10, branchId: 'branch-1' });
     const snapshot = result.changes[result.changes.length - 1];
 
     expect(snapshot.type).toBe('catalog.categories.snapshot');
@@ -107,10 +112,10 @@ describe('V1 Products/Catalog change-feed acceptance', () => {
 
   test('uses an entity cursor so replaying the returned cursor does not repeat product or snapshot facts', async () => {
     const firstPool = poolFor([product()], ['Fresh Produce & Dairy']);
-    const first = await getPosChanges({ tenantPool: firstPool, limit: 10 });
+    const first = await getPosChanges({ tenantPool: firstPool, limit: 10, branchId: 'branch-1' });
 
     const replayPool = poolFor([product()]);
-    const replay = await getPosChanges({ tenantPool: replayPool, cursorValue: first.cursor, limit: 10 });
+    const replay = await getPosChanges({ tenantPool: replayPool, cursorValue: first.cursor, limit: 10, branchId: 'branch-1' });
 
     expect(replay.changes).toEqual([]);
     expect(replay.cursor).toBe(first.cursor);
