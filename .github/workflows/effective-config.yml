@@ -20,5 +20,5 @@ jobs:
         with:
           node-version: '22'
       - run: npm install
-      - run: npm test -- --runInBand tests/configuration.validation.test.js
+      - run: npm test -- --runInBand tests/configuration.validation.test.js tests/configuration.pricingIsolation.test.js
       - run: npm test -- --runInBand tests/tenantUserController.test.js
