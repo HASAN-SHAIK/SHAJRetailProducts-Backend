@@ -115,7 +115,7 @@ const categoryIdentity = (value) => {
   return name ? { id: encodeURIComponent(name), name } : null;
 };
 
-const loadChangeRecords = async (pool, cursor, fetchLimit, branchId = null) => {
+const loadChangeRecords = async (pool, cursor, fetchLimit) => {
   const since = new Date(cursor.t);
   if (Number.isNaN(since.getTime())) throw Object.assign(new Error('Invalid cursor timestamp.'), { code: 'INVALID_CURSOR' });
 
@@ -126,9 +126,8 @@ const loadChangeRecords = async (pool, cursor, fetchLimit, branchId = null) => {
               COALESCE(updated_at, created_at, NOW()) AS updated_at
        FROM products
        WHERE COALESCE(updated_at, created_at, NOW()) >= $1
-         AND ($3::text IS NULL OR branch_id IS NULL OR branch_id::text = $3)
        ORDER BY COALESCE(updated_at, created_at, NOW()), id
-       LIMIT $2`, [since, fetchLimit, branchId]
+       LIMIT $2`, [since, fetchLimit]
     ),
     pool.query(
       `SELECT id, name, COALESCE(phone, mobile) AS phone,
@@ -165,10 +164,18 @@ const loadCategorySnapshot = async (pool, branchId = null) => {
   return result.rows.map((row) => categoryIdentity(row.name)).filter(Boolean);
 };
 
-const productMessages = (row) => {
+const productMessages = (row, branchId = null) => {
   const updatedAt = iso(row.updated_at);
   const version = versionFrom(row.updated_at);
   const prefix = `product:${row.id}:${updatedAt}`;
+  const appliesToBranch = !branchId || !row.branch_id || String(row.branch_id) === String(branchId);
+  if (!appliesToBranch) {
+    return [{
+      id: `${prefix}:remove`, type: 'catalog.product.remove', schema_version: 1, source: 'central',
+      payload: { id: String(row.id), version, source_updated_at: updatedAt },
+    }];
+  }
+
   const category = categoryIdentity(row.category);
   const messages = [];
   if (category) messages.push({
@@ -230,9 +237,9 @@ const customerMessages = (row) => {
 const getPosChanges = async ({ tenantPool, cursorValue, limit = 100, branchId = null }) => {
   const cursor = decodeCursor(cursorValue);
   const entityLimit = Math.max(1, Math.min(Number(limit) || 100, 100));
-  const records = await loadChangeRecords(tenantPool, cursor, Math.max(entityLimit * 3, 100), branchId);
+  const records = await loadChangeRecords(tenantPool, cursor, Math.max(entityLimit * 3, 100));
   const selected = records.slice(0, entityLimit);
-  const changes = selected.flatMap((record) => record.source === 'product' ? productMessages(record) : customerMessages(record));
+  const changes = selected.flatMap((record) => record.source === 'product' ? productMessages(record, branchId) : customerMessages(record));
   const selectedProducts = selected.filter((record) => record.source === 'product');
   if (selectedProducts.length > 0) {
     const categories = await loadCategorySnapshot(tenantPool, branchId);
