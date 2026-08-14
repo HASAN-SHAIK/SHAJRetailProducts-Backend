@@ -1,3 +1,5 @@
+const { applyPosInventoryBatchMovement } = require('./posInventoryBatchAllocator');
+
 const invalid = (message) => {
   const error = new Error(message);
   error.code = 'INVALID_INVENTORY_MOVEMENT_PAYLOAD';
@@ -46,7 +48,7 @@ const sameExistingMovement = (row, movement) =>
   Number(row.balance_after_milli) === movement.balanceAfterMilli &&
   timestampMillis(row.occurred_at) === timestampMillis(movement.occurredAt);
 
-const processInventoryMovementRecorded = async (client, event) => {
+const processInventoryMovementRecorded = async (client, event, inventoryDevice = null) => {
   if (event.schema_version !== 1) throw invalid('unsupported inventory.movement.recorded schema_version');
   const payload = event.payload;
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw invalid('payload must be an object');
@@ -122,6 +124,8 @@ const processInventoryMovementRecorded = async (client, event) => {
     throw canonicalFailure(`POS product ${movement.productId} cannot be resolved to a canonical Central product`);
   }
 
+  const batch = await applyPosInventoryBatchMovement(client, { ...movement, productId }, inventoryDevice);
+
   const claimed = await client.query(
     `UPDATE pos_inventory_movements
      SET canonical_applied_at=NOW()
@@ -157,6 +161,7 @@ const processInventoryMovementRecorded = async (client, event) => {
     product_id: movement.productId,
     canonical_applied: true,
     canonical_stock_quantity: stock.rows[0].stock_quantity,
+    batch,
   };
 };
 
