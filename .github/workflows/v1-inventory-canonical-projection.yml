@@ -5,6 +5,7 @@ on:
     paths:
       - 'Db/migrations/2026-08-13-pos-inventory-canonical-application.sql'
       - 'Db/migrations/2026-08-14-pos-inventory-batch-allocations.sql'
+      - 'Db/migrations/2026-08-14-pos-inventory-reconciliation-provenance.sql'
       - 'src/api/v1/modules/sync/inventoryMovementRecorded.processor.js'
       - 'src/api/v1/modules/sync/inventoryMovementRecorded.processor.test.js'
       - 'src/api/v1/modules/sync/posInventoryBatchAllocator.js'
@@ -13,6 +14,10 @@ on:
       - 'src/api/v1/modules/sync/posInventoryDeviceContext.test.js'
       - 'src/api/v1/modules/sync/posSync.routes.js'
       - 'src/api/v1/modules/sync/posEvent.processor.js'
+      - 'src/controllers/inventoryReconciliationController.js'
+      - 'src/routes/platform.routes.js'
+      - 'src/services/inventoryReconciliationService.js'
+      - 'src/services/inventoryReconciliationService.test.js'
       - '.github/workflows/v1-inventory-canonical-projection.yml'
 
 jobs:
@@ -33,3 +38,5 @@ jobs:
         run: npx jest src/api/v1/modules/sync/posInventoryBatchAllocator.test.js --runInBand
       - name: Run trusted inventory device authority tests
         run: npx jest src/api/v1/modules/sync/posInventoryDeviceContext.test.js --runInBand
+      - name: Run support inventory reconciliation tests
+        run: npx jest src/services/inventoryReconciliationService.test.js --runInBand
