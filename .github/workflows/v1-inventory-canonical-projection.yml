@@ -7,8 +7,8 @@ on:
       - 'src/api/v1/modules/sync/inventoryMovementRecorded.processor.js'
       - 'src/api/v1/modules/sync/inventoryMovementRecorded.processor.test.js'
       - 'src/api/v1/modules/sync/posInventoryDeviceContext.js'
+      - 'src/api/v1/modules/sync/posInventoryDeviceContext.test.js'
       - 'src/api/v1/modules/sync/posSync.routes.js'
-      - 'src/api/v1/modules/sync/posSync.inventoryDevice.routes.test.js'
       - 'src/api/v1/modules/sync/posEvent.processor.js'
       - '.github/workflows/v1-inventory-canonical-projection.yml'
 
@@ -26,5 +26,5 @@ jobs:
         run: npm install --ignore-scripts --no-audit --no-fund
       - name: Run canonical inventory projection tests
         run: npx jest src/api/v1/modules/sync/inventoryMovementRecorded.processor.test.js --runInBand
-      - name: Run inventory device authority route tests
-        run: npx jest src/api/v1/modules/sync/posSync.inventoryDevice.routes.test.js --runInBand
+      - name: Run trusted inventory device authority tests
+        run: npx jest src/api/v1/modules/sync/posInventoryDeviceContext.test.js --runInBand
