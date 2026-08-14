@@ -116,7 +116,8 @@ const processInventoryMovementRecorded = async (client, event, inventoryDevice =
 
   const existing = await client.query(
     `SELECT movement_id,order_id,store_id,product_id,movement_type,quantity_delta_milli,
-            reference_type,reference_id,order_item_id,balance_after_milli,occurred_at,canonical_applied_at
+            reference_type,reference_id,order_item_id,balance_after_milli,occurred_at,canonical_applied_at,
+            canonical_device_id,canonical_branch_id
      FROM pos_inventory_movements
      WHERE movement_id=$1
      FOR UPDATE`,
@@ -142,15 +143,20 @@ const processInventoryMovementRecorded = async (client, event, inventoryDevice =
   if (!productId) {
     throw canonicalFailure(`POS product ${movement.productId} cannot be resolved to a canonical Central product`);
   }
+  if (!inventoryDevice?.deviceId || !inventoryDevice?.branchId) {
+    throw canonicalFailure('trusted POS device and branch context are required for canonical inventory projection');
+  }
 
   const batch = await applyPosInventoryBatchMovement(client, { ...movement, productId }, inventoryDevice);
 
   const claimed = await client.query(
     `UPDATE pos_inventory_movements
-     SET canonical_applied_at=NOW()
+     SET canonical_applied_at=NOW(),
+         canonical_device_id=$2,
+         canonical_branch_id=$3
      WHERE movement_id=$1 AND canonical_applied_at IS NULL
      RETURNING movement_id`,
-    [movement.movementId]
+    [movement.movementId, String(inventoryDevice.deviceId), inventoryDevice.branchId]
   );
   if (claimed.rowCount === 0) {
     return {
