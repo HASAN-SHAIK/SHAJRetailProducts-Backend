@@ -2,9 +2,9 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const { hasPermission } = require('../utils/rolePermissions');
 const { jsonError } = require('../utils/responses');
+const { normalizePrivateKeyPem } = require('../utils/pem');
 
-const normalizePem = (value) => String(value || '').trim().replace(/\\n/g, '\n');
-const getSigningKey = () => normalizePem(process.env.POS_OFFLINE_GRANT_PRIVATE_KEY);
+const getSigningKey = () => normalizePrivateKeyPem(process.env.POS_OFFLINE_GRANT_PRIVATE_KEY);
 
 const issuePosSyncRecoveryGrant = async (req, res) => {
   try {

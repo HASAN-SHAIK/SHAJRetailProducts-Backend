@@ -2,9 +2,9 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const { getPermissionsForRole, getStorePermissions } = require('../utils/rolePermissions');
 const { jsonError } = require('../utils/responses');
+const { normalizePrivateKeyPem } = require('../utils/pem');
 
-const normalizePem = (value) => String(value || '').trim().replace(/\\n/g, '\n');
-const getOfflineGrantPrivateKey = () => normalizePem(process.env.POS_OFFLINE_GRANT_PRIVATE_KEY);
+const getOfflineGrantPrivateKey = () => normalizePrivateKeyPem(process.env.POS_OFFLINE_GRANT_PRIVATE_KEY);
 
 const issueOfflineGrant = async (req, res) => {
   try {
