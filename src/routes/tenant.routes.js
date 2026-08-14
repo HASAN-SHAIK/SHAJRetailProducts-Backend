@@ -45,6 +45,11 @@ const customerRoutes = require('../modules/customers/routes');
 const supplierRoutes = require('../modules/suppliers/routes');
 const { listUsers, createUser, updateUserRole, updateUserAccess } = require('../controllers/tenant/userController');
 const {
+  listRegistrationRequests,
+  approveRegistrationRequest,
+  rejectRegistrationRequest,
+} = require('../controllers/posRegistrationController');
+const {
   getSupportCases,
   getSupportCase,
   createSupportCase,
@@ -112,5 +117,8 @@ router.get('/users', isAdmin, listUsers);
 router.post('/users', isAdmin, createUser);
 router.patch('/users/:id/role', isAdmin, updateUserRole);
 router.patch('/users/:id/access', isAdmin, updateUserAccess);
+router.get('/pos-registration/requests', isAdmin, listRegistrationRequests);
+router.post('/pos-registration/requests/:requestId/approve', isAdmin, approveRegistrationRequest);
+router.post('/pos-registration/requests/:requestId/reject', isAdmin, rejectRegistrationRequest);
 
 module.exports = router;
