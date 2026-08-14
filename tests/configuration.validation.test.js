@@ -9,6 +9,11 @@ const {
     expect(validateSettingValue('billing.allow_discount', 'true')).toBe(true);
     expect(validateSettingValue('inventory.weight_precision', '3')).toBe(3);
     expect(validateSettingValue('printer.receipt_paper_width_mm', 80)).toBe(80);
+    expect(validateSettingValue('tax.gst_enabled', 'false')).toBe(false);
+    expect(validateSettingValue('tax.gst_mode', 'EXCLUSIVE')).toBe('EXCLUSIVE');
+    expect(validateSettingValue('tax.rounding_mode', 'HALF_UP')).toBe('HALF_UP');
+    expect(() => validateSettingValue('tax.gst_mode', 'INVALID')).toThrow(/one of/);
+    expect(() => validateSettingValue('tax.rounding_mode', 'BANKERS')).toThrow(/one of/);
     expect(() => validateSettingValue('inventory.weight_precision', 9)).toThrow(/<= 6/);
     expect(() => validateSettingValue('unknown.value', true)).toThrow(/Unknown configuration key/);
   });
@@ -17,9 +22,17 @@ const {
     expect(buildNestedConfig({
       'billing.allow_negative_stock': false,
       'offline.sync_interval_seconds': 60,
+      'tax.gst_enabled': true,
+      'tax.gst_mode': 'INCLUSIVE',
+      'tax.rounding_mode': 'HALF_UP',
     })).toEqual({
       billing: { allow_negative_stock: false },
       offline: { sync_interval_seconds: 60 },
+      tax: {
+        gst_enabled: true,
+        gst_mode: 'INCLUSIVE',
+        rounding_mode: 'HALF_UP',
+      },
     });
   });
 
