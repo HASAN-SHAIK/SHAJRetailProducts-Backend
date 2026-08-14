@@ -1,0 +1,24 @@
+name: V1 products catalog acceptance
+
+on:
+  pull_request:
+    paths:
+      - 'src/services/posSyncGateway.js'
+      - 'src/services/posSyncGateway.v1CatalogAcceptance.test.js'
+      - '.github/workflows/v1-products-catalog.yml'
+  workflow_dispatch:
+
+jobs:
+  catalog-change-feed:
+    runs-on: ubuntu-latest
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Run V1 Products/Catalog acceptance
+        run: npx jest src/services/posSyncGateway.v1CatalogAcceptance.test.js --runInBand
