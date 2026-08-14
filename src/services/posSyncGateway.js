@@ -150,6 +150,18 @@ const loadChangeRecords = async (pool, cursor, fetchLimit) => {
     .sort((a, b) => recordKey(a).localeCompare(recordKey(b)));
 };
 
+const loadCategorySnapshot = async (pool) => {
+  const result = await pool.query(
+    `SELECT TRIM(category) AS name
+     FROM products
+     WHERE COALESCE(is_deleted, FALSE) = FALSE
+       AND category IS NOT NULL AND TRIM(category) <> ''
+     GROUP BY TRIM(category)
+     ORDER BY name ASC`
+  );
+  return result.rows.map((row) => categoryIdentity(row.name)).filter(Boolean);
+};
+
 const productMessages = (row) => {
   const updatedAt = iso(row.updated_at);
   const version = versionFrom(row.updated_at);
@@ -189,6 +201,16 @@ const productMessages = (row) => {
   return messages;
 };
 
+const categorySnapshotMessage = (categories, trigger) => {
+  const updatedAt = iso(trigger.updated_at);
+  const version = versionFrom(trigger.updated_at);
+  return {
+    id: `catalog-categories:${Buffer.from(recordKey(trigger), 'utf8').toString('base64url')}`,
+    type: 'catalog.categories.snapshot', schema_version: 1, source: 'central',
+    payload: { categories, version, source_updated_at: updatedAt },
+  };
+};
+
 const customerMessages = (row) => {
   const updatedAt = iso(row.updated_at);
   return [{
@@ -208,6 +230,12 @@ const getPosChanges = async ({ tenantPool, cursorValue, limit = 100 }) => {
   const records = await loadChangeRecords(tenantPool, cursor, Math.max(entityLimit * 3, 100));
   const selected = records.slice(0, entityLimit);
   const changes = selected.flatMap((record) => record.source === 'product' ? productMessages(record) : customerMessages(record));
+  const selectedProducts = selected.filter((record) => record.source === 'product');
+  if (selectedProducts.length > 0) {
+    const categories = await loadCategorySnapshot(tenantPool);
+    const trigger = selectedProducts[selectedProducts.length - 1];
+    changes.push(categorySnapshotMessage(categories, trigger));
+  }
   const last = selected[selected.length - 1];
   const nextCursor = last ? encodeCursor({ t: iso(last.updated_at), k: recordKey(last) }) : (cursorValue || encodeCursor(cursor));
   return { cursor: nextCursor, has_more: records.length > selected.length, changes };
