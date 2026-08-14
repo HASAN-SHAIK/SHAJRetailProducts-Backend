@@ -4,6 +4,7 @@ const platformRoutes = require('./routes/platform.routes');
 const platformAuthRoutes = require('./routes/platform.auth.routes');
 const tenantRoutes = require('./routes/tenant.routes');
 const authRoutes = require('./routes/authRoutes');
+const posRegistrationPublicRoutes = require('./routes/posRegistrationPublicRoutes');
 const app = express();
 const cookieParser = require('cookie-parser');
 const { tenantAuthMiddleware } = require('./middleware/tenantAuthMiddleware');
@@ -155,6 +156,10 @@ app.use('/platform', adminAuthMiddleware, platformRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/v1/auth', apiV1AuthRouter);
 app.use('/api/v1/docs', swaggerRoutes);
+// First-run POS registration is intentionally available before tenant JWT/device
+// authorization. It can only create/poll a pending request; branch assignment is
+// performed later by an authenticated tenant admin.
+app.use('/api/v1/pos-registration', posRegistrationPublicRoutes);
 // POS-to-central machine sync uses dedicated tenant/device credentials rather
 // than an interactive tenant JWT. Mount it before the JWT-protected v1 router.
 app.use('/api/v1/sync', posSyncRoutes);
