@@ -17,15 +17,17 @@ const product = (overrides = {}) => ({
   ...overrides,
 });
 
-const poolFor = (products) => ({
-  query: jest.fn()
+const poolFor = (products, categories = null) => {
+  const query = jest.fn()
     .mockResolvedValueOnce({ rows: products })
-    .mockResolvedValueOnce({ rows: [] }),
-});
+    .mockResolvedValueOnce({ rows: [] });
+  if (categories !== null) query.mockResolvedValueOnce({ rows: categories.map((name) => ({ name })) });
+  return { query };
+};
 
 describe('V1 Products/Catalog change-feed acceptance', () => {
-  test('emits Central category identity before the product and preserves barcode/price facts', async () => {
-    const tenantPool = poolFor([product()]);
+  test('emits Central category identity before the product, preserves barcode/price facts, then emits the authoritative category snapshot', async () => {
+    const tenantPool = poolFor([product()], ['Fresh Produce & Dairy']);
 
     const result = await getPosChanges({ tenantPool, limit: 10 });
 
@@ -34,9 +36,10 @@ describe('V1 Products/Catalog change-feed acceptance', () => {
       'catalog.product.upsert',
       'catalog.barcode.upsert',
       'catalog.price.upsert',
+      'catalog.categories.snapshot',
     ]);
 
-    const [category, catalogProduct, barcode, price] = result.changes;
+    const [category, catalogProduct, barcode, price, snapshot] = result.changes;
     const expectedCategoryId = encodeURIComponent('Fresh Produce & Dairy');
 
     expect(category.payload).toMatchObject({
@@ -60,14 +63,18 @@ describe('V1 Products/Catalog change-feed acceptance', () => {
       amount_minor: 6550,
       currency: 'INR',
     });
+    expect(snapshot.payload).toMatchObject({
+      categories: [{ id: expectedCategoryId, name: 'Fresh Produce & Dairy' }],
+      version: new Date('2026-08-14T06:30:00.000Z').getTime(),
+    });
   });
 
-  test('propagates Central soft-delete as an inactive POS product without inventing a category', async () => {
-    const tenantPool = poolFor([product({ category: null, barcode: null, selling_price: null, is_deleted: true })]);
+  test('propagates Central soft-delete and an empty authoritative snapshot when no categories remain', async () => {
+    const tenantPool = poolFor([product({ category: null, barcode: null, selling_price: null, is_deleted: true })], []);
 
     const result = await getPosChanges({ tenantPool, limit: 10 });
 
-    expect(result.changes).toHaveLength(1);
+    expect(result.changes).toHaveLength(2);
     expect(result.changes[0]).toMatchObject({
       type: 'catalog.product.upsert',
       payload: {
@@ -76,10 +83,30 @@ describe('V1 Products/Catalog change-feed acceptance', () => {
         is_active: false,
       },
     });
+    expect(result.changes[1]).toMatchObject({
+      type: 'catalog.categories.snapshot',
+      payload: { categories: [] },
+    });
   });
 
-  test('uses an entity cursor so replaying the returned cursor does not repeat the same product record', async () => {
-    const firstPool = poolFor([product()]);
+  test('snapshot reflects the full current Central category set after a rename-triggering product change', async () => {
+    const tenantPool = poolFor(
+      [product({ category: 'New Dairy', updated_at: new Date('2026-08-14T06:31:00.000Z') })],
+      ['Bakery', 'New Dairy']
+    );
+
+    const result = await getPosChanges({ tenantPool, limit: 10 });
+    const snapshot = result.changes[result.changes.length - 1];
+
+    expect(snapshot.type).toBe('catalog.categories.snapshot');
+    expect(snapshot.payload.categories).toEqual([
+      { id: 'Bakery', name: 'Bakery' },
+      { id: 'New%20Dairy', name: 'New Dairy' },
+    ]);
+  });
+
+  test('uses an entity cursor so replaying the returned cursor does not repeat product or snapshot facts', async () => {
+    const firstPool = poolFor([product()], ['Fresh Produce & Dairy']);
     const first = await getPosChanges({ tenantPool: firstPool, limit: 10 });
 
     const replayPool = poolFor([product()]);
@@ -87,5 +114,6 @@ describe('V1 Products/Catalog change-feed acceptance', () => {
 
     expect(replay.changes).toEqual([]);
     expect(replay.cursor).toBe(first.cursor);
+    expect(replayPool.query).toHaveBeenCalledTimes(2);
   });
 });
