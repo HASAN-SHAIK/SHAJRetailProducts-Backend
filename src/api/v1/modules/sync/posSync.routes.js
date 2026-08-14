@@ -1,6 +1,7 @@
 const express = require('express');
 const { posSyncAuth } = require('./posSyncAuth');
 const { processPosEvent } = require('./posEvent.processor');
+const { resolvePosInventoryDeviceContext } = require('./posInventoryDeviceContext');
 const { getPosChanges } = require('../../../../services/posSyncGateway');
 const posConfigRoutes = require('./posConfig.routes');
 
@@ -32,23 +33,14 @@ router.post('/events', posSyncAuth, async (req, res, next) => {
   const event = { ...body, event_id: eventId, schema_version: schemaVersion, aggregate_version: aggregateVersion };
   const payloadJson = JSON.stringify(event.payload ?? {});
   const metadataJson = JSON.stringify(event.metadata ?? {});
-  const eventValues = [
-    eventId,
-    req.tenant_id,
-    req.posDeviceId,
-    event.event_type,
-    event.aggregate_type,
-    event.aggregate_id,
-    aggregateVersion,
-    schemaVersion,
-    event.ordering_key || null,
-    payloadJson,
-    metadataJson,
-    event.created_at || null,
-  ];
+  const eventValues = [eventId, req.tenant_id, req.posDeviceId, event.event_type, event.aggregate_type, event.aggregate_id, aggregateVersion, schemaVersion, event.ordering_key || null, payloadJson, metadataJson, event.created_at || null];
   const client = await req.tenantPool.connect();
   try {
     await client.query('BEGIN');
+    const projectionContext = {};
+    if (event.event_type === 'inventory.movement.recorded') {
+      projectionContext.inventoryDevice = await resolvePosInventoryDeviceContext(client, req.posDeviceId);
+    }
     const insert = await client.query(
       `INSERT INTO pos_sync_events(
          event_id,tenant_id,device_id,event_type,aggregate_type,aggregate_id,aggregate_version,
@@ -58,7 +50,6 @@ router.post('/events', posSyncAuth, async (req, res, next) => {
        RETURNING event_id`,
       eventValues
     );
-
     if (insert.rowCount === 0) {
       const existing = await client.query(
         `SELECT (
@@ -72,30 +63,20 @@ router.post('/events', posSyncAuth, async (req, res, next) => {
         eventValues
       );
       await client.query('ROLLBACK');
-
-      if (existing.rows[0]?.exact_match === true) {
-        return res.status(409).json({ code: 'SYNC_EVENT_ALREADY_RECEIVED', event_id: eventId });
-      }
-
-      return res.status(409).json({
-        code: 'SYNC_EVENT_ID_COLLISION',
-        event_id: eventId,
-        message: 'event_id is already bound to a different sync event',
-      });
+      if (existing.rows[0]?.exact_match === true) return res.status(409).json({ code: 'SYNC_EVENT_ALREADY_RECEIVED', event_id: eventId });
+      return res.status(409).json({ code: 'SYNC_EVENT_ID_COLLISION', event_id: eventId, message: 'event_id is already bound to a different sync event' });
     }
-
-    const projection = await processPosEvent(client, event);
+    const projection = await processPosEvent(client, event, projectionContext);
     await client.query('UPDATE pos_sync_events SET processed_at=NOW() WHERE event_id=$1', [eventId]);
     await client.query('COMMIT');
     return res.status(202).json({ status: 'accepted', event_id: eventId, projection });
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
+    if (error.code === 'POS_SYNC_DEVICE_NOT_REGISTERED') return res.status(403).json({ code: error.code, message: error.message });
     if (['INVALID_SALE_COMPLETED_PAYLOAD', 'INVALID_SALE_RETURNED_PAYLOAD', 'INVALID_SALE_PARTIAL_RETURNED_PAYLOAD', 'INVALID_PAYMENT_RECORDED_PAYLOAD', 'INVALID_INVENTORY_MOVEMENT_PAYLOAD', 'INVALID_RECEIPT_ISSUED_PAYLOAD', 'INVALID_CUSTOMER_CHANGED_PAYLOAD'].includes(error.code)) {
       return res.status(400).json({ code: error.code, message: error.message });
     }
-    if (error.code === 'UNSUPPORTED_POS_EVENT') {
-      return res.status(422).json({ code: error.code, message: error.message });
-    }
+    if (error.code === 'UNSUPPORTED_POS_EVENT') return res.status(422).json({ code: error.code, message: error.message });
     return next(error);
   } finally {
     client.release();
@@ -104,16 +85,10 @@ router.post('/events', posSyncAuth, async (req, res, next) => {
 
 router.get('/changes', posSyncAuth, async (req, res, next) => {
   try {
-    const result = await getPosChanges({
-      tenantPool: req.tenantPool,
-      cursorValue: req.query.cursor,
-      limit: req.query.limit,
-    });
+    const result = await getPosChanges({ tenantPool: req.tenantPool, cursorValue: req.query.cursor, limit: req.query.limit });
     return res.status(200).json(result);
   } catch (error) {
-    if (error.code === 'INVALID_CURSOR') {
-      return res.status(400).json({ code: error.code, message: error.message });
-    }
+    if (error.code === 'INVALID_CURSOR') return res.status(400).json({ code: error.code, message: error.message });
     return next(error);
   }
 });
