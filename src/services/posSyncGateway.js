@@ -131,13 +131,23 @@ const loadChangeRecords = async (pool, cursor, fetchLimit) => {
        LIMIT $2`, [since, fetchLimit]
     ),
     pool.query(
-      `SELECT id, name, COALESCE(phone, mobile) AS phone,
-              COALESCE(credit_limit, 0) AS credit_limit,
-              COALESCE(current_balance, 0) AS current_balance,
-              COALESCE(updated_at, created_at, NOW()) AS updated_at
-       FROM customers
-       WHERE COALESCE(updated_at, created_at, NOW()) >= $1
-       ORDER BY COALESCE(updated_at, created_at, NOW()), id
+      `SELECT c.id, c.name, COALESCE(c.phone, c.mobile) AS phone,
+              c.email, c.gst_number AS tax_id,
+              COALESCE(c.credit_limit, 0) AS credit_limit,
+              COALESCE(c.current_balance, 0) AS current_balance,
+              COALESCE(c.is_active, TRUE) AS is_active,
+              COALESCE((
+                SELECT json_agg(json_build_object(
+                  'id', m.pos_customer_id,
+                  'source_version', m.source_version
+                ) ORDER BY m.pos_customer_id)
+                FROM pos_customer_mappings m
+                WHERE m.canonical_customer_id = c.id
+              ), '[]'::json) AS pos_mappings,
+              COALESCE(c.updated_at, c.created_at, NOW()) AS updated_at
+       FROM customers c
+       WHERE COALESCE(c.updated_at, c.created_at, NOW()) >= $1
+       ORDER BY COALESCE(c.updated_at, c.created_at, NOW()), c.id
        LIMIT $2`, [since, fetchLimit]
     ),
   ]);
@@ -225,13 +235,20 @@ const categorySnapshotMessage = (categories, trigger) => {
 
 const customerMessages = (row) => {
   const updatedAt = iso(row.updated_at);
+  const mappings = Array.isArray(row.pos_mappings)
+    ? row.pos_mappings
+      .map((mapping) => ({ id: String(mapping?.id || '').trim(), source_version: Number(mapping?.source_version) }))
+      .filter((mapping) => mapping.id && Number.isSafeInteger(mapping.source_version) && mapping.source_version >= 0)
+    : [];
   return [{
     id: `customer:${row.id}:${updatedAt}`, type: 'customer.upsert', schema_version: 1, source: 'central',
     payload: {
-      id: String(row.id), customer_code: null, name: row.name || 'Customer', phone: row.phone || null,
-      email: null, tax_id: null, credit_limit_minor: Math.round(Number(row.credit_limit || 0) * 100),
-      outstanding_minor: Math.round(Number(row.current_balance || 0) * 100), currency: 'INR', status: 'active',
-      source_updated_at: updatedAt,
+      id: String(row.id), canonical_id: String(row.id), pos_mappings: mappings,
+      customer_code: null, name: row.name || 'Customer', phone: row.phone || null,
+      email: row.email || null, tax_id: row.tax_id || null,
+      credit_limit_minor: Math.round(Number(row.credit_limit || 0) * 100),
+      outstanding_minor: Math.round(Number(row.current_balance || 0) * 100), currency: 'INR',
+      status: row.is_active === false ? 'inactive' : 'active', source_updated_at: updatedAt,
     },
   }];
 };

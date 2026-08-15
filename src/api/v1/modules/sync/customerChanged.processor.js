@@ -159,6 +159,14 @@ const processCustomerChanged = async (client, event) => {
   }
 
   const canonicalCustomerId = await resolveCanonicalCustomer(client, customer, event, localVersion);
+  await client.query(
+    `UPDATE pos_customer_mappings
+     SET source_event_id=$2,
+         source_version=GREATEST(source_version,$3)
+     WHERE pos_customer_id=$1 AND canonical_customer_id=$4`,
+    [customerId, event.event_id, localVersion, canonicalCustomerId]
+  );
+
   const phone = normalizePhone(customer.phone);
   await client.query(
     `UPDATE customers
