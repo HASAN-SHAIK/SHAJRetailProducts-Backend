@@ -86,9 +86,13 @@ router.post('/events', posSyncAuth, async (req, res, next) => {
       });
     }
 
-    const projectionContext = {};
+    // New POS facts require a currently active Central registration. Exact duplicate
+    // replay is resolved above before this lookup so lost acknowledgements remain safe
+    // even if a device is later revoked.
+    const syncDevice = await resolvePosInventoryDeviceContext(client, req.posDeviceId);
+    const projectionContext = { syncDevice };
     if (event.event_type === 'inventory.movement.recorded') {
-      projectionContext.inventoryDevice = await resolvePosInventoryDeviceContext(client, req.posDeviceId);
+      projectionContext.inventoryDevice = syncDevice;
     }
     const projection = await processPosEvent(client, event, projectionContext);
     await client.query('UPDATE pos_sync_events SET processed_at=NOW() WHERE event_id=$1', [eventId]);
