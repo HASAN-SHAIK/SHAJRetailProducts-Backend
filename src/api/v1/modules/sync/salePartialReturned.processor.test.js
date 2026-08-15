@@ -115,7 +115,7 @@ describe('sale.partial_returned projection', () => {
     });
     await expect(processSalePartialReturned(noQuery, {
       ...event,
-      payload: { ...event.payload, order: { ...event.payload.order, status: 'returned' } },
+      payload: { ...event.payload, order: { ...event.payload.order, status: 'voided' } },
     })).rejects.toMatchObject({ code: 'INVALID_SALE_PARTIAL_RETURNED_PAYLOAD' });
     await expect(processSalePartialReturned(noQuery, {
       ...event,
