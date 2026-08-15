@@ -8,6 +8,9 @@ on:
       - 'src/controllers/branchDeviceController.js'
       - 'src/utils/branchDeviceLicensing.js'
       - 'src/middleware/branchDeviceGuard.js'
+      - 'src/api/v1/modules/sync/posSync.routes.js'
+      - 'src/api/v1/modules/sync/posSync.routes.v1StoreDeviceAcceptance.test.js'
+      - 'src/api/v1/modules/sync/posInventoryDeviceContext.js'
       - '.github/workflows/v1-store-device.yml'
   workflow_dispatch:
 
@@ -21,4 +24,8 @@ jobs:
           node-version: 20
       - run: npm install --no-audit --no-fund
       - name: Run V1 Store Device acceptance
-        run: npx jest src/controllers/posRegistrationController.v1StoreDeviceAcceptance.test.js --runInBand
+        run: >-
+          npx jest
+          src/controllers/posRegistrationController.v1StoreDeviceAcceptance.test.js
+          src/api/v1/modules/sync/posSync.routes.v1StoreDeviceAcceptance.test.js
+          --runInBand
