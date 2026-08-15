@@ -6,6 +6,8 @@ on:
       - 'Db/migrations/2026-08-15-pos-customer-canonical-mapping.sql'
       - 'src/api/v1/modules/sync/customerChanged.processor.js'
       - 'src/api/v1/modules/sync/customerChanged.processor.test.js'
+      - 'src/services/posSyncGateway.js'
+      - 'src/services/posSyncGateway.v1CustomerAcceptance.test.js'
       - '.github/workflows/v1-customers.yml'
   workflow_dispatch:
 
@@ -22,4 +24,8 @@ jobs:
       - name: Install dependencies
         run: npm install --ignore-scripts --no-audit --no-fund
       - name: Run V1 Customers acceptance
-        run: npx jest src/api/v1/modules/sync/customerChanged.processor.test.js --runInBand
+        run: >-
+          npx jest
+          src/api/v1/modules/sync/customerChanged.processor.test.js
+          src/services/posSyncGateway.v1CustomerAcceptance.test.js
+          --runInBand
