@@ -8,10 +8,10 @@ const unavailable = (message) => {
 
 const resolvePosInventoryDeviceContext = async (requestPool, deviceId) => {
   const requestedDeviceId = String(deviceId || '').trim();
-  if (!requestedDeviceId) throw unavailable('POS device identity is required for inventory synchronization');
+  if (!requestedDeviceId) throw unavailable('POS device identity is required for synchronization');
   const device = await resolveDevice(requestPool, requestedDeviceId, { requireActive: true });
   if (!device || !device.branchId) {
-    throw unavailable('POS device must be actively registered to a Central branch for inventory synchronization');
+    throw unavailable('POS device must be actively registered to a Central branch for synchronization');
   }
   return { requestedDeviceId, deviceId: device.deviceId, registrationId: device.id, branchId: device.branchId };
 };
