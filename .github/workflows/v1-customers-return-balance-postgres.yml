@@ -37,8 +37,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
-          cache: npm
+          node-version: '20'
       - run: npm install --ignore-scripts --no-audit --no-fund
       - name: Certify full and partial return balance facts on real PostgreSQL
         run: npx jest src/api/v1/modules/sync/saleReturnBalance.postgresAcceptance.test.js --runInBand
