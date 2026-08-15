@@ -6,6 +6,7 @@ on:
       - 'src/controllers/posRegistrationController.js'
       - 'src/controllers/posRegistrationController.v1StoreDeviceAcceptance.test.js'
       - 'src/controllers/branchDeviceController.js'
+      - 'src/controllers/storeDeviceDiagnostics.v1StoreDeviceAcceptance.test.js'
       - 'src/routes/branchRoutes.js'
       - 'src/routes/branchRoutes.v1StoreDeviceAcceptance.test.js'
       - 'src/utils/branchDeviceLicensing.js'
@@ -32,6 +33,7 @@ jobs:
         run: >-
           npx jest
           src/controllers/posRegistrationController.v1StoreDeviceAcceptance.test.js
+          src/controllers/storeDeviceDiagnostics.v1StoreDeviceAcceptance.test.js
           src/routes/branchRoutes.v1StoreDeviceAcceptance.test.js
           src/utils/branchDeviceLicensing.v1StoreDeviceAcceptance.test.js
           src/middleware/branchDeviceGuard.v1StoreDeviceAcceptance.test.js
