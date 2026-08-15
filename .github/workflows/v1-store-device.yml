@@ -7,6 +7,8 @@ on:
       - 'src/controllers/posRegistrationController.v1StoreDeviceAcceptance.test.js'
       - 'src/controllers/branchDeviceController.js'
       - 'src/utils/branchDeviceLicensing.js'
+      - 'src/utils/branchDeviceLicensing.v1StoreDeviceAcceptance.test.js'
+      - 'src/configuration/targets.js'
       - 'src/middleware/branchDeviceGuard.js'
       - 'src/api/v1/modules/sync/posSync.routes.js'
       - 'src/api/v1/modules/sync/posSync.routes.v1StoreDeviceAcceptance.test.js'
@@ -27,5 +29,6 @@ jobs:
         run: >-
           npx jest
           src/controllers/posRegistrationController.v1StoreDeviceAcceptance.test.js
+          src/utils/branchDeviceLicensing.v1StoreDeviceAcceptance.test.js
           src/api/v1/modules/sync/posSync.routes.v1StoreDeviceAcceptance.test.js
           --runInBand

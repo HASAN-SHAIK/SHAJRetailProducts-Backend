@@ -26,11 +26,13 @@ const resolveDevice = async (requestPool, deviceId, { requireActive = false } = 
      FROM branch_devices
      WHERE device_id = $1 OR id::text = $1
      ORDER BY is_active DESC, created_at DESC
-     LIMIT 1`,
+     LIMIT 2`,
     [String(deviceId)]
   );
   if (!result.rowCount) return null;
-  const row = result.rows[0];
+  const activeRows = result.rows.filter((candidate) => candidate.is_active === true);
+  if (activeRows.length > 1) return null;
+  const row = activeRows[0] || result.rows[0];
   if (requireActive && row.is_active !== true) return null;
   return {
     id: String(row.id),

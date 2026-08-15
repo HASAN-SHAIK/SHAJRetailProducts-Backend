@@ -77,6 +77,32 @@ const ensureDeviceRegistration = async ({
   const maxAllowed = resolveBranchDeviceLimit(branch);
   const now = new Date();
 
+  const otherActiveBranchRes = await tenantPool.query(
+    `SELECT id, branch_id
+     FROM branch_devices
+     WHERE device_id = $1 AND branch_id <> $2 AND is_active = TRUE
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [deviceId, branchId]
+  );
+  if (otherActiveBranchRes.rowCount > 0) {
+    const currentBranchId = otherActiveBranchRes.rows[0]?.branch_id || null;
+    await logDeviceEvent(tenantPool, {
+      branch_id: branchId,
+      user_id: userId,
+      device_id: deviceId,
+      action: 'DEVICE_BRANCH_CONFLICT',
+      metadata: { current_branch_id: currentBranchId, requested_branch_id: branchId }
+    });
+    return {
+      allowed: false,
+      code: 'DEVICE_BRANCH_CONFLICT',
+      currentBranchId,
+      requestedBranchId: branchId,
+      limit: maxAllowed
+    };
+  }
+
   const existingRes = await tenantPool.query(
     `SELECT id, is_active
      FROM branch_devices
