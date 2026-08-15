@@ -62,6 +62,44 @@ test('first-run request is tenant-bound and rejects duplicate pending device reg
   }));
 });
 
+test('the same physical device ID remains isolated across tenant databases', async () => {
+  const insertedA = [];
+  const insertedB = [];
+  const tenantPool = (inserted) => poolWith(async (sql, params = []) => {
+    if (sql.includes('SELECT request_id, status')) return { rowCount: 0, rows: [] };
+    if (sql.includes('INSERT INTO pos_registration_requests')) {
+      inserted.push({ deviceId: params[1], tokenHash: params[5] });
+      return { rowCount: 1, rows: [] };
+    }
+    return { rowCount: 0, rows: [] };
+  });
+  const poolA = tenantPool(insertedA);
+  const poolB = tenantPool(insertedB);
+  mockResolveTenantContext.mockImplementation(async (tenantId) => ({
+    tenant: { is_active: true },
+    tenantPool: tenantId === 'tenant-a' ? poolA : poolB,
+  }));
+
+  const responseA = response();
+  await createRegistrationRequest(request({
+    body: { device_id: 'shared-device' },
+    headers: { 'x-pos-tenant-id': 'tenant-a' },
+  }), responseA, jest.fn());
+  const responseB = response();
+  await createRegistrationRequest(request({
+    body: { device_id: 'shared-device' },
+    headers: { 'x-pos-tenant-id': 'tenant-b' },
+  }), responseB, jest.fn());
+
+  expect(responseA.status).toHaveBeenCalledWith(201);
+  expect(responseB.status).toHaveBeenCalledWith(201);
+  expect(insertedA).toHaveLength(1);
+  expect(insertedB).toHaveLength(1);
+  expect(insertedA[0].deviceId).toBe('shared-device');
+  expect(insertedB[0].deviceId).toBe('shared-device');
+  expect(poolA.query).not.toBe(poolB.query);
+});
+
 test('registration status requires the exact token-bound request', async () => {
   const pool = poolWith(async (sql, params) => {
     if (sql.includes('FROM pos_registration_requests WHERE request_id=$1 AND request_token_hash=$2')) {
