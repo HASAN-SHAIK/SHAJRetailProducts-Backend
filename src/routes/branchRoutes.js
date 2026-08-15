@@ -11,7 +11,7 @@ const isAdmin = require('../middleware/isAdmin');
 const router = express.Router();
 
 router.get('/', getBranches);
-router.post('/', createBranch);
+router.post('/', isAdmin, createBranch);
 router.get('/:branchId/devices', isAdmin, getBranchDevices);
 router.post('/:branchId/devices/register', isAdmin, registerDeviceOnBranch);
 router.patch('/:branchId/devices/:deviceId/deactivate', isAdmin, deactivateBranchDevice);
