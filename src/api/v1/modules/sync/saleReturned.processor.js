@@ -41,6 +41,7 @@ const processSaleReturned = async (client, event) => {
     `UPDATE orders SET
        order_status='returned',
        total_paid=0,
+       returned_amount=total_price,
        source_event_id=$2,
        source_version=$3,
        source_refund_approved_by_user_id=$4,
