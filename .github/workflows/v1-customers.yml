@@ -1,0 +1,25 @@
+name: V1 customers acceptance
+
+on:
+  pull_request:
+    paths:
+      - 'Db/migrations/2026-08-15-pos-customer-canonical-mapping.sql'
+      - 'src/api/v1/modules/sync/customerChanged.processor.js'
+      - 'src/api/v1/modules/sync/customerChanged.processor.test.js'
+      - '.github/workflows/v1-customers.yml'
+  workflow_dispatch:
+
+jobs:
+  canonical-customer-convergence:
+    runs-on: ubuntu-latest
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Run V1 Customers acceptance
+        run: npx jest src/api/v1/modules/sync/customerChanged.processor.test.js --runInBand
