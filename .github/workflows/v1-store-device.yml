@@ -19,7 +19,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
-      - run: npm ci
+      - run: npm install --no-audit --no-fund
       - name: Run V1 Store Device acceptance
         run: npx jest src/controllers/posRegistrationController.v1StoreDeviceAcceptance.test.js --runInBand
