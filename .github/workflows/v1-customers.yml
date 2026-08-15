@@ -8,6 +8,8 @@ on:
       - 'src/api/v1/modules/sync/customerChanged.processor.test.js'
       - 'src/services/posSyncGateway.js'
       - 'src/services/posSyncGateway.v1CustomerAcceptance.test.js'
+      - 'src/modules/customers/service.js'
+      - 'src/modules/customers/service.v1Acceptance.test.js'
       - '.github/workflows/v1-customers.yml'
   workflow_dispatch:
 
@@ -28,4 +30,5 @@ jobs:
           npx jest
           src/api/v1/modules/sync/customerChanged.processor.test.js
           src/services/posSyncGateway.v1CustomerAcceptance.test.js
+          src/modules/customers/service.v1Acceptance.test.js
           --runInBand
