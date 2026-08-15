@@ -10,6 +10,7 @@ on:
       - 'src/utils/branchDeviceLicensing.v1StoreDeviceAcceptance.test.js'
       - 'src/configuration/targets.js'
       - 'src/middleware/branchDeviceGuard.js'
+      - 'src/middleware/branchDeviceGuard.v1StoreDeviceAcceptance.test.js'
       - 'src/api/v1/modules/sync/posSync.routes.js'
       - 'src/api/v1/modules/sync/posSync.routes.v1StoreDeviceAcceptance.test.js'
       - 'src/api/v1/modules/sync/posInventoryDeviceContext.js'
@@ -30,5 +31,6 @@ jobs:
           npx jest
           src/controllers/posRegistrationController.v1StoreDeviceAcceptance.test.js
           src/utils/branchDeviceLicensing.v1StoreDeviceAcceptance.test.js
+          src/middleware/branchDeviceGuard.v1StoreDeviceAcceptance.test.js
           src/api/v1/modules/sync/posSync.routes.v1StoreDeviceAcceptance.test.js
           --runInBand
