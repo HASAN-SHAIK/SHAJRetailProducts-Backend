@@ -19,12 +19,15 @@ const branchDeviceGuard = async (req, res, next) => {
       return jsonError(res, 403, 'DEVICE_NOT_RECOGNIZED', 'Device not recognized');
     }
 
+    // Ordinary authenticated tenant requests must never create or reactivate
+    // POS device registrations. First-run registration/licensing remains an
+    // explicit Central-controlled workflow.
     const result = await ensureDeviceRegistration({
       tenantPool: req.tenantPool,
       branchId,
       deviceId,
       userId: req.user?.user_id || req.user?.id,
-      mode: 'register',
+      mode: 'validate',
       deviceInfo
     });
 
