@@ -152,6 +152,73 @@ test('admin approval uses canonical licensing and does not approve when the devi
   expect(res.json).toHaveBeenCalledWith({ code: 'DEVICE_LIMIT_REACHED', limit: 2 });
 });
 
+test('Central rejects replacement approval while the logical terminal belongs to another active device', async () => {
+  const pending = { device_id: 'replacement-pos', device_name: 'Replacement', os_info: 'linux' };
+  const pool = poolWith(async (sql, params = []) => {
+    if (sql.includes("WHERE request_id=$1 AND status='PENDING'")) {
+      return { rowCount: 1, rows: [pending] };
+    }
+    if (sql.includes('JOIN branch_devices d')) {
+      expect(params).toEqual(['branch-a', 'T-01', 'replacement-pos']);
+      return { rowCount: 1, rows: [{ device_id: 'old-pos' }] };
+    }
+    if (sql.includes("SET status='APPROVED'")) {
+      throw new Error('approval update must not run while terminal is in use');
+    }
+    return { rowCount: 0, rows: [] };
+  });
+  const res = response();
+
+  await approveRegistrationRequest(request({
+    tenantPool: pool,
+    params: { requestId: 'posreg-replacement' },
+    body: { branch_id: 'branch-a', terminal_id: 'T-01' },
+    user: { user_id: 'admin-1' },
+  }), res, jest.fn());
+
+  expect(mockEnsureDeviceRegistration).not.toHaveBeenCalled();
+  expect(res.status).toHaveBeenCalledWith(409);
+  expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+    code: 'TERMINAL_IN_USE',
+    terminal_id: 'T-01',
+    active_device_id: 'old-pos',
+  }));
+});
+
+test('Central allows replacement approval after the previous terminal device is inactive', async () => {
+  const pending = { device_id: 'replacement-pos', device_name: 'Replacement', os_info: 'linux' };
+  const pool = poolWith(async (sql) => {
+    if (sql.includes("WHERE request_id=$1 AND status='PENDING'")) {
+      return { rowCount: 1, rows: [pending] };
+    }
+    if (sql.includes('JOIN branch_devices d')) {
+      return { rowCount: 0, rows: [] };
+    }
+    if (sql.includes("SET status='APPROVED'")) {
+      return { rowCount: 1, rows: [{
+        request_id: 'posreg-replacement', device_id: 'replacement-pos', status: 'APPROVED', branch_id: 'branch-a', terminal_id: 'T-01',
+      }] };
+    }
+    return { rowCount: 0, rows: [] };
+  });
+  mockEnsureDeviceRegistration.mockResolvedValue({ allowed: true, limit: 2 });
+  const res = response();
+
+  await approveRegistrationRequest(request({
+    tenantPool: pool,
+    params: { requestId: 'posreg-replacement' },
+    body: { branch_id: 'branch-a', terminal_id: 'T-01' },
+    user: { user_id: 'admin-1' },
+  }), res, jest.fn());
+
+  expect(mockEnsureDeviceRegistration).toHaveBeenCalledWith(expect.objectContaining({
+    branchId: 'branch-a',
+    deviceId: 'replacement-pos',
+    mode: 'register',
+  }));
+  expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ status: 'APPROVED', terminal_id: 'T-01' }));
+});
+
 test('approved request can be claimed exactly once with its token', async () => {
   let claimed = false;
   const pool = poolWith(async (sql) => {

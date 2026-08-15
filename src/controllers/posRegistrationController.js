@@ -152,6 +152,31 @@ const approveRegistrationRequest = async (req, res, next) => {
     );
     if (pending.rowCount === 0) return res.status(409).json({ code: 'REGISTRATION_NOT_PENDING' });
     const request = pending.rows[0];
+
+    const terminalConflict = await req.tenantPool.query(
+      `SELECT r.device_id
+       FROM pos_registration_requests r
+       JOIN branch_devices d
+         ON d.device_id = r.device_id
+        AND d.branch_id = r.branch_id
+        AND d.is_active = TRUE
+       WHERE r.branch_id = $1
+         AND r.terminal_id = $2
+         AND r.status IN ('APPROVED','CLAIMED')
+         AND r.device_id <> $3
+       ORDER BY COALESCE(r.claimed_at, r.reviewed_at, r.requested_at) DESC
+       LIMIT 1`,
+      [branchId, terminalId, request.device_id]
+    );
+    if (terminalConflict.rowCount > 0) {
+      return res.status(409).json({
+        code: 'TERMINAL_IN_USE',
+        message: 'Terminal is assigned to another active POS device. Deactivate the previous device before approving a replacement.',
+        terminal_id: terminalId,
+        active_device_id: terminalConflict.rows[0].device_id,
+      });
+    }
+
     const registration = await ensureDeviceRegistration({
       tenantPool: req.tenantPool,
       branchId,
