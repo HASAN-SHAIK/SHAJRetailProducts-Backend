@@ -26,7 +26,7 @@ describe('sale.partial_returned projection', () => {
     },
   };
 
-  test('records one partial-return operation and advances canonical item/payment balance facts', async () => {
+  test('records one partial-return operation and advances canonical item/payment/return-principal facts', async () => {
     const client = {
       query: jest
         .fn()
@@ -50,8 +50,10 @@ describe('sale.partial_returned projection', () => {
 
     expect(String(client.query.mock.calls[3][0])).toContain('source_returned_quantity_milli=source_returned_quantity_milli+$3');
     expect(client.query.mock.calls[3][1]).toEqual([42, 'item-1', 250, 2500]);
-    expect(String(client.query.mock.calls[5][0])).toContain('total_paid=GREATEST(0,total_paid-($2::numeric / 100.0))');
-    expect(String(client.query.mock.calls[5][0])).toContain('source_version=GREATEST');
+    const orderSql = String(client.query.mock.calls[5][0]);
+    expect(orderSql).toContain('total_paid=GREATEST(0,total_paid-($2::numeric / 100.0))');
+    expect(orderSql).toContain('returned_amount=LEAST(total_price,COALESCE(returned_amount,0)+($2::numeric / 100.0))');
+    expect(orderSql).toContain('source_version=GREATEST');
   });
 
   test('treats the same return_id and facts as semantic replay without applying money or quantity twice', async () => {
@@ -113,7 +115,7 @@ describe('sale.partial_returned projection', () => {
     });
     await expect(processSalePartialReturned(noQuery, {
       ...event,
-      payload: { ...event.payload, order: { ...event.payload.order, status: 'returned' } },
+      payload: { ...event.payload, order: { ...event.payload.order, status: 'voided' } },
     })).rejects.toMatchObject({ code: 'INVALID_SALE_PARTIAL_RETURNED_PAYLOAD' });
     await expect(processSalePartialReturned(noQuery, {
       ...event,

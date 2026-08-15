@@ -22,7 +22,7 @@ describe('sale.returned projection', () => {
     },
   };
 
-  test('advances an existing canonical POS sale to returned and preserves refund audit', async () => {
+  test('advances an existing canonical POS sale to returned and preserves refund/balance audit facts', async () => {
     const client = {
       query: jest
         .fn()
@@ -33,9 +33,11 @@ describe('sale.returned projection', () => {
     const result = await processSaleReturned(client, event);
 
     expect(result).toEqual({ order_id: 'ord-1', central_order_id: 42, canonical_applied: true, status: 'returned' });
-    expect(String(client.query.mock.calls[0][0])).toContain("order_status='returned'");
-    expect(String(client.query.mock.calls[0][0])).toContain('source_refund_approved_by_user_id');
-    expect(String(client.query.mock.calls[0][0])).toContain('total_paid=0');
+    const canonicalSql = String(client.query.mock.calls[0][0]);
+    expect(canonicalSql).toContain("order_status='returned'");
+    expect(canonicalSql).toContain('source_refund_approved_by_user_id');
+    expect(canonicalSql).toContain('total_paid=0');
+    expect(canonicalSql).toContain('returned_amount=total_price');
     expect(client.query.mock.calls[0][1]).toEqual([
       'ord-1',
       'evt-return-1',

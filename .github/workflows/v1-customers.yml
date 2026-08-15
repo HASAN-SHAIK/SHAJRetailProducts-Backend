@@ -6,6 +6,10 @@ on:
       - 'Db/migrations/2026-08-15-pos-customer-canonical-mapping.sql'
       - 'src/api/v1/modules/sync/customerChanged.processor.js'
       - 'src/api/v1/modules/sync/customerChanged.processor.test.js'
+      - 'src/api/v1/modules/sync/saleReturned.processor.js'
+      - 'src/api/v1/modules/sync/saleReturned.processor.test.js'
+      - 'src/api/v1/modules/sync/salePartialReturned.processor.js'
+      - 'src/api/v1/modules/sync/salePartialReturned.processor.test.js'
       - 'src/services/posSyncGateway.js'
       - 'src/services/posSyncGateway.v1CustomerAcceptance.test.js'
       - 'src/modules/customers/service.js'
@@ -29,6 +33,8 @@ jobs:
         run: >-
           npx jest
           src/api/v1/modules/sync/customerChanged.processor.test.js
+          src/api/v1/modules/sync/saleReturned.processor.test.js
+          src/api/v1/modules/sync/salePartialReturned.processor.test.js
           src/services/posSyncGateway.v1CustomerAcceptance.test.js
           src/modules/customers/service.v1Acceptance.test.js
           --runInBand

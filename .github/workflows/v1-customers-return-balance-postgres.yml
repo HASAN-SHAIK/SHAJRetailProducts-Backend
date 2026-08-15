@@ -1,0 +1,43 @@
+name: V1 customers return balance PostgreSQL
+
+on:
+  pull_request:
+    paths:
+      - 'src/api/v1/modules/sync/saleReturned.processor.js'
+      - 'src/api/v1/modules/sync/salePartialReturned.processor.js'
+      - 'src/api/v1/modules/sync/saleReturnBalance.postgresAcceptance.test.js'
+      - '.github/workflows/v1-customers-return-balance-postgres.yml'
+  workflow_dispatch:
+
+jobs:
+  certify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: customers_return_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d customers_return_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/customers_return_e2e
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Certify full and partial return balance facts on real PostgreSQL
+        run: npx jest src/api/v1/modules/sync/saleReturnBalance.postgresAcceptance.test.js --runInBand
