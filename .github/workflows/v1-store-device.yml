@@ -1,0 +1,24 @@
+name: V1 Store Device acceptance
+
+on:
+  pull_request:
+    paths:
+      - 'src/controllers/posRegistrationController.js'
+      - 'src/controllers/posRegistrationController.v1StoreDeviceAcceptance.test.js'
+      - 'src/controllers/branchDeviceController.js'
+      - 'src/utils/branchDeviceLicensing.js'
+      - 'src/middleware/branchDeviceGuard.js'
+      - '.github/workflows/v1-store-device.yml'
+  workflow_dispatch:
+
+jobs:
+  store-device-acceptance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --no-audit --no-fund
+      - name: Run V1 Store Device acceptance
+        run: npx jest src/controllers/posRegistrationController.v1StoreDeviceAcceptance.test.js --runInBand
