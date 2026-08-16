@@ -6,6 +6,8 @@ on:
       - 'src/middleware/authTenant.js'
       - 'src/middleware/authTenant.v1Acceptance.test.js'
       - 'src/middleware/authAdmin.js'
+      - 'src/routes/authRoutes.js'
+      - 'src/api/v1/modules/auth/auth.routes.js'
       - 'src/controllers/tenant/userController.js'
       - 'src/controllers/authController.js'
       - 'src/controllers/adminAuthController.js'
@@ -15,6 +17,7 @@ on:
       - 'tests/tenantUserController.test.js'
       - 'tests/v1AuthRefreshPostgres.test.js'
       - 'tests/v1PlatformAdminAuth.test.js'
+      - 'tests/v1PublicRegistrationBoundary.test.js'
       - 'Db/migrations/2026-08-16-v1-auth-tenant-roles.sql'
       - 'src/services/tenantProvisionService.js'
       - 'src/controllers/offlineGrantController.js'
@@ -59,4 +62,5 @@ jobs:
           src/controllers/offlineGrantController.test.js
           tests/v1AuthRefreshPostgres.test.js
           tests/v1PlatformAdminAuth.test.js
+          tests/v1PublicRegistrationBoundary.test.js
           --runInBand
