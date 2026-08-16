@@ -1,9 +1,7 @@
 const { errorWithStatus, normalizeScopeType } = require('./validation');
 
 const getRequestPool = (req) => {
-  if (!req?.tenantPool) {
-    throw errorWithStatus(500, 'TENANT_POOL_MISSING', 'Tenant database context is unavailable');
-  }
+  if (!req?.tenantPool) throw errorWithStatus(500, 'TENANT_POOL_MISSING', 'Tenant database context is unavailable');
   return req.tenantPool;
 };
 
@@ -31,15 +29,15 @@ const resolveDevice = async (requestPool, deviceId, { requireActive = false } = 
     [String(deviceId)]
   );
   if (!result.rowCount) return null;
-  const activeRows = result.rows.filter((candidate) => candidate.is_active === true && candidate.branch_is_active === true);
+  const activeRows = result.rows.filter((candidate) => candidate.is_active === true && candidate.branch_is_active !== false);
   if (activeRows.length > 1) return null;
   const row = activeRows[0] || result.rows[0];
-  if (requireActive && (row.is_active !== true || row.branch_is_active !== true)) return null;
+  if (requireActive && (row.is_active !== true || row.branch_is_active === false)) return null;
   return {
     id: String(row.id),
     deviceId: String(row.device_id),
     branchId: row.branch_id === null || row.branch_id === undefined ? null : String(row.branch_id),
-    active: row.is_active === true && row.branch_is_active === true,
+    active: row.is_active === true && row.branch_is_active !== false,
   };
 };
 
