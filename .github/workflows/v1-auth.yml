@@ -24,6 +24,7 @@ on:
       - 'src/utils/jwt.js'
       - 'src/utils/rolePermissions.js'
       - 'src/utils/branch.js'
+      - 'src/utils/branchDeviceLicensing.js'
       - 'tests/tenantUserController.test.js'
       - 'tests/v1AuthRefreshPostgres.test.js'
       - 'tests/v1PlatformAdminAuth.test.js'
@@ -31,6 +32,7 @@ on:
       - 'tests/v1ProtectedRoutePermissions.test.js'
       - 'tests/v1PurchaseExpensePermissions.test.js'
       - 'tests/v1AccountingPermissions.test.js'
+      - 'tests/v1AuthDeviceValidation.test.js'
       - 'Db/migrations/2026-08-16-v1-auth-tenant-roles.sql'
       - 'src/services/tenantProvisionService.js'
       - 'src/controllers/offlineGrantController.js'
@@ -79,4 +81,5 @@ jobs:
           tests/v1ProtectedRoutePermissions.test.js
           tests/v1PurchaseExpensePermissions.test.js
           tests/v1AccountingPermissions.test.js
+          tests/v1AuthDeviceValidation.test.js
           --runInBand

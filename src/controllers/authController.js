@@ -190,7 +190,7 @@ const login = async (req, res) => {
         branchId,
         deviceId,
         userId: user.id,
-        mode: 'register',
+        mode: 'validate',
         deviceInfo
       });
       if (!deviceResult.allowed) {
@@ -296,7 +296,7 @@ const getLogin = async (req, res) => {
         branchId,
         deviceId,
         userId: req.user?.user_id || req.user?.id,
-        mode: 'register',
+        mode: 'validate',
         deviceInfo
       });
       if (!deviceResult.allowed) {
