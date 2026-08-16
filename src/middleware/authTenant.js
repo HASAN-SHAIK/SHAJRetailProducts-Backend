@@ -4,6 +4,7 @@ const {
   getTokenFromRequest,
   verifyTenantToken
 } = require('../utils/jwt');
+const { ROLE_PERMISSIONS } = require('../utils/rolePermissions');
 const { resolveTenantContext, resolveTenantContextFromToken } = require('../config/tenantDbResolver');
 
 const authTenantMiddleware = async (req, res, next) => {
@@ -15,9 +16,12 @@ const authTenantMiddleware = async (req, res, next) => {
     if (verified?.type !== 'tenant' || !verified?.tenant_id || !verified?.user_id) {
       return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid token payload');
     }
-    if (verified.role !== 'admin' && verified.role !== 'staff') {
+
+    const normalizedRole = String(verified.role || '').trim().toLowerCase();
+    if (!Object.prototype.hasOwnProperty.call(ROLE_PERMISSIONS, normalizedRole)) {
       return jsonError(res, 403, 'FORBIDDEN', 'Invalid tenant role');
     }
+    verified.role = normalizedRole;
 
     req.user = verified;
     req.tenant_id = verified.tenant_id;
