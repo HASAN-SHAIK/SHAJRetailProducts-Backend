@@ -1,15 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const { getSalesReport, getInventoryReport, getDailySalesReport, getProfitReport, getProfitGraph } = require('../controllers/reportController');
-const {authMiddleware} = require('../middleware/authMiddleware');
-const roleMiddleware = require('../middleware/roleMiddleware');
-const isAdmin = require('../middleware/isAdmin');
+const { requirePermission } = require('../middleware/requirePermission');
 
-// ❌ Only Admins can access reports
-router.get('/sales' , getSalesReport);
-router.get('/inventory',  getInventoryReport);
-router.get('/daily', getDailySalesReport);
-router.get('/profit', getProfitReport); 
-router.get('/profit-graph', getProfitGraph);
+router.get('/sales', requirePermission('reports:read'), getSalesReport);
+router.get('/inventory', requirePermission('reports:read'), getInventoryReport);
+router.get('/daily', requirePermission('reports:read'), getDailySalesReport);
+router.get('/profit', requirePermission('reports:read'), getProfitReport);
+router.get('/profit-graph', requirePermission('reports:read'), getProfitGraph);
 
 module.exports = router;
