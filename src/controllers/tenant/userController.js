@@ -1,5 +1,6 @@
 const bcrypt = require('bcryptjs');
 const { jsonError, jsonOk } = require('../../utils/responses');
+const { ROLE_PERMISSIONS } = require('../../utils/rolePermissions');
 
 const currentUserId = (req) => Number(req?.user?.user_id || req?.user?.id || 0);
 const normalizeRole = (role) => String(role || '').trim().toLowerCase();
@@ -9,7 +10,8 @@ const parseBoolean = (value, fallback = false) => {
   return ['1', 'true', 'yes', 'y'].includes(String(value).trim().toLowerCase());
 };
 
-const validateRole = (role) => ['admin', 'staff'].includes(role);
+const validateRole = (role) => Object.prototype.hasOwnProperty.call(ROLE_PERMISSIONS, role);
+const supportedRoleMessage = `role must be one of: ${Object.keys(ROLE_PERMISSIONS).join(', ')}`;
 
 const assertBranch = async (pool, branchId) => {
   if (!branchId) return null;
@@ -46,7 +48,7 @@ const createUser = async (req, res) => {
 
     if (!name || !email || !password) return jsonError(res, 400, 'VALIDATION_ERROR', 'name, email and password are required');
     if (password.length < 8) return jsonError(res, 400, 'VALIDATION_ERROR', 'password must be at least 8 characters');
-    if (!validateRole(role)) return jsonError(res, 400, 'VALIDATION_ERROR', 'role must be admin or staff');
+    if (!validateRole(role)) return jsonError(res, 400, 'VALIDATION_ERROR', supportedRoleMessage);
 
     if (role === 'admin') allBranchAccess = true;
     if (allBranchAccess) branchId = null;
@@ -76,7 +78,7 @@ const updateUserRole = async (req, res) => {
     const userId = Number(req.params.id);
     if (!userId) return jsonError(res, 400, 'VALIDATION_ERROR', 'Invalid user id');
     const role = normalizeRole(req.body?.role);
-    if (!validateRole(role)) return jsonError(res, 400, 'VALIDATION_ERROR', 'role must be admin or staff');
+    if (!validateRole(role)) return jsonError(res, 400, 'VALIDATION_ERROR', supportedRoleMessage);
 
     if (userId === currentUserId(req) && role !== 'admin') {
       return jsonError(res, 409, 'SELF_DEMOTION_BLOCKED', 'You cannot remove your own admin access');
