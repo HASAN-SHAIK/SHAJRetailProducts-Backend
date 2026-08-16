@@ -3,6 +3,10 @@ name: V1 Store Device acceptance
 on:
   pull_request:
     paths:
+      - 'Db/migrations/2026-08-16-branch-lifecycle.sql'
+      - 'src/services/branchService.js'
+      - 'src/services/branchService.v1StoreDeviceAcceptance.test.js'
+      - 'src/controllers/branchController.js'
       - 'src/controllers/posRegistrationController.js'
       - 'src/controllers/posRegistrationController.v1StoreDeviceAcceptance.test.js'
       - 'src/controllers/branchDeviceController.js'
@@ -34,6 +38,7 @@ jobs:
           npx jest
           src/controllers/posRegistrationController.v1StoreDeviceAcceptance.test.js
           src/controllers/storeDeviceDiagnostics.v1StoreDeviceAcceptance.test.js
+          src/services/branchService.v1StoreDeviceAcceptance.test.js
           src/routes/branchRoutes.v1StoreDeviceAcceptance.test.js
           src/utils/branchDeviceLicensing.v1StoreDeviceAcceptance.test.js
           src/middleware/branchDeviceGuard.v1StoreDeviceAcceptance.test.js
