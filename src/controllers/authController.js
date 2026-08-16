@@ -12,10 +12,8 @@ const {
 const { getPermissionsForRole, getStorePermissions } = require('../utils/rolePermissions');
 const {
   createRefreshToken,
-  findValidRefreshToken,
-  touchRefreshToken,
+  consumeAndRotateRefreshToken,
   revokeRefreshToken,
-  rotateRefreshToken,
   getAccessTtlMs,
   getRefreshTtlMs
 } = require('../services/authSessionService');
@@ -252,14 +250,12 @@ const refresh = async (req, res) => {
     }
 
     const tenantPool = getTenantPool(tenant.database_name);
-    const match = await findValidRefreshToken(tenantPool, rawRefreshToken);
-    if (!match) {
-      return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid or expired refresh token');
+    const rotated = await consumeAndRotateRefreshToken(tenantPool, rawRefreshToken, tenant.id);
+    if (!rotated) {
+      return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid, expired, or already used refresh token');
     }
 
-    const row = match.row;
-    await touchRefreshToken(tenantPool, match.tokenHash);
-
+    const row = rotated.row;
     const user = {
       id: row.user_id,
       name: row.name,
@@ -268,15 +264,6 @@ const refresh = async (req, res) => {
       branch_id: row.branch_id || null,
       all_branch_access: row.all_branch_access !== false,
     };
-
-    const rotated = await rotateRefreshToken(tenantPool, {
-      existingHash: match.tokenHash,
-      userId: user.id,
-      tenantId: tenant.id,
-      rememberMe: row.remember_me === true,
-      deviceId: row.device_id || null,
-      branchId: row.branch_id || null,
-    });
 
     const token = signTenantToken(buildTenantTokenPayload(user, tenant));
     setAccessAuthCookies(res, token);
