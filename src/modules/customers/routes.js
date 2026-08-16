@@ -8,15 +8,16 @@ const {
   handleAddPayment,
   handleLedger
 } = require('./controller');
+const { requirePermission } = require('../../middleware/requirePermission');
 
 const router = express.Router();
 
-router.get('/search', handleSearchCustomers);
-router.get('/', handleGetCustomers);
-router.post('/', handleCreateCustomer);
-router.get('/:id', handleGetCustomerById);
-router.put('/:id', handleUpdateCustomer);
-router.post('/:id/payments', handleAddPayment);
-router.get('/:id/ledger', handleLedger);
+router.get('/search', requirePermission('customers:read'), handleSearchCustomers);
+router.get('/', requirePermission('customers:read'), handleGetCustomers);
+router.post('/', requirePermission('customers:write'), handleCreateCustomer);
+router.get('/:id', requirePermission('customers:read'), handleGetCustomerById);
+router.put('/:id', requirePermission('customers:write'), handleUpdateCustomer);
+router.post('/:id/payments', requirePermission('customers:write'), handleAddPayment);
+router.get('/:id/ledger', requirePermission('customers:read'), handleLedger);
 
 module.exports = router;
