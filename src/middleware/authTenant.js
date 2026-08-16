@@ -5,7 +5,7 @@ const {
   verifyTenantToken
 } = require('../utils/jwt');
 const { ROLE_PERMISSIONS } = require('../utils/rolePermissions');
-const { resolveTenantContext, resolveTenantContextFromToken } = require('../config/tenantDbResolver');
+const { resolveTenantContext } = require('../config/tenantDbResolver');
 
 const authTenantMiddleware = async (req, res, next) => {
   const token = getTokenFromRequest(req, DEFAULT_TENANT_COOKIE);
@@ -26,15 +26,12 @@ const authTenantMiddleware = async (req, res, next) => {
     req.user = verified;
     req.tenant_id = verified.tenant_id;
 
-    let context = resolveTenantContextFromToken(verified);
-    if (context?.tenant?.is_active === false) {
+    // Central tenant state is authoritative. Platform tenant mutations clear the
+    // tenant runtime cache, so a stale JWT tenant_active claim cannot keep a
+    // disabled tenant authorized until access-token expiry.
+    const context = await resolveTenantContext(verified.tenant_id);
+    if (!context || context.tenant?.is_active === false) {
       return jsonError(res, 403, 'TENANT_DISABLED', 'Tenant is disabled');
-    }
-    if (!context) {
-      context = await resolveTenantContext(verified.tenant_id);
-      if (!context || context.tenant?.is_active === false) {
-        return jsonError(res, 403, 'TENANT_DISABLED', 'Tenant is disabled');
-      }
     }
 
     req.tenant = context.tenant;

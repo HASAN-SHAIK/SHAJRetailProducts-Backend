@@ -137,6 +137,9 @@ const register = async (req, res) => {
 
     const tenant = await resolveTenantFromRequest({ email });
     if (!tenant) return jsonError(res, 404, 'TENANT_NOT_FOUND', 'Tenant not found');
+    if (tenant.is_active === false) {
+      return jsonError(res, 403, 'TENANT_DISABLED', 'Tenant is disabled');
+    }
 
     const tenantPool = getTenantPool(tenant.database_name);
     const userCheck = await tenantPool.query('SELECT id FROM users WHERE email = $1', [email]);
@@ -168,6 +171,9 @@ const login = async (req, res) => {
 
     const tenant = await resolveTenantFromRequest({ email });
     if (!tenant) return jsonError(res, 404, 'TENANT_NOT_FOUND', 'Tenant not found');
+    if (tenant.is_active === false) {
+      return jsonError(res, 403, 'TENANT_DISABLED', 'Tenant is disabled');
+    }
 
     const tenantPool = getTenantPool(tenant.database_name);
     const userResult = await tenantPool.query('SELECT * FROM users WHERE email = $1', [email]);
@@ -247,6 +253,10 @@ const refresh = async (req, res) => {
     const tenant = await getTenantById(tenantId);
     if (!tenant) {
       return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid refresh token');
+    }
+    if (tenant.is_active === false) {
+      clearSessionCookies(res);
+      return jsonError(res, 403, 'TENANT_DISABLED', 'Tenant is disabled');
     }
 
     const tenantPool = getTenantPool(tenant.database_name);
