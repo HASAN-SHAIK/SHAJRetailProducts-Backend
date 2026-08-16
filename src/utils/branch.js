@@ -13,7 +13,6 @@ const resolveBranchIdFromRequest = (req) => {
     req?.headers?.['x-branch-id'] || req?.query?.branch_id || req?.body?.branch_id
   );
   const user = req?.user || {};
-  const userRole = String(user?.role || '').toLowerCase();
   const userAllBranchAccess =
     user?.all_branch_access === undefined || user?.all_branch_access === null
       ? true
@@ -22,8 +21,11 @@ const resolveBranchIdFromRequest = (req) => {
         String(user?.all_branch_access).toLowerCase() === 'true';
   const userBranchId = normalizeBranchId(user?.branch_id);
 
-  // Staff with restricted branch access are always pinned to their assigned branch.
-  if (userRole === 'staff' && !userAllBranchAccess && userBranchId) {
+  // Any tenant user explicitly restricted to one branch is pinned to that
+  // authoritative assignment regardless of role. This covers cashier/manager
+  // as well as the transitional staff role and prevents caller-selected branch
+  // headers/query/body values from widening Central access.
+  if (!userAllBranchAccess && userBranchId) {
     return userBranchId;
   }
 
