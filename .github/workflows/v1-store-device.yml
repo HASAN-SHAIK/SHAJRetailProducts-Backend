@@ -21,6 +21,8 @@ on:
       - 'src/middleware/branchDeviceGuard.v1StoreDeviceAcceptance.test.js'
       - 'src/api/v1/modules/sync/posSync.routes.js'
       - 'src/api/v1/modules/sync/posSync.routes.v1StoreDeviceAcceptance.test.js'
+      - 'src/api/v1/modules/sync/posConfig.routes.js'
+      - 'src/api/v1/modules/sync/posConfig.routes.v1StoreDeviceAcceptance.test.js'
       - 'src/api/v1/modules/sync/posInventoryDeviceContext.js'
       - '.github/workflows/v1-store-device.yml'
   workflow_dispatch:
@@ -45,4 +47,5 @@ jobs:
           src/configuration/branchLifecycle.v1StoreDeviceAcceptance.test.js
           src/middleware/branchDeviceGuard.v1StoreDeviceAcceptance.test.js
           src/api/v1/modules/sync/posSync.routes.v1StoreDeviceAcceptance.test.js
+          src/api/v1/modules/sync/posConfig.routes.v1StoreDeviceAcceptance.test.js
           --runInBand
