@@ -25,8 +25,8 @@ const getAccessTtlMs = () => {
   return 15 * 60 * 1000;
 };
 
-const createRefreshToken = async (
-  tenantPool,
+const insertRefreshToken = async (
+  queryable,
   { userId, tenantId, rememberMe = false, deviceId = null, branchId = null }
 ) => {
   const rawToken = generateRefreshToken(tenantId);
@@ -34,15 +34,20 @@ const createRefreshToken = async (
   const ttlMs = getRefreshTtlMs(rememberMe);
   const expiresAt = new Date(Date.now() + ttlMs);
 
-  await tenantPool.query(
+  await queryable.query(
     `INSERT INTO user_refresh_tokens
       (user_id, token_hash, remember_me, device_id, branch_id, expires_at)
      VALUES ($1, $2, $3, $4, $5, $6)`,
     [userId, tokenHash, rememberMe === true, deviceId, branchId, expiresAt]
   );
 
-  return { rawToken, expiresAt, rememberMe: rememberMe === true, ttlMs };
+  return { rawToken, tokenHash, expiresAt, rememberMe: rememberMe === true, ttlMs };
 };
+
+const createRefreshToken = async (
+  tenantPool,
+  { userId, tenantId, rememberMe = false, deviceId = null, branchId = null }
+) => insertRefreshToken(tenantPool, { userId, tenantId, rememberMe, deviceId, branchId });
 
 const findValidRefreshToken = async (tenantPool, rawToken) => {
   if (!rawToken) return null;
@@ -98,6 +103,65 @@ const rotateRefreshToken = async (
   return createRefreshToken(tenantPool, { userId, tenantId, rememberMe, deviceId, branchId });
 };
 
+const consumeAndRotateRefreshToken = async (tenantPool, rawToken, tenantId) => {
+  if (!tenantPool?.connect || !rawToken || !tenantId) return null;
+  const tokenHash = hashRefreshToken(rawToken);
+  const client = await tenantPool.connect();
+  let inTransaction = false;
+
+  try {
+    await client.query('BEGIN');
+    inTransaction = true;
+
+    const result = await client.query(
+      `SELECT rt.*, u.id AS user_id, u.name, u.email, u.role, u.branch_id, u.all_branch_access, u.password,
+              (rt.revoked_at IS NULL AND rt.expires_at > NOW()) AS is_valid
+       FROM user_refresh_tokens rt
+       INNER JOIN users u ON u.id = rt.user_id
+       WHERE rt.token_hash = $1
+       FOR UPDATE OF rt`,
+      [tokenHash]
+    );
+
+    if (!result.rowCount || result.rows[0].is_valid !== true) {
+      await client.query('ROLLBACK');
+      inTransaction = false;
+      return null;
+    }
+
+    const row = result.rows[0];
+    await client.query(
+      `UPDATE user_refresh_tokens
+       SET revoked_at = NOW(), last_used_at = NOW()
+       WHERE token_hash = $1 AND revoked_at IS NULL`,
+      [tokenHash]
+    );
+
+    const rotated = await insertRefreshToken(client, {
+      userId: row.user_id,
+      tenantId,
+      rememberMe: row.remember_me === true,
+      deviceId: row.device_id || null,
+      branchId: row.branch_id || null,
+    });
+
+    await client.query('COMMIT');
+    inTransaction = false;
+    return { row, tokenHash, ...rotated };
+  } catch (error) {
+    if (inTransaction) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (_) {
+        // Preserve the original rotation failure.
+      }
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
 module.exports = {
   hashRefreshToken,
   generateRefreshToken,
@@ -109,4 +173,5 @@ module.exports = {
   revokeRefreshToken,
   revokeRefreshTokenByHash,
   rotateRefreshToken,
+  consumeAndRotateRefreshToken,
 };
