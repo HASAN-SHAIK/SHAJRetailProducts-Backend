@@ -16,6 +16,7 @@ on:
       - 'src/utils/branchDeviceLicensing.js'
       - 'src/utils/branchDeviceLicensing.v1StoreDeviceAcceptance.test.js'
       - 'src/configuration/targets.js'
+      - 'src/configuration/branchLifecycle.v1StoreDeviceAcceptance.test.js'
       - 'src/middleware/branchDeviceGuard.js'
       - 'src/middleware/branchDeviceGuard.v1StoreDeviceAcceptance.test.js'
       - 'src/api/v1/modules/sync/posSync.routes.js'
@@ -41,6 +42,7 @@ jobs:
           src/services/branchService.v1StoreDeviceAcceptance.test.js
           src/routes/branchRoutes.v1StoreDeviceAcceptance.test.js
           src/utils/branchDeviceLicensing.v1StoreDeviceAcceptance.test.js
+          src/configuration/branchLifecycle.v1StoreDeviceAcceptance.test.js
           src/middleware/branchDeviceGuard.v1StoreDeviceAcceptance.test.js
           src/api/v1/modules/sync/posSync.routes.v1StoreDeviceAcceptance.test.js
           --runInBand
