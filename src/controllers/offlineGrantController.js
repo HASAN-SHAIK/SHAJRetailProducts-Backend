@@ -1,8 +1,9 @@
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
-const { getPermissionsForRole, getStorePermissions } = require('../utils/rolePermissions');
+const { getPermissionsForRole } = require('../utils/rolePermissions');
 const { jsonError } = require('../utils/responses');
 const { normalizePrivateKeyPem } = require('../utils/pem');
+const { resolveDevice } = require('../configuration/targets');
 
 const getOfflineGrantPrivateKey = () => normalizePrivateKeyPem(process.env.POS_OFFLINE_GRANT_PRIVATE_KEY);
 
@@ -26,26 +27,43 @@ const issueOfflineGrant = async (req, res) => {
     if (!deviceId) {
       return jsonError(res, 400, 'POS_DEVICE_REQUIRED', 'device_id is required for offline POS authorization');
     }
+    if (!req.tenantPool) {
+      return jsonError(res, 500, 'TENANT_POOL_MISSING', 'Tenant database context is unavailable');
+    }
+
+    const device = await resolveDevice(req.tenantPool, deviceId, { requireActive: true });
+    if (!device?.active || !device.branchId) {
+      return jsonError(res, 403, 'POS_DEVICE_NOT_REGISTERED', 'An active Central POS device registration is required');
+    }
 
     const userId = normalizeClaimId(req.user.user_id || req.user.id);
     const tenantId = normalizeClaimId(req.user.tenant_id);
-    const branchId = normalizeClaimId(req.user.branch_id);
+    const userBranchId = normalizeClaimId(req.user.branch_id);
+    const trustedBranchId = normalizeClaimId(device.branchId);
     const role = String(req.user.role || '').toLowerCase();
     if (!userId || !tenantId || !role) {
       return jsonError(res, 401, 'UNAUTHORIZED', 'Authenticated user context is incomplete');
     }
 
+    const userHasAllBranchAccess = req.user.all_branch_access === true;
+    if (!userHasAllBranchAccess && (!userBranchId || userBranchId !== trustedBranchId)) {
+      return jsonError(res, 403, 'POS_DEVICE_BRANCH_FORBIDDEN', 'POS device is outside the user branch scope');
+    }
+
     const permissions = req.user.permissions || getPermissionsForRole(role);
-    const storePermissions = req.user.store_permissions || getStorePermissions(req.user);
+    const storePermissions = {
+      branch_id: trustedBranchId,
+      all_branch_access: false,
+    };
     const grant = jwt.sign(
       {
         type: 'pos_offline_grant',
         user_id: userId,
         tenant_id: tenantId,
         role,
-        device_id: deviceId,
-        branch_id: branchId,
-        all_branch_access: req.user.all_branch_access !== false,
+        device_id: device.deviceId,
+        branch_id: trustedBranchId,
+        all_branch_access: false,
         permissions,
         store_permissions: storePermissions,
         grant_id: crypto.randomUUID(),
@@ -64,7 +82,8 @@ const issueOfflineGrant = async (req, res) => {
       success: true,
       offline_grant: grant,
       user_id: userId,
-      device_id: deviceId,
+      device_id: device.deviceId,
+      branch_id: trustedBranchId,
       expires_in: process.env.POS_OFFLINE_GRANT_EXPIRY || '7d',
     });
   } catch (error) {
