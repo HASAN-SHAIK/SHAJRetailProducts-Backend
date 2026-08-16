@@ -20,4 +20,24 @@ const createBranch = async (req, res) => {
   }
 };
 
-module.exports = { getBranches, createBranch };
+const updateBranch = async (req, res) => {
+  try {
+    const branch = await branchService.updateBranch(req, req.params.branchId, req.body || {});
+    return res.status(200).json({ success: true, branch });
+  } catch (error) {
+    const status = error.status || 500;
+    return res.status(status).json({ success: false, error: error.message || 'Internal Server Error' });
+  }
+};
+
+const deactivateBranch = async (req, res) => {
+  try {
+    const branch = await branchService.deactivateBranch(req, req.params.branchId);
+    return res.status(200).json({ success: true, branch });
+  } catch (error) {
+    const status = error.status || 500;
+    return res.status(status).json({ success: false, error: error.message || 'Internal Server Error' });
+  }
+};
+
+module.exports = { getBranches, createBranch, updateBranch, deactivateBranch };
