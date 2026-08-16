@@ -20,7 +20,13 @@ const getTokenFromRequest = (req, cookieName) => {
   return headerToken || cookieToken || null;
 };
 
-const getTenantJwtSecret = () => process.env.JWT_SECRET;
+const getTenantJwtSecret = () => {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    throw new Error('JWT_SECRET is required for tenant authentication');
+  }
+  return secret;
+};
 const getAdminJwtSecret = () => {
   const secret = process.env.ADMIN_JWT_SECRET;
   if (!secret) {
