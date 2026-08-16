@@ -21,7 +21,13 @@ const getTokenFromRequest = (req, cookieName) => {
 };
 
 const getTenantJwtSecret = () => process.env.JWT_SECRET;
-const getAdminJwtSecret = () => process.env.ADMIN_JWT_SECRET || process.env.JWT_SECRET;
+const getAdminJwtSecret = () => {
+  const secret = process.env.ADMIN_JWT_SECRET;
+  if (!secret) {
+    throw new Error('ADMIN_JWT_SECRET is required for platform-admin authentication');
+  }
+  return secret;
+};
 
 const signTenantToken = (payload, options = {}) => {
   return jwt.sign(payload, getTenantJwtSecret(), {

@@ -22,13 +22,13 @@ const adminLogin = async (req, res) => {
     if (adminRes.rowCount === 0) {
       return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid email or password');
     }
-console.log('Admin found:', adminRes.rows[0]);
+
     const admin = adminRes.rows[0];
     const validPassword = await bcrypt.compare(password, admin.password);
     if (!validPassword) {
       return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid email or password');
     }
-console.log('Password valid for admin:', admin.email);
+
     const token = signAdminToken({
       type: 'admin',
       admin_id: admin.id,
