@@ -5,6 +5,8 @@ const {
   verifyAdminToken
 } = require('../utils/jwt');
 
+const PLATFORM_ADMIN_ROLES = new Set(['platform_admin', 'super_admin']);
+
 const authAdminMiddleware = (req, res, next) => {
   const token = getTokenFromRequest(req, DEFAULT_ADMIN_COOKIE);
   if (!token) return jsonError(res, 401, 'UNAUTHORIZED', 'Unauthorized');
@@ -14,10 +16,12 @@ const authAdminMiddleware = (req, res, next) => {
     if (verified?.type !== 'admin' || !verified?.admin_id) {
       return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid token payload');
     }
-    if (verified.role !== 'platform_admin') {
+    const normalizedRole = String(verified.role || '').trim().toLowerCase();
+    if (!PLATFORM_ADMIN_ROLES.has(normalizedRole)) {
       return jsonError(res, 403, 'FORBIDDEN', 'Invalid admin role');
     }
 
+    verified.role = normalizedRole;
     req.admin = verified;
     return next();
   } catch (error) {
