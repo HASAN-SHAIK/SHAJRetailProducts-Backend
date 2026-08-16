@@ -4,7 +4,7 @@ const { asyncHandler } = require('../../shared/errors/asyncHandler');
 const { sendSuccess } = require('../../shared/dto/apiResponse');
 const { validateRequest } = require('../../shared/middleware/validateRequest');
 const { authTenantMiddleware } = require('../../../../middleware/authTenant');
-const { register, login, refresh, getLogin, logout } = require('../../../../controllers/authController');
+const { login, refresh, getLogin, logout } = require('../../../../controllers/authController');
 
 const router = express.Router();
 
@@ -15,19 +15,13 @@ const loginSchema = Joi.object({
   remember_me: Joi.boolean().optional(),
 });
 
-const registerSchema = Joi.object({
-  name: Joi.string().trim().min(1).required(),
-  email: Joi.string().email().required(),
-  password: Joi.string().min(6).required(),
-  role: Joi.string().valid('admin', 'staff').default('staff'),
-});
-
 const wrapLegacy = (handler) =>
   asyncHandler(async (req, res) => {
     await handler(req, res);
   });
 
-router.post('/register', validateRequest(registerSchema), wrapLegacy(register));
+// V1 tenant user creation is an authenticated tenant-admin capability, not a
+// public authentication endpoint. Keep only session lifecycle routes here.
 router.post('/login', validateRequest(loginSchema), wrapLegacy(login));
 router.post('/refresh', wrapLegacy(refresh));
 router.get('/me', authTenantMiddleware, wrapLegacy(getLogin));
