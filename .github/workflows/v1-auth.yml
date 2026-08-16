@@ -46,6 +46,7 @@ on:
       - 'tests/v1AdminFinancePermissions.test.js'
       - 'tests/v1LegacyReturnPermissions.test.js'
       - 'tests/v1CrossTenantAuthIsolation.test.js'
+      - 'tests/v1AuthCookieSecretHardening.test.js'
       - 'Db/migrations/2026-08-16-v1-auth-tenant-roles.sql'
       - 'src/services/tenantProvisionService.js'
       - 'src/controllers/offlineGrantController.js'
@@ -99,4 +100,5 @@ jobs:
           tests/v1AdminFinancePermissions.test.js
           tests/v1LegacyReturnPermissions.test.js
           tests/v1CrossTenantAuthIsolation.test.js
+          tests/v1AuthCookieSecretHardening.test.js
           --runInBand
