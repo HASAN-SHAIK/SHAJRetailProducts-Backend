@@ -19,6 +19,7 @@ on:
       - 'src/services/authSessionService.js'
       - 'src/utils/jwt.js'
       - 'src/utils/rolePermissions.js'
+      - 'src/utils/branch.js'
       - 'tests/tenantUserController.test.js'
       - 'tests/v1AuthRefreshPostgres.test.js'
       - 'tests/v1PlatformAdminAuth.test.js'
