@@ -20,6 +20,7 @@ on:
       - 'src/controllers/tenant/userController.js'
       - 'src/controllers/authController.js'
       - 'src/controllers/adminAuthController.js'
+      - 'src/controllers/platformController.js'
       - 'src/services/authSessionService.js'
       - 'src/utils/jwt.js'
       - 'src/utils/rolePermissions.js'
@@ -33,6 +34,7 @@ on:
       - 'tests/v1PurchaseExpensePermissions.test.js'
       - 'tests/v1AccountingPermissions.test.js'
       - 'tests/v1AuthDeviceValidation.test.js'
+      - 'tests/v1TenantRevocationAuthority.test.js'
       - 'Db/migrations/2026-08-16-v1-auth-tenant-roles.sql'
       - 'src/services/tenantProvisionService.js'
       - 'src/controllers/offlineGrantController.js'
@@ -82,4 +84,5 @@ jobs:
           tests/v1PurchaseExpensePermissions.test.js
           tests/v1AccountingPermissions.test.js
           tests/v1AuthDeviceValidation.test.js
+          tests/v1TenantRevocationAuthority.test.js
           --runInBand
