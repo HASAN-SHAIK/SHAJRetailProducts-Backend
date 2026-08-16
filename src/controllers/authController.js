@@ -106,7 +106,7 @@ const issueAuthSession = async ({
   deviceId = null,
   branchId = null,
 }) => {
-  const token = signTenantToken(buildTenantTokenPayload(user, tenant));
+  const accessToken = signTenantToken(buildTenantTokenPayload(user, tenant));
   const refresh = await createRefreshToken(tenantPool, {
     userId: user.id,
     tenantId: tenant.id,
@@ -115,11 +115,12 @@ const issueAuthSession = async ({
     branchId,
   });
 
-  setAccessAuthCookies(res, token);
+  setAccessAuthCookies(res, accessToken);
   setRefreshAuthCookie(res, refresh.rawToken, rememberMe);
 
+  // V1 browser auth is credentialed-cookie only. Access and refresh tokens are
+  // never returned in JSON where browser JavaScript can persist or inspect them.
   return {
-    token,
     user: buildSessionUser(user, tenant),
     tenant: { id: tenant.id, name: tenant.shop_name, plan: tenant.plan_type },
     permissions: getPermissionsForRole(user.role),
@@ -275,13 +276,12 @@ const refresh = async (req, res) => {
       all_branch_access: row.all_branch_access !== false,
     };
 
-    const token = signTenantToken(buildTenantTokenPayload(user, tenant));
-    setAccessAuthCookies(res, token);
+    const accessToken = signTenantToken(buildTenantTokenPayload(user, tenant));
+    setAccessAuthCookies(res, accessToken);
     setRefreshAuthCookie(res, rotated.rawToken, row.remember_me === true);
 
     return res.status(200).json({
       success: true,
-      token,
       user: buildSessionUser(user, tenant),
       tenant: { id: tenant.id, name: tenant.shop_name, plan: tenant.plan_type },
       permissions: getPermissionsForRole(user.role),
