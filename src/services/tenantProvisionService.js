@@ -42,6 +42,14 @@ const provisionTenant = async (payload) => {
   const dbName = `shaj_tenant_${Date.now()}`;
   const dbIdentifier = quoteIdentifier(dbName);
   const tenantSchemaPath = path.join(__dirname, '..', '..', 'Db', 'tenant_schema.sql');
+  const tenantRoleMigrationPath = path.join(
+    __dirname,
+    '..',
+    '..',
+    'Db',
+    'migrations',
+    '2026-08-16-v1-auth-tenant-roles.sql'
+  );
 
   let tenantPool = null;
   let masterClient = null;
@@ -54,6 +62,7 @@ const provisionTenant = async (payload) => {
 
     tenantPool = getTenantPool(dbName);
     await runSqlFile(tenantPool, tenantSchemaPath);
+    await runSqlFile(tenantPool, tenantRoleMigrationPath);
 
     masterClient = await masterPool.connect();
     await masterClient.query('BEGIN');
