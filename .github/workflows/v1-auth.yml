@@ -11,6 +11,9 @@ on:
       - 'src/routes/orderRoutes.js'
       - 'src/routes/productRoutes.js'
       - 'src/routes/stockRoutes.js'
+      - 'src/routes/purchaseRoutes.js'
+      - 'src/routes/expenseRoutes.js'
+      - 'src/routes/reportRoutes.js'
       - 'src/modules/customers/routes.js'
       - 'src/api/v1/modules/auth/auth.routes.js'
       - 'src/controllers/tenant/userController.js'
@@ -25,6 +28,7 @@ on:
       - 'tests/v1PlatformAdminAuth.test.js'
       - 'tests/v1PublicRegistrationBoundary.test.js'
       - 'tests/v1ProtectedRoutePermissions.test.js'
+      - 'tests/v1PurchaseExpensePermissions.test.js'
       - 'Db/migrations/2026-08-16-v1-auth-tenant-roles.sql'
       - 'src/services/tenantProvisionService.js'
       - 'src/controllers/offlineGrantController.js'
@@ -71,4 +75,5 @@ jobs:
           tests/v1PlatformAdminAuth.test.js
           tests/v1PublicRegistrationBoundary.test.js
           tests/v1ProtectedRoutePermissions.test.js
+          tests/v1PurchaseExpensePermissions.test.js
           --runInBand
