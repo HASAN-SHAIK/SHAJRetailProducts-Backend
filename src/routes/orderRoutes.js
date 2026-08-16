@@ -5,23 +5,22 @@ const { createOrder,
     getOrderById,
     updateOrder,
     updateOrderItemPrice,
-    deleteOrder, 
+    deleteOrder,
     markOrderAsPaid,
     processOrderReturn,
     getCategories,
     syncOfflineOrders} = require('../controllers/orderController');
-const { authMiddleware } = require('../middleware/authMiddleware');
-const isAdmin = require('../middleware/isAdmin');
+const { requirePermission } = require('../middleware/requirePermission');
 
-router.get('/getcategories', getCategories);
-router.get('/', getAllOrders);
-router.post('/:id/returns', processOrderReturn);
-router.patch('/:orderId/items/:itemId/price', updateOrderItemPrice);
-router.get('/:id', getOrderById)
-router.post('/', createOrder);
-router.post('/offline-sync', syncOfflineOrders);
-router.put('/:id', updateOrder);
-router.delete('/:id', deleteOrder);
-router.post('/mark-paid', markOrderAsPaid);
+router.get('/getcategories', requirePermission('products:read'), getCategories);
+router.get('/', requirePermission('orders:read'), getAllOrders);
+router.post('/:id/returns', requirePermission('pos:refund'), processOrderReturn);
+router.patch('/:orderId/items/:itemId/price', requirePermission('pos:discount'), updateOrderItemPrice);
+router.get('/:id', requirePermission('orders:read'), getOrderById);
+router.post('/', requirePermission('pos:sale'), createOrder);
+router.post('/offline-sync', requirePermission('orders:write'), syncOfflineOrders);
+router.put('/:id', requirePermission('orders:write'), updateOrder);
+router.delete('/:id', requirePermission('pos:void'), deleteOrder);
+router.post('/mark-paid', requirePermission('orders:write'), markOrderAsPaid);
 
 module.exports = router;
