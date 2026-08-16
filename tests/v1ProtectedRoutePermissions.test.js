@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { requirePermission } = require('../src/middleware/requirePermission');
+const { resolveBranchIdFromRequest } = require('../src/utils/branch');
 
 const responseRecorder = () => {
   const state = { status: 200, body: null };
@@ -21,6 +22,9 @@ const runGuard = (user, permission) => {
 };
 
 const source = (relativePath) => fs.readFileSync(path.join(__dirname, '..', relativePath), 'utf8');
+
+const BRANCH_A = '11111111-1111-4111-8111-111111111111';
+const BRANCH_B = '22222222-2222-4222-8222-222222222222';
 
 describe('V1 protected Central route permissions', () => {
   test('cashier keeps ordinary sale/customer/read authority but cannot invoke privileged order mutations', () => {
@@ -54,6 +58,24 @@ describe('V1 protected Central route permissions', () => {
     expect(missing.nextCalled).toBe(false);
     expect(missing.status).toBe(401);
     expect(missing.body.code).toBe('UNAUTHORIZED');
+  });
+
+  test('restricted cashier manager and staff cannot select another branch', () => {
+    for (const role of ['cashier', 'manager', 'staff']) {
+      const resolved = resolveBranchIdFromRequest({
+        headers: { 'x-branch-id': BRANCH_B },
+        user: { role, branch_id: BRANCH_A, all_branch_access: false },
+      });
+      expect(resolved).toBe(BRANCH_A);
+    }
+  });
+
+  test('all-branch users may explicitly select a branch', () => {
+    const resolved = resolveBranchIdFromRequest({
+      headers: { 'x-branch-id': BRANCH_B },
+      user: { role: 'admin', branch_id: BRANCH_A, all_branch_access: true },
+    });
+    expect(resolved).toBe(BRANCH_B);
   });
 
   test('high-risk order mutations are guarded by explicit server-side permissions', () => {
