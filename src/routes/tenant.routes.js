@@ -57,6 +57,9 @@ const {
   replySupportCase
 } = require('../controllers/tenant/supportController');
 const { requireFeature } = require('../middleware/featureGuard');
+const { requirePermission } = require('../middleware/requirePermission');
+const { requireReportScope } = require('../middleware/requireReportScope');
+const { enforceDashboardReportScope } = require('../middleware/dashboardReportScope');
 const isAdmin = require('../middleware/isAdmin');
 
 const router = express.Router();
@@ -94,7 +97,14 @@ router.use('/batches', batchRoutes);
 router.use('/accounts', accountingRoutes);
 router.get('/tenant/me', getTenantMe);
 router.get('/banner', getPlatformBanner);
-router.get('/dashboard/overview', requireFeature('advanced_reports'), getDashboardOverview);
+router.get(
+  '/dashboard/overview',
+  requirePermission('reports:read'),
+  requireReportScope,
+  enforceDashboardReportScope,
+  requireFeature('advanced_reports'),
+  getDashboardOverview
+);
 router.get('/dashboard', isAdmin, getBasicDashboard);
 router.get('/dashboard/revenue-overview', isAdmin, requireFeature('advanced_reports'), getRevenueOverview);
 router.get('/dashboard/growth-comparison', isAdmin, requireFeature('advanced_reports'), getGrowthComparison);
