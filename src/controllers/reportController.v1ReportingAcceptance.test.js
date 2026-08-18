@@ -105,6 +105,33 @@ describe('V1 Reporting/Admin permission authority', () => {
     expect(res.body?.code).toBe('REPORT_INVENTORY_BRANCH_SCOPE_REQUIRED');
   });
 
+  test('branch-scoped profit response suppresses the legacy tenant-wide product count', () => {
+    const req = {
+      path: '/profit',
+      query: {},
+      user: {
+        type: 'tenant',
+        role: 'manager',
+        all_branch_access: false,
+        branch_id: '11111111-1111-1111-1111-111111111111',
+      },
+    };
+    const res = {
+      body: null,
+      json(body) {
+        this.body = body;
+        return this;
+      },
+    };
+    const next = jest.fn();
+
+    requireReportScope(req, res, next);
+    res.json({ total_revenue: 10, total_profit: 4, total_products: 99 });
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.body.total_products).toBeNull();
+  });
+
   test('all-branch report users may request one branch or tenant-wide scope', () => {
     const branchReq = {
       path: '/sales',
