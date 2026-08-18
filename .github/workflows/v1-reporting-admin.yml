@@ -12,6 +12,8 @@ on:
       - 'src/controllers/dailySalesReportController.v1ReportingAcceptance.test.js'
       - 'src/controllers/customerOutstandingReportController.js'
       - 'src/controllers/customerOutstandingReportController.v1ReportingAcceptance.test.js'
+      - 'src/controllers/canonicalGstReportController.js'
+      - 'src/controllers/canonicalGstReportController.v1ReportingAcceptance.test.js'
       - 'src/controllers/mobileController.js'
       - 'src/controllers/mobileController.v1ReportingAcceptance.test.js'
       - 'src/controllers/dataQualityController.js'
@@ -19,6 +21,7 @@ on:
       - 'src/api/v1/modules/sync/posEvent.processor.js'
       - 'src/api/v1/modules/sync/posEvent.reportingBranch.test.js'
       - 'src/routes/reportRoutes.js'
+      - 'src/routes/gstRoutes.js'
       - 'src/routes/mobileRoutes.js'
       - 'src/routes/tenant.routes.js'
       - 'src/routes/dataQualityRoutes.js'
@@ -51,6 +54,7 @@ jobs:
           src/controllers/branchInventoryReportController.v1ReportingAcceptance.test.js
           src/controllers/dailySalesReportController.v1ReportingAcceptance.test.js
           src/controllers/customerOutstandingReportController.v1ReportingAcceptance.test.js
+          src/controllers/canonicalGstReportController.v1ReportingAcceptance.test.js
           src/controllers/mobileController.v1ReportingAcceptance.test.js
           src/controllers/dataQualityController.v1ReportingAcceptance.test.js
           src/api/v1/modules/sync/posEvent.reportingBranch.test.js
