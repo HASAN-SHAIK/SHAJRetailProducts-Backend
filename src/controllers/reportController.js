@@ -3,6 +3,7 @@ const { getAuthUser } = require('../utils/auth');
 
 const pool = require('../db');
 const getRequestPool = (req) => req.tenantPool || pool;
+const getReportBranchId = (req) => req.reportBranchId || null;
 // 📊 **Total Sales Report**
 //Today and LastMonth Review
 const getPreviousMonthRangeUtc = () => {
@@ -38,6 +39,7 @@ const SALES_STATUSES = ['completed', 'partially_returned', 'fully_returned'];
 const getSalesReport = async (req, res) => {
    try {
         const requestPool = getRequestPool(req);
+        const branchId = getReportBranchId(req);
         const decoded = getAuthUser(req);
         if (!decoded) {
             return res.status(401).json({ message: "Access Denied" });
@@ -55,13 +57,18 @@ const getSalesReport = async (req, res) => {
            `SELECT SUM(o.total_price - COALESCE(o.returned_amount, 0)) AS total_revenue
             FROM orders o
             WHERE o.order_status = ANY($3::text[])
-              AND o.created_at BETWEEN $1 AND $2;`,
-           [from_date, to_date, SALES_STATUSES]
+              AND o.created_at BETWEEN $1 AND $2
+              AND ($4::uuid IS NULL OR o.branch_id = $4::uuid);`,
+           [from_date, to_date, SALES_STATUSES, branchId]
        );
        // Fetch Total Orders
        const ordersResult = await requestPool.query(
-           "SELECT COUNT(*) AS total_orders FROM orders WHERE order_status = ANY($3::text[]) AND created_at BETWEEN $1 AND $2;",
-           [from_date, to_date, SALES_STATUSES]
+           `SELECT COUNT(*) AS total_orders
+            FROM orders o
+            WHERE o.order_status = ANY($3::text[])
+              AND o.created_at BETWEEN $1 AND $2
+              AND ($4::uuid IS NULL OR o.branch_id = $4::uuid);`,
+           [from_date, to_date, SALES_STATUSES, branchId]
        );
 
         // Total Cost (How much we paid for sold products)
@@ -76,8 +83,9 @@ const getSalesReport = async (req, res) => {
                    GROUP BY r.order_id, ori.product_id
                  ) r ON r.order_id = o.id AND r.product_id = oi.product_id
                  WHERE o.order_status = ANY($3::text[])
-                   AND o.created_at BETWEEN $1 AND $2;`,
-                 [from_date, to_date, SALES_STATUSES]
+                   AND o.created_at BETWEEN $1 AND $2
+                   AND ($4::uuid IS NULL OR o.branch_id = $4::uuid);`,
+                 [from_date, to_date, SALES_STATUSES, branchId]
         );
 
         // const totalProfitRes = await pool.query('select sum(profit) as total_profit from transactions where transaction_date = $1', [to_date])
@@ -97,12 +105,13 @@ const getSalesReport = async (req, res) => {
                GROUP BY r.order_id, ori.product_id
              ) r ON r.order_id = o.id AND r.product_id = oi.product_id
              WHERE o.order_status = ANY($3::text[])
-               AND o.created_at BETWEEN $1 AND $2;`,
-            [from_date, to_date, SALES_STATUSES]
+               AND o.created_at BETWEEN $1 AND $2
+               AND ($4::uuid IS NULL OR o.branch_id = $4::uuid);`,
+            [from_date, to_date, SALES_STATUSES, branchId]
         );
         const totalProfit = profitResult.rows[0]?.total_profit || 0;
-        const bestSellingProducts = await getBestSellingProducts(requestPool, from_date, to_date);
-        const profitByProductResult = await getprofitByProductResult(requestPool, from_date, to_date);
+        const bestSellingProducts = await getBestSellingProducts(requestPool, from_date, to_date, branchId);
+        const profitByProductResult = await getprofitByProductResult(requestPool, from_date, to_date, branchId);
 
        return res.json({
            total_revenue: revenueResult.rows[0].total_revenue || 0,
@@ -117,7 +126,7 @@ const getSalesReport = async (req, res) => {
    }
 };
 
-const getBestSellingProducts = async (db, fromDate, toDate) =>{
+const getBestSellingProducts = async (db, fromDate, toDate, branchId = null) =>{
     // Fetch Best-Selling Products
     const bestSellingResult = await db.query(
             `SELECT SUM(GREATEST(oi.quantity - COALESCE(r.returned_qty, 0), 0)) AS NoOfSold,
@@ -135,15 +144,16 @@ const getBestSellingProducts = async (db, fromDate, toDate) =>{
              ) r ON r.order_id = o.id AND r.product_id = oi.product_id
              WHERE o.order_status = ANY($3::text[])
                AND o.created_at BETWEEN $1 AND $2
+               AND ($4::uuid IS NULL OR o.branch_id = $4::uuid)
              GROUP BY p.id
              ORDER BY NoOfSold DESC
              LIMIT 20`,
-            [fromDate, toDate, SALES_STATUSES]
+            [fromDate, toDate, SALES_STATUSES, branchId]
     );
     return bestSellingResult;
 }
 
-const getprofitByProductResult = async (db, fromDate, toDate) => {
+const getprofitByProductResult = async (db, fromDate, toDate, branchId = null) => {
     // Profit by Product
     const profitByProductResult = await db.query(
         `SELECT SUM(GREATEST(oi.quantity - COALESCE(r.returned_qty, 0), 0)) AS NoOfSold,
@@ -162,10 +172,11 @@ const getprofitByProductResult = async (db, fromDate, toDate) => {
          ) r ON r.order_id = o.id AND r.product_id = oi.product_id
          WHERE o.order_status = ANY($3::text[])
            AND o.created_at BETWEEN $1 AND $2
+           AND ($4::uuid IS NULL OR o.branch_id = $4::uuid)
          GROUP BY p.id
          ORDER BY Profit DESC
          LIMIT 20`,
-        [fromDate, toDate, SALES_STATUSES]
+        [fromDate, toDate, SALES_STATUSES, branchId]
     );
     return profitByProductResult;
 }
@@ -227,6 +238,7 @@ const getInventoryReport = async (req, res) => {
 const getProfitReport = async (req, res) => {
     try {  
         const requestPool = getRequestPool(req);
+        const branchId = getReportBranchId(req);
         const decoded = getAuthUser(req);
         if (!decoded) {
             return res.status(401).json({ message: "Access Denied" });
@@ -249,8 +261,9 @@ const getProfitReport = async (req, res) => {
         const revenueResult = await requestPool.query(
             `SELECT SUM(o.total_price - COALESCE(o.returned_amount, 0)) AS total_revenue
              FROM orders o
-             WHERE o.order_status = ANY($3::text[]) ${dateFilterOrders};`,
-            [...values, SALES_STATUSES]
+             WHERE o.order_status = ANY($3::text[]) ${dateFilterOrders}
+               AND ($4::uuid IS NULL OR o.branch_id = $4::uuid);`,
+            [...values, SALES_STATUSES, branchId]
         );
         // Total Profit (How much we Got for sold products)
         const profitResult = await requestPool.query(
@@ -267,8 +280,9 @@ const getProfitReport = async (req, res) => {
                GROUP BY r.order_id, ori.product_id
              ) r ON r.order_id = o.id AND r.product_id = oi.product_id
              WHERE o.order_status = ANY($3::text[])
-               AND o.created_at BETWEEN $1 AND $2;`,
-            [from_date, to_date, SALES_STATUSES]
+               AND o.created_at BETWEEN $1 AND $2
+               AND ($4::uuid IS NULL OR o.branch_id = $4::uuid);`,
+            [from_date, to_date, SALES_STATUSES, branchId]
         );
 
         const totalProductsRes = await requestPool.query(`select count(*) as total_products from products`);
@@ -291,8 +305,9 @@ const getProfitReport = async (req, res) => {
 
 
 const getDailySalesReport = async (req, res) => {
-    try {   
+    try {  
         const requestPool = getRequestPool(req);
+        const branchId = getReportBranchId(req);
         const decoded = getAuthUser(req);
         if (!decoded) {
             return res.status(401).json({ message: "Access Denied" });
@@ -317,15 +332,17 @@ const getDailySalesReport = async (req, res) => {
                GROUP BY r.order_id, ori.product_id
              ) r ON r.order_id = o.id AND r.product_id = oi.product_id
              WHERE o.order_status = ANY($3::text[])
-               AND o.created_at >= $1 AND o.created_at <= $2;`,
-            [salesDate, endOfDay, SALES_STATUSES]
+               AND o.created_at >= $1 AND o.created_at <= $2
+               AND ($4::uuid IS NULL OR o.branch_id = $4::uuid);`,
+            [salesDate, endOfDay, SALES_STATUSES, branchId]
         );
         const totalOrderRes = await requestPool.query(
             `SELECT count(*) AS total_orders
-             FROM orders
-             WHERE order_status = ANY($3::text[])
-               AND created_at >= $1 AND created_at <= $2`,
-            [salesDate, endOfDay, SALES_STATUSES]
+             FROM orders o
+             WHERE o.order_status = ANY($3::text[])
+               AND o.created_at >= $1 AND o.created_at <= $2
+               AND ($4::uuid IS NULL OR o.branch_id = $4::uuid)`,
+            [salesDate, endOfDay, SALES_STATUSES, branchId]
         );
         // Best-Selling Products
         const bestSellingProducts = await requestPool.query(
@@ -341,9 +358,10 @@ const getDailySalesReport = async (req, res) => {
              ) r ON r.order_id = o.id AND r.product_id = oi.product_id
              WHERE o.order_status = ANY($1::text[])
                AND o.created_at >= $2 AND o.created_at <= $3
+               AND ($4::uuid IS NULL OR o.branch_id = $4::uuid)
              GROUP BY p.name
              ORDER BY total_sold DESC;`,
-            [SALES_STATUSES, salesDate, endOfDay]
+            [SALES_STATUSES, salesDate, endOfDay, branchId]
         );
         const profitResult = await requestPool.query(
             `SELECT COALESCE(SUM(
@@ -359,8 +377,9 @@ const getDailySalesReport = async (req, res) => {
                GROUP BY r.order_id, ori.product_id
              ) r ON r.order_id = o.id AND r.product_id = oi.product_id
              WHERE o.order_status = ANY($3::text[])
-               AND o.created_at BETWEEN $1 AND $2;`,
-            [salesDate, endOfDay, SALES_STATUSES]
+               AND o.created_at BETWEEN $1 AND $2
+               AND ($4::uuid IS NULL OR o.branch_id = $4::uuid);`,
+            [salesDate, endOfDay, SALES_STATUSES, branchId]
         );
         
         res.json({
@@ -380,6 +399,7 @@ const getDailySalesReport = async (req, res) => {
 const getProfitGraph = async (req, res) => {
     try {
         const requestPool = getRequestPool(req);
+        const branchId = getReportBranchId(req);
         const decoded = getAuthUser(req);
         if (!decoded) {
             return res.status(401).json({ message: "Access Denied" });
@@ -405,9 +425,10 @@ const getProfitGraph = async (req, res) => {
              WHERE o.order_status = ANY($3::text[])
                AND o.created_at >= $1
                AND o.created_at < $2
+               AND ($4::uuid IS NULL OR o.branch_id = $4::uuid)
              GROUP BY day
              ORDER BY day ASC;`,
-            [start, end, SALES_STATUSES]
+            [start, end, SALES_STATUSES, branchId]
         );
 
         const profitByDay = new Map(
