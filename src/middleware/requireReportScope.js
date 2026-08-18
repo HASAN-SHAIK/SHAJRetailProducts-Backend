@@ -26,18 +26,6 @@ const requireReportScope = (req, res, next) => {
     );
   }
 
-  // Product stock is still represented by the legacy tenant-level products stock
-  // projection in this report. Do not pretend that projection is safely branch
-  // scoped until the report moves to the certified branch inventory truth.
-  if (reportBranchId && req.path === '/inventory') {
-    return jsonError(
-      res,
-      403,
-      'REPORT_INVENTORY_BRANCH_SCOPE_REQUIRED',
-      'Branch-scoped inventory reporting is not yet available.'
-    );
-  }
-
   // The legacy profit response includes a tenant-wide product count. Until a
   // branch-aware catalog count is defined, suppress that tenant-wide field on a
   // branch-scoped report rather than leaking cross-branch aggregate metadata.
