@@ -61,15 +61,19 @@ describeIfPostgres('V1 Reporting/Admin trusted branch PostgreSQL acceptance', ()
       `INSERT INTO orders (id, branch_id, total_price, returned_amount, order_status, created_at)
        VALUES
          (1, $1, 100, 20, 'partially_returned', '2026-08-10T10:00:00Z'),
-         (2, $2, 300, 0, 'completed', '2026-08-10T11:00:00Z')`,
+         (2, $2, 300, 0, 'completed', '2026-08-10T11:00:00Z'),
+         (3, $1, 60, 60, 'fully_returned', '2026-08-10T12:00:00Z')`,
       [branchA, branchB]
     );
     await pool.query(
       `INSERT INTO order_items (order_id, product_id, quantity, purchase_price_snapshot, profit)
-       VALUES (1, 1, 2, 30, 40), (2, 2, 3, 60, 120)`
+       VALUES (1, 1, 2, 30, 40), (2, 2, 3, 60, 120), (3, 1, 1, 40, 20)`
     );
-    await pool.query(`INSERT INTO order_returns (id, order_id) VALUES (1, 1)`);
-    await pool.query(`INSERT INTO order_return_items (return_id, product_id, quantity) VALUES (1, 1, 1)`);
+    await pool.query(`INSERT INTO order_returns (id, order_id) VALUES (1, 1), (2, 3)`);
+    await pool.query(
+      `INSERT INTO order_return_items (return_id, product_id, quantity)
+       VALUES (1, 1, 1), (2, 1, 1)`
+    );
   });
 
   afterAll(async () => {
@@ -95,23 +99,46 @@ describeIfPostgres('V1 Reporting/Admin trusted branch PostgreSQL acceptance', ()
     return res.body;
   };
 
-  test('branch A report excludes branch B and keeps refund-aware net facts', async () => {
+  test('branch A report excludes branch B and keeps partial/full-return net facts', async () => {
     const report = await runSalesReport(branchA);
 
     expect(Number(report.total_revenue)).toBe(80);
-    expect(Number(report.total_orders)).toBe(1);
+    expect(Number(report.total_orders)).toBe(2);
     expect(Number(report.totalProfit)).toBe(20);
     expect(report.bestSellingProducts).toHaveLength(1);
     expect(report.bestSellingProducts[0].name || report.bestSellingProducts[0].Name).toBe('Branch A Milk');
+    expect(Number(report.bestSellingProducts[0].noofsold || report.bestSellingProducts[0].NoOfSold)).toBe(1);
     expect(report.profitByProduct).toHaveLength(1);
     expect(report.profitByProduct[0].name || report.profitByProduct[0].Name).toBe('Branch A Milk');
+  });
+
+  test('replaying the canonical full-return facts does not change branch reporting', async () => {
+    const beforeReplay = await runSalesReport(branchA);
+
+    await pool.query(
+      `UPDATE orders
+       SET returned_amount = total_price,
+           order_status = 'fully_returned'
+       WHERE id = 3`
+    );
+    await pool.query(
+      `UPDATE orders
+       SET returned_amount = total_price,
+           order_status = 'fully_returned'
+       WHERE id = 3`
+    );
+
+    const afterReplay = await runSalesReport(branchA);
+    expect(afterReplay).toEqual(beforeReplay);
+    expect(Number(afterReplay.total_revenue)).toBe(80);
+    expect(Number(afterReplay.totalProfit)).toBe(20);
   });
 
   test('tenant-wide report remains available only when no branch scope is supplied', async () => {
     const report = await runSalesReport(null);
 
     expect(Number(report.total_revenue)).toBe(380);
-    expect(Number(report.total_orders)).toBe(2);
+    expect(Number(report.total_orders)).toBe(3);
     expect(report.bestSellingProducts).toHaveLength(2);
   });
 });
