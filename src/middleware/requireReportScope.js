@@ -1,6 +1,13 @@
 const { jsonError } = require('../utils/responses');
 const { resolveBranchIdFromRequest } = require('../utils/branch');
 
+const hasAllBranchAccess = (user = {}) =>
+  user.all_branch_access === undefined ||
+  user.all_branch_access === null ||
+  user.all_branch_access === true ||
+  user.all_branch_access === 1 ||
+  String(user.all_branch_access).toLowerCase() === 'true';
+
 const requireReportScope = (req, res, next) => {
   const user = req.user;
   if (!user || user.type !== 'tenant') {
@@ -8,8 +15,7 @@ const requireReportScope = (req, res, next) => {
   }
 
   const reportBranchId = resolveBranchIdFromRequest(req);
-  const hasAllBranchAccess = user.all_branch_access === true;
-  const isBranchRestricted = !hasAllBranchAccess;
+  const isBranchRestricted = !hasAllBranchAccess(user);
 
   if (isBranchRestricted && !reportBranchId) {
     return jsonError(
