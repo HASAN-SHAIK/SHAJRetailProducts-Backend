@@ -38,6 +38,14 @@ const requireReportScope = (req, res, next) => {
     );
   }
 
+  // The legacy profit response includes a tenant-wide product count. Until a
+  // branch-aware catalog count is defined, suppress that tenant-wide field on a
+  // branch-scoped report rather than leaking cross-branch aggregate metadata.
+  if (reportBranchId && req.path === '/profit' && typeof res.json === 'function') {
+    const sendJson = res.json.bind(res);
+    res.json = (body) => sendJson({ ...body, total_products: null });
+  }
+
   req.reportBranchId = reportBranchId;
   return next();
 };
