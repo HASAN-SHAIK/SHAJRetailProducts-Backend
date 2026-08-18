@@ -1,0 +1,26 @@
+name: V1 Reporting Admin acceptance
+
+on:
+  pull_request:
+    paths:
+      - 'src/controllers/reportController.js'
+      - 'src/controllers/reportController.v1ReportingAcceptance.test.js'
+      - 'src/routes/reportRoutes.js'
+      - 'src/utils/rolePermissions.js'
+      - '.github/workflows/v1-reporting-admin.yml'
+  workflow_dispatch:
+
+jobs:
+  reporting-permission-authority:
+    runs-on: ubuntu-latest
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Run V1 Reporting/Admin acceptance
+        run: npx jest src/controllers/reportController.v1ReportingAcceptance.test.js --runInBand
