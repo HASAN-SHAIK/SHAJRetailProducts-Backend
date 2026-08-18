@@ -10,6 +10,8 @@ on:
       - 'src/controllers/branchInventoryReportController.v1ReportingAcceptance.test.js'
       - 'src/controllers/dailySalesReportController.js'
       - 'src/controllers/dailySalesReportController.v1ReportingAcceptance.test.js'
+      - 'src/controllers/customerOutstandingReportController.js'
+      - 'src/controllers/customerOutstandingReportController.v1ReportingAcceptance.test.js'
       - 'src/controllers/mobileController.js'
       - 'src/controllers/mobileController.v1ReportingAcceptance.test.js'
       - 'src/controllers/dataQualityController.js'
@@ -48,6 +50,7 @@ jobs:
           src/controllers/reportController.v1TenantIsolation.test.js
           src/controllers/branchInventoryReportController.v1ReportingAcceptance.test.js
           src/controllers/dailySalesReportController.v1ReportingAcceptance.test.js
+          src/controllers/customerOutstandingReportController.v1ReportingAcceptance.test.js
           src/controllers/mobileController.v1ReportingAcceptance.test.js
           src/controllers/dataQualityController.v1ReportingAcceptance.test.js
           src/api/v1/modules/sync/posEvent.reportingBranch.test.js
