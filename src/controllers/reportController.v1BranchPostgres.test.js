@@ -2,7 +2,7 @@ const { Pool } = require('pg');
 
 jest.mock('../db', () => ({ query: jest.fn() }));
 
-const { getSalesReport } = require('./reportController');
+const { getHistoricalSalesReport } = require('./historicalSalesReportController');
 const { getBranchInventoryReport } = require('./branchInventoryReportController');
 
 const connectionString = process.env.V1_REPORTING_TEST_DATABASE_URL;
@@ -41,11 +41,18 @@ describeIfPostgres('V1 Reporting/Admin trusted branch PostgreSQL acceptance', ()
       );
 
       CREATE TABLE order_items (
+        id SERIAL PRIMARY KEY,
         order_id INTEGER NOT NULL REFERENCES orders(id),
         product_id INTEGER NOT NULL REFERENCES products(id),
         quantity NUMERIC(14,3) NOT NULL,
+        selling_price NUMERIC(14,2),
         purchase_price_snapshot NUMERIC(14,2) NOT NULL DEFAULT 0,
-        profit NUMERIC(14,2) NOT NULL DEFAULT 0
+        profit NUMERIC(14,2) NOT NULL DEFAULT 0,
+        source_product_id TEXT,
+        sku_snapshot TEXT,
+        product_name_snapshot TEXT,
+        barcode_snapshot TEXT,
+        unit_price_minor BIGINT
       );
 
       CREATE TABLE order_returns (
@@ -90,8 +97,8 @@ describeIfPostgres('V1 Reporting/Admin trusted branch PostgreSQL acceptance', ()
          id, name, company, selling_price, purchase_price, stock_quantity,
          is_batch_enabled, branch_id, expiry_date
        ) VALUES
-         (1, 'Branch A Milk', 'A Co', 50, 30, 5, FALSE, $1, NULL),
-         (2, 'Branch B Rice', 'B Co', 100, 60, 9, FALSE, $2, NULL),
+         (1, 'Current Renamed Milk', 'A Co', 50, 30, 5, FALSE, $1, NULL),
+         (2, 'Current Renamed Rice', 'B Co', 100, 60, 9, FALSE, $2, NULL),
          (3, 'Branch A Batch Med', 'A Pharma', 20, 10, 3.25, TRUE, NULL, NULL)`,
       [branchA, branchB]
     );
@@ -104,8 +111,13 @@ describeIfPostgres('V1 Reporting/Admin trusted branch PostgreSQL acceptance', ()
       [branchA, branchB]
     );
     await pool.query(
-      `INSERT INTO order_items (order_id, product_id, quantity, purchase_price_snapshot, profit)
-       VALUES (1, 1, 2, 30, 40), (2, 2, 3, 60, 120), (3, 1, 1, 40, 20)`
+      `INSERT INTO order_items (
+         order_id, product_id, quantity, selling_price, purchase_price_snapshot, profit,
+         source_product_id, sku_snapshot, product_name_snapshot, barcode_snapshot, unit_price_minor
+       ) VALUES
+         (1, 1, 2, 42, 30, 40, 'pos-product-a', 'MILK-A', 'Branch A Milk', '111', 4200),
+         (2, 2, 3, 90, 60, 120, 'pos-product-b', 'RICE-B', 'Branch B Rice', '222', 9000),
+         (3, 1, 1, 42, 40, 20, 'pos-product-a', 'MILK-A', 'Branch A Milk', '111', 4200)`
     );
     await pool.query(`INSERT INTO order_returns (id, order_id) VALUES (1, 1), (2, 3)`);
     await pool.query(
@@ -153,7 +165,7 @@ describeIfPostgres('V1 Reporting/Admin trusted branch PostgreSQL acceptance', ()
     };
     const res = makeResponse();
 
-    await getSalesReport(req, res);
+    await getHistoricalSalesReport(req, res);
     expect(res.statusCode).toBe(200);
     return res.body;
   };
@@ -171,7 +183,7 @@ describeIfPostgres('V1 Reporting/Admin trusted branch PostgreSQL acceptance', ()
     return res.body;
   };
 
-  test('branch A report excludes branch B and keeps partial/full-return net facts', async () => {
+  test('branch A report excludes branch B and keeps immutable product snapshots after catalog rename', async () => {
     const report = await runSalesReport(branchA);
 
     expect(Number(report.total_revenue)).toBe(80);
@@ -182,6 +194,7 @@ describeIfPostgres('V1 Reporting/Admin trusted branch PostgreSQL acceptance', ()
     expect(Number(report.bestSellingProducts[0].noofsold || report.bestSellingProducts[0].NoOfSold)).toBe(1);
     expect(report.profitByProduct).toHaveLength(1);
     expect(report.profitByProduct[0].name || report.profitByProduct[0].Name).toBe('Branch A Milk');
+    expect(Number(report.profitByProduct[0].price || report.profitByProduct[0].Price)).toBe(42);
   });
 
   test('branch inventory separates physical, sellable, expired, and provisional deficit truth', async () => {
