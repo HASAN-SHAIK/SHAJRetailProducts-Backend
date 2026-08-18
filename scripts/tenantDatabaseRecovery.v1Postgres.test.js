@@ -69,15 +69,20 @@ describeIfPostgres('V1 Central tenant native backup and restore', () => {
     expect(order.rows[0].total_price).toBe('125.50');
   });
 
-  test('rejects tampered archives before restore', async () => {
+  test('rejects tampered archives before restore', () => {
     const tampered = path.join(tempDir, 'tampered.dump');
     const manifest = `${tampered}.manifest.json`;
     fs.copyFileSync(backupPath, tampered);
     fs.copyFileSync(`${backupPath}.manifest.json`, manifest);
     fs.appendFileSync(tampered, 'tampered');
 
-    expect(() => verifyTenantBackup({ backupPath: tampered, manifestPath: manifest }))
-      .toThrow(expect.objectContaining({ code: 'TENANT_BACKUP_CHECKSUM_MISMATCH' }));
+    let error;
+    try {
+      verifyTenantBackup({ backupPath: tampered, manifestPath: manifest });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toMatchObject({ code: 'TENANT_BACKUP_CHECKSUM_MISMATCH' });
   });
 
   test('rejects cross-tenant restore and requires explicit tenant confirmation', async () => {
