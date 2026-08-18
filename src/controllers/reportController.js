@@ -302,15 +302,8 @@ const getDailySalesReport = async (req, res) => {
         let endOfDay = new Date(salesDate);
         endOfDay.setHours(23, 59, 59, 999);
         const salesResult = await requestPool.query(
-            `SELECT SUM(GREATEST(oi.quantity - COALESCE(r.returned_qty, 0), 0) * oi.selling_price - COALESCE(oi.discount_amount, 0)) AS total_revenue
+            `SELECT SUM(o.total_price - COALESCE(o.returned_amount, 0)) AS total_revenue
              FROM orders o
-             JOIN order_items oi on oi.order_id = o.id
-             LEFT JOIN (
-               SELECT r.order_id, ori.product_id, SUM(ori.quantity) AS returned_qty
-               FROM order_returns r
-               JOIN order_return_items ori ON ori.return_id = r.id
-               GROUP BY r.order_id, ori.product_id
-             ) r ON r.order_id = o.id AND r.product_id = oi.product_id
              WHERE o.order_status = ANY($3::text[])
                AND o.created_at >= $1 AND o.created_at <= $2
                AND ($4::uuid IS NULL OR o.branch_id = $4::uuid);`,
