@@ -1,0 +1,44 @@
+name: V1 Reporting GST PostgreSQL
+
+on:
+  pull_request:
+    paths:
+      - 'src/controllers/canonicalGstReportController.js'
+      - 'src/controllers/canonicalGstReportController.v1Postgres.test.js'
+      - 'src/routes/gstRoutes.js'
+      - '.github/workflows/v1-reporting-gst-postgres.yml'
+  workflow_dispatch:
+
+jobs:
+  canonical-gst-postgres:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: gst_reporting_v1
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d gst_reporting_v1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+      V1_GST_REPORT_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/gst_reporting_v1
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Run real PostgreSQL canonical GST acceptance
+        run: npx jest src/controllers/canonicalGstReportController.v1Postgres.test.js --runInBand
