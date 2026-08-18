@@ -5,6 +5,8 @@ on:
     paths:
       - 'scripts/runTenantMigration.js'
       - 'scripts/runTenantMigration.v1DatabaseQuality.test.js'
+      - 'scripts/databaseRecoveryPolicy.v1DatabaseQuality.test.js'
+      - 'docs/V1_DATABASE_RECOVERY_RUNBOOK.md'
       - '.github/workflows/v1-database-quality.yml'
   workflow_dispatch:
 
@@ -25,4 +27,8 @@ jobs:
       - name: Install dependencies
         run: npm install --ignore-scripts --no-audit --no-fund
       - name: Run V1 tenant migration safety acceptance
-        run: npx jest scripts/runTenantMigration.v1DatabaseQuality.test.js --runInBand
+        run: >-
+          npx jest
+          scripts/runTenantMigration.v1DatabaseQuality.test.js
+          scripts/databaseRecoveryPolicy.v1DatabaseQuality.test.js
+          --runInBand
