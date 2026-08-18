@@ -155,10 +155,11 @@ const projectCanonicalOrder = async (client, event, order, receipt, items, actor
         `INSERT INTO order_items(
            order_id,product_id,quantity,selling_price,discount_amount,gst_percent,
            source_item_id,source_product_id,line_no,sku_snapshot,product_name_snapshot,barcode_snapshot,
-           quantity_milli,unit_price_minor,source_discount_minor,taxable_minor,gst_rate_bps,tax_minor,line_total_minor,tax_code
+           quantity_milli,unit_price_minor,source_discount_minor,taxable_minor,gst_rate_bps,tax_minor,line_total_minor,tax_code,
+           category_id_snapshot,category_name_snapshot
          ) VALUES(
            $1,$2,($3::numeric / 1000.0),($4::numeric / 100.0),($5::numeric / 100.0),COALESCE($13::numeric / 100.0,0),
-           $6,$7,$8,$9,$10,$11,$3,$4,$5,$12,$13,$14,$15,$16
+           $6,$7,$8,$9,$10,$11,$3,$4,$5,$12,$13,$14,$15,$16,$17,$18
          )`,
         [
           centralOrderId,
@@ -177,6 +178,8 @@ const projectCanonicalOrder = async (client, event, order, receipt, items, actor
           integer(item.tax_minor, 'item.tax_minor'),
           integer(item.line_total_minor, 'item.line_total_minor'),
           item.tax_code || null,
+          optionalString(item.category_id),
+          optionalString(item.category_name),
         ]
       );
     }
@@ -252,8 +255,9 @@ const processSaleCompleted = async (client, event) => {
     await client.query(
       `INSERT INTO pos_sale_items(
          item_id,order_id,line_no,product_id,sku,product_name,barcode,quantity_milli,
-         unit_price_minor,discount_minor,taxable_minor,gst_rate_bps,tax_minor,line_total_minor,tax_code
-       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+         unit_price_minor,discount_minor,taxable_minor,gst_rate_bps,tax_minor,line_total_minor,tax_code,
+         category_id_snapshot,category_name_snapshot
+       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
        ON CONFLICT(item_id) DO NOTHING`,
       [
         requiredString(item.id, 'item.id'), orderId, integer(item.line_no, 'item.line_no'),
@@ -263,6 +267,7 @@ const processSaleCompleted = async (client, event) => {
         integer(item.discount_minor, 'item.discount_minor'), optionalInteger(item.taxable_minor, 'item.taxable_minor'),
         optionalInteger(item.gst_rate_bps, 'item.gst_rate_bps'), integer(item.tax_minor, 'item.tax_minor'),
         integer(item.line_total_minor, 'item.line_total_minor'), item.tax_code || null,
+        optionalString(item.category_id), optionalString(item.category_name),
       ]
     );
   }
