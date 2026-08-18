@@ -69,4 +69,20 @@ describe('V1 Reporting/Admin permission authority', () => {
     expect(controller).not.toContain('Haha! You are not admin :)');
     expect(controller).not.toMatch(/decoded\.role\s*!==\s*['"]admin['"]/);
   });
+
+  test('canonical sales and profit aggregates account for full and partial returns', () => {
+    const controller = fs.readFileSync(path.join(__dirname, 'reportController.js'), 'utf8');
+
+    // Revenue must use the canonical returned principal rather than the original gross sale.
+    expect(controller).toContain('SUM(o.total_price - COALESCE(o.returned_amount, 0)) AS total_revenue');
+
+    // Quantity/cost/profit/product-performance aggregates must remove returned quantities.
+    expect(controller).toContain('GREATEST(oi.quantity - COALESCE(r.returned_qty, 0), 0)');
+    expect(controller).toContain('SUM(ori.quantity) AS returned_qty');
+    expect(controller).toContain('JOIN order_returns r');
+    expect(controller).toContain('JOIN order_return_items ori ON ori.return_id = r.id');
+
+    // V1 reporting deliberately includes partially/fully returned orders so net facts remain visible.
+    expect(controller).toContain("const SALES_STATUSES = ['completed', 'partially_returned', 'fully_returned'];");
+  });
 });
