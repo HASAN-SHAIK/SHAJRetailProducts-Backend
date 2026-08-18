@@ -79,7 +79,7 @@ describe('V1 Reporting/Admin permission authority', () => {
     // Quantity/cost/profit/product-performance aggregates must remove returned quantities.
     expect(controller).toContain('GREATEST(oi.quantity - COALESCE(r.returned_qty, 0), 0)');
     expect(controller).toContain('SUM(ori.quantity) AS returned_qty');
-    expect(controller).toContain('JOIN order_returns r');
+    expect(controller).toContain('FROM order_returns r');
     expect(controller).toContain('JOIN order_return_items ori ON ori.return_id = r.id');
 
     // V1 reporting deliberately includes partially/fully returned orders so net facts remain visible.
