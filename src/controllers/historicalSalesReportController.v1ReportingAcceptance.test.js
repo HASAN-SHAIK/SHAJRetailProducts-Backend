@@ -47,16 +47,22 @@ describe('V1 historical product reporting', () => {
     expect(queries[2].params[3]).toBe(req.reportBranchId);
   });
 
-  test('keeps current catalog fields optional enrichment rather than required historical identity', async () => {
+  test('keeps current catalog fields as optional enrichment rather than the historical grouping key', async () => {
     const tenantPool = { query: jest.fn(async () => ({ rows: [{}] })) };
     const req = { user: { id: 1, role: 'admin' }, tenantPool, query: {} };
     const res = { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() };
 
     await getHistoricalSalesReport(req, res);
 
-    const productQueries = tenantPool.query.mock.calls.map(([sql]) => String(sql)).filter((sql) => sql.includes('order_items oi'));
-    expect(productQueries.some((sql) => sql.includes('LEFT JOIN products p ON p.id = oi.product_id'))).toBe(true);
-    expect(productQueries.every((sql) => !sql.includes('JOIN products p ON p.id = oi.product_id\n'))).toBe(false);
+    const productSql = tenantPool.query.mock.calls
+      .map(([sql]) => String(sql))
+      .filter((sql) => sql.includes('LEFT JOIN products p ON p.id = oi.product_id'))
+      .join('\n');
+
+    expect(productSql).toContain('MAX(p.name)');
+    expect(productSql).toContain("MAX(NULLIF(oi.product_name_snapshot, ''))");
+    expect(productSql).toContain('oi.source_product_id');
+    expect(productSql).not.toContain('GROUP BY p.id');
     expect(res.json).toHaveBeenCalled();
   });
 });
