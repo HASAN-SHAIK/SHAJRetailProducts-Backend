@@ -65,28 +65,25 @@ describe('V1 Reporting/Admin permission authority', () => {
     expect(res.body?.code).toBe('REPORT_BRANCH_SCOPE_REQUIRED');
   });
 
-  test('legacy inventory reporting stays fail-closed for branch-scoped requests', () => {
+  test('branch inventory requests proceed with the trusted Central branch to the certified branch controller', () => {
+    const trustedBranch = '11111111-1111-4111-8111-111111111111';
     const req = {
       path: '/inventory',
       query: {},
       user: {
         type: 'tenant', role: 'manager', all_branch_access: false,
-        branch_id: '11111111-1111-4111-8111-111111111111',
+        branch_id: trustedBranch,
       },
     };
-    const res = {
-      statusCode: 200,
-      body: null,
-      status(code) { this.statusCode = code; return this; },
-      json(body) { this.body = body; return this; },
-    };
+    const res = {};
     const next = jest.fn();
 
     requireReportScope(req, res, next);
 
-    expect(next).not.toHaveBeenCalled();
-    expect(res.statusCode).toBe(403);
-    expect(res.body?.code).toBe('REPORT_INVENTORY_BRANCH_SCOPE_REQUIRED');
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(req.reportBranchId).toBe(trustedBranch);
+    const routes = fs.readFileSync(path.join(__dirname, '../routes/reportRoutes.js'), 'utf8');
+    expect(routes).toContain('if (req.reportBranchId) return getBranchInventoryReport(req, res);');
   });
 
   test('branch-scoped profit response suppresses the legacy tenant-wide product count', () => {
