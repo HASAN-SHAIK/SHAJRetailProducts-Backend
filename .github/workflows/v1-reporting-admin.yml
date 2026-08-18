@@ -6,7 +6,10 @@ on:
       - 'src/controllers/reportController.js'
       - 'src/controllers/reportController.v1ReportingAcceptance.test.js'
       - 'src/routes/reportRoutes.js'
+      - 'src/middleware/requireReportScope.js'
       - 'src/utils/rolePermissions.js'
+      - 'src/api/v1/modules/sync/posEvent.processor.js'
+      - 'src/api/v1/modules/sync/posEvent.reportingBranch.test.js'
       - '.github/workflows/v1-reporting-admin.yml'
   workflow_dispatch:
 
@@ -23,4 +26,8 @@ jobs:
       - name: Install dependencies
         run: npm install --ignore-scripts --no-audit --no-fund
       - name: Run V1 Reporting/Admin acceptance
-        run: npx jest src/controllers/reportController.v1ReportingAcceptance.test.js --runInBand
+        run: >-
+          npx jest
+          src/controllers/reportController.v1ReportingAcceptance.test.js
+          src/api/v1/modules/sync/posEvent.reportingBranch.test.js
+          --runInBand

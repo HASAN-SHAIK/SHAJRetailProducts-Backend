@@ -6,15 +6,42 @@ const { processInventoryMovementRecorded } = require('./inventoryMovementRecorde
 const { processReceiptIssued } = require('./receiptIssued.processor');
 const { processCustomerChanged } = require('./customerChanged.processor');
 
+const bindCanonicalOrderBranch = async (client, projection, syncDevice) => {
+  const centralOrderId = Number(projection?.central_order_id);
+  const branchId = String(syncDevice?.branchId || '').trim();
+  if (!Number.isSafeInteger(centralOrderId) || centralOrderId <= 0 || !branchId) {
+    const error = new Error('trusted POS device branch is required for canonical sale projection');
+    error.code = 'INVALID_SALE_COMPLETED_PAYLOAD';
+    throw error;
+  }
+
+  const updated = await client.query(
+    `UPDATE orders
+     SET branch_id=$2
+     WHERE id=$1
+       AND (branch_id IS NULL OR branch_id=$2::uuid)
+     RETURNING branch_id`,
+    [centralOrderId, branchId]
+  );
+  if (updated.rowCount !== 1) {
+    const error = new Error('canonical sale is already bound to a different branch');
+    error.code = 'INVALID_SALE_COMPLETED_PAYLOAD';
+    throw error;
+  }
+};
+
 const processPosEvent = async (client, event, context = {}) => {
   switch (event.event_type) {
-    case 'sale.completed':
+    case 'sale.completed': {
       if (event.schema_version !== 1) {
         const error = new Error('unsupported sale.completed schema_version');
         error.code = 'INVALID_SALE_COMPLETED_PAYLOAD';
         throw error;
       }
-      return processSaleCompleted(client, event);
+      const projection = await processSaleCompleted(client, event);
+      await bindCanonicalOrderBranch(client, projection, context.syncDevice || null);
+      return projection;
+    }
     case 'sale.returned':
       return processSaleReturned(client, event);
     case 'sale.partial_returned':
@@ -35,4 +62,4 @@ const processPosEvent = async (client, event, context = {}) => {
   }
 };
 
-module.exports = { processPosEvent };
+module.exports = { processPosEvent, bindCanonicalOrderBranch };
