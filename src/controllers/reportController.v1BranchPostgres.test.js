@@ -1,4 +1,7 @@
 const { Pool } = require('pg');
+
+jest.mock('../db', () => ({ query: jest.fn() }));
+
 const { getSalesReport } = require('./reportController');
 
 const connectionString = process.env.V1_REPORTING_TEST_DATABASE_URL;
