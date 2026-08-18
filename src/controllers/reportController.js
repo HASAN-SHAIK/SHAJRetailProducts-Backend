@@ -38,15 +38,10 @@ const SALES_STATUSES = ['completed', 'partially_returned', 'fully_returned'];
 const getSalesReport = async (req, res) => {
    try {
         const requestPool = getRequestPool(req);
-        //Checking role
         const decoded = getAuthUser(req);
         if (!decoded) {
             return res.status(401).json({ message: "Access Denied" });
         }
-        if(decoded.role !== 'admin')
-            return res.json({
-                message: "Haha! You are not admin :)"
-            });
     
        let { from_date, to_date } = req.query;
        // If no dates are provided, use previous calendar month (UTC)
@@ -80,7 +75,8 @@ const getSalesReport = async (req, res) => {
                    JOIN order_return_items ori ON ori.return_id = r.id
                    GROUP BY r.order_id, ori.product_id
                  ) r ON r.order_id = o.id AND r.product_id = oi.product_id
-                 WHERE o.order_status = ANY($3::text[]) AND o.created_at BETWEEN $1 AND $2;`,
+                 WHERE o.order_status = ANY($3::text[])
+                   AND o.created_at BETWEEN $1 AND $2;`,
                  [from_date, to_date, SALES_STATUSES]
         );
 
@@ -235,10 +231,6 @@ const getProfitReport = async (req, res) => {
         if (!decoded) {
             return res.status(401).json({ message: "Access Denied" });
         }
-        if(decoded.role !== 'admin')
-            return res.json({
-                message: "Haha! You are not admin :)"
-        })             
         let { from_date, to_date } = req.query;
         let dateFilter = "";
         let dateFilterOrders = "";
@@ -305,10 +297,6 @@ const getDailySalesReport = async (req, res) => {
         if (!decoded) {
             return res.status(401).json({ message: "Access Denied" });
         }
-        if(decoded.role !== 'admin')
-            return res.json({
-                message: "Haha! You are not admin :)"
-        })
         const { date } = req.query;
         const salesDate = date ? new Date(date) : new Date();
         if (Number.isNaN(salesDate.getTime())) {
@@ -396,9 +384,6 @@ const getProfitGraph = async (req, res) => {
         if (!decoded) {
             return res.status(401).json({ message: "Access Denied" });
         }
-        if (decoded.role !== 'admin') {
-            return res.json({ message: "Haha! You are not admin :)" });
-        }
 
         const range = req.query.range === '365' ? 365 : 30;
         const { start, end } = getLastNDaysRangeUtc(range);
@@ -454,4 +439,3 @@ const getProfitGraph = async (req, res) => {
 
 
 module.exports = { getSalesReport, getInventoryReport, getProfitReport, getDailySalesReport, getProfitGraph };
-
