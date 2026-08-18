@@ -4,7 +4,10 @@ on:
   pull_request:
     paths:
       - 'src/controllers/reportController.js'
+      - 'src/controllers/historicalSalesReportController.js'
+      - 'src/controllers/historicalSalesReportController.v1ReportingAcceptance.test.js'
       - 'src/controllers/reportController.v1BranchPostgres.test.js'
+      - 'src/routes/reportRoutes.js'
       - 'src/middleware/requireReportScope.js'
       - '.github/workflows/v1-reporting-branch-postgres.yml'
   workflow_dispatch:
