@@ -74,6 +74,29 @@ test('device can be explicitly registered on a new branch after the old branch i
   expect(pool.query.mock.calls.some(([sql]) => sql.includes('INSERT INTO branch_devices'))).toBe(true);
 });
 
+test('device validation remains compatible before branches is_active migration is applied', async () => {
+  const missingColumn = new Error('column "is_active" does not exist');
+  missingColumn.code = '42703';
+  const pool = {
+    query: jest.fn()
+      .mockRejectedValueOnce(missingColumn)
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'branch-a', subscription_plan: 'basic', max_devices_allowed: 1, is_active: true }] })
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'device-row-1', is_active: true }] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }),
+  };
+
+  await expect(ensureDeviceRegistration({
+    tenantPool: pool,
+    branchId: 'branch-a',
+    deviceId: 'device-1',
+    userId: 'user-1',
+    mode: 'validate',
+  })).resolves.toEqual({ allowed: true, limit: 1 });
+  expect(pool.query).toHaveBeenCalledTimes(5);
+  expect(pool.query.mock.calls[1][0]).toContain('TRUE AS is_active');
+});
+
 test('trusted device resolution fails closed when legacy data has multiple active branch registrations', async () => {
   const ambiguousPool = poolWith(async () => ({
     rowCount: 2,

@@ -7,27 +7,52 @@ const getRequestPool = (req) => {
 
 const getTenantScopeId = (req) => String(req?.tenant?.id || req?.tenant_id || 'tenant');
 
+const isUndefinedColumn = (error) => error?.code === '42703' || String(error?.message || '').toLowerCase().includes('column b.is_active does not exist');
+
 const resolveBranch = async (requestPool, branchId) => {
   if (!branchId) return null;
-  const result = await requestPool.query(
-    `SELECT id FROM branches WHERE id::text = $1 AND is_active = TRUE LIMIT 1`,
-    [String(branchId)]
-  );
+  let result;
+  try {
+    result = await requestPool.query(
+      `SELECT id FROM branches WHERE id::text = $1 AND is_active = TRUE LIMIT 1`,
+      [String(branchId)]
+    );
+  } catch (error) {
+    if (!isUndefinedColumn(error)) throw error;
+    result = await requestPool.query(
+      `SELECT id FROM branches WHERE id::text = $1 LIMIT 1`,
+      [String(branchId)]
+    );
+  }
   if (!result.rowCount) throw errorWithStatus(404, 'BRANCH_NOT_FOUND', 'Active branch not found');
   return String(result.rows[0].id);
 };
 
 const resolveDevice = async (requestPool, deviceId, { requireActive = false } = {}) => {
   if (!deviceId) return null;
-  const result = await requestPool.query(
-    `SELECT d.id, d.device_id, d.branch_id, d.is_active, b.is_active AS branch_is_active
-     FROM branch_devices d
-     JOIN branches b ON b.id = d.branch_id
-     WHERE d.device_id = $1 OR d.id::text = $1
-     ORDER BY d.is_active DESC, d.created_at DESC
-     LIMIT 2`,
-    [String(deviceId)]
-  );
+  let result;
+  try {
+    result = await requestPool.query(
+      `SELECT d.id, d.device_id, d.branch_id, d.is_active, b.is_active AS branch_is_active
+       FROM branch_devices d
+       JOIN branches b ON b.id = d.branch_id
+       WHERE d.device_id = $1 OR d.id::text = $1
+       ORDER BY d.is_active DESC, d.created_at DESC
+       LIMIT 2`,
+      [String(deviceId)]
+    );
+  } catch (error) {
+    if (!isUndefinedColumn(error)) throw error;
+    result = await requestPool.query(
+      `SELECT d.id, d.device_id, d.branch_id, d.is_active, TRUE AS branch_is_active
+       FROM branch_devices d
+       JOIN branches b ON b.id = d.branch_id
+       WHERE d.device_id = $1 OR d.id::text = $1
+       ORDER BY d.is_active DESC, d.created_at DESC
+       LIMIT 2`,
+      [String(deviceId)]
+    );
+  }
   if (!result.rowCount) return null;
   const activeRows = result.rows.filter((candidate) => candidate.is_active === true && candidate.branch_is_active !== false);
   if (activeRows.length > 1) return null;

@@ -3,6 +3,7 @@ const request = require('supertest');
 
 const mockTenantPool = { connect: jest.fn() };
 const mockGetPosChanges = jest.fn();
+const mockResolveDevice = jest.fn();
 
 jest.mock('../../../../config/tenantDbResolver', () => ({
   resolveTenantContext: jest.fn(async (tenantId) => ({
@@ -14,6 +15,10 @@ jest.mock('../../../../config/tenantDbResolver', () => ({
 
 jest.mock('../../../../services/posSyncGateway', () => ({
   getPosChanges: mockGetPosChanges,
+}));
+
+jest.mock('../../../../configuration/targets', () => ({
+  resolveDevice: (...args) => mockResolveDevice(...args),
 }));
 
 const router = require('./posSync.routes');
@@ -42,7 +47,8 @@ const envelope = {
       created_at: '2026-08-07T09:59:00Z', updated_at: '2026-08-07T10:00:00Z',
       items: [{
         id: 'itm-1', line_no: 1, product_id: 'product-1', product_name: 'Milk', quantity_milli: 1000,
-        unit_price_minor: 12500, discount_minor: 0, tax_minor: 0, line_total_minor: 12500,
+        unit_price_minor: 12500, discount_minor: 0, taxable_minor: 12500, gst_rate_bps: 1800,
+        tax_minor: 0, line_total_minor: 12500,
       }],
     },
     receipt: {
@@ -89,6 +95,11 @@ describe('POS central sync ingestion', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetPosChanges.mockReset();
+    mockResolveDevice.mockResolvedValue({
+      id: 'registration-1',
+      deviceId: 'device-1',
+      branchId: '00000000-0000-0000-0000-000000000001',
+    });
     process.env.POS_SYNC_TENANT_ID = 'tenant-1';
     process.env.POS_SYNC_TOKEN = 'sync-secret';
     delete process.env.POS_SYNC_TOKENS_JSON;
@@ -126,6 +137,10 @@ describe('POS central sync ingestion', () => {
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO order_items('))).toBe(true);
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO pos_sales'))).toBe(true);
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO pos_sale_items'))).toBe(true);
+    const orderItemCall = client.query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO order_items('));
+    expect(orderItemCall[1]).toEqual(expect.arrayContaining([12500, 1800]));
+    const posSaleItemCall = client.query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO pos_sale_items'));
+    expect(posSaleItemCall[1]).toEqual(expect.arrayContaining([12500, 1800]));
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO pos_sale_payments'))).toBe(true);
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO pos_sale_receipts'))).toBe(true);
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO pos_inventory_movements'))).toBe(true);
@@ -215,6 +230,7 @@ describe('POS central sync ingestion', () => {
       tenantPool: mockTenantPool,
       cursorValue: undefined,
       limit: '1',
+      branchId: '00000000-0000-0000-0000-000000000001',
     });
     expect(response.body.has_more).toBe(false);
     expect(response.body.cursor).toBeTruthy();

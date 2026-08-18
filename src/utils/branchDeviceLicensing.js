@@ -23,13 +23,26 @@ const resolveBranchDeviceLimit = (branchRow) => {
   return resolvePlanDeviceLimit(plan);
 };
 
+const isUndefinedColumn = (error) => error?.code === '42703' || String(error?.message || '').toLowerCase().includes('column "is_active" does not exist');
+
 const fetchBranchPolicy = async (tenantPool, branchId) => {
-  const result = await tenantPool.query(
-    `SELECT id, subscription_plan, max_devices_allowed, is_active
-     FROM branches
-     WHERE id = $1`,
-    [branchId]
-  );
+  let result;
+  try {
+    result = await tenantPool.query(
+      `SELECT id, subscription_plan, max_devices_allowed, is_active
+       FROM branches
+       WHERE id = $1`,
+      [branchId]
+    );
+  } catch (error) {
+    if (!isUndefinedColumn(error)) throw error;
+    result = await tenantPool.query(
+      `SELECT id, subscription_plan, max_devices_allowed, TRUE AS is_active
+       FROM branches
+       WHERE id = $1`,
+      [branchId]
+    );
+  }
   return result.rows[0] || null;
 };
 
