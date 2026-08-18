@@ -204,7 +204,7 @@ describe('V1 Reporting/Admin permission authority', () => {
     expect(controller).toContain('SUM(o.total_price - COALESCE(o.returned_amount, 0)) AS total_revenue');
     expect(controller).toContain('GREATEST(oi.quantity - COALESCE(r.returned_qty, 0), 0)');
     expect(controller).toContain('SUM(ori.quantity) AS returned_qty');
-    expect(controller).toContain('JOIN order_returns r');
+    expect(controller).toContain('FROM order_returns r');
     expect(controller).toContain('JOIN order_return_items ori ON ori.return_id = r.id');
     expect(controller).toContain("const SALES_STATUSES = ['completed', 'partially_returned', 'fully_returned'];");
   });
