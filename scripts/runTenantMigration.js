@@ -1,18 +1,44 @@
 require('dotenv').config();
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
 
 const usage = () => 'Usage: node scripts/runTenantMigration.js <sql_file_path> [--tenant=<db_name>]';
 
-const runStatements = async (pool, label, sql) => {
+const runStatements = async (pool, label, sql, { migrationKey, migrationChecksum }) => {
   const client = await pool.connect();
   let began = false;
   try {
     await client.query('BEGIN');
     began = true;
     await client.query('SET LOCAL search_path TO public');
+    await client.query(`CREATE TABLE IF NOT EXISTS tenant_schema_migrations (
+      migration_key TEXT PRIMARY KEY,
+      checksum TEXT NOT NULL,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+
+    const existing = await client.query(
+      'SELECT checksum FROM tenant_schema_migrations WHERE migration_key = $1',
+      [migrationKey]
+    );
+    if (existing.rows.length > 0) {
+      if (existing.rows[0].checksum !== migrationChecksum) {
+        const error = new Error(`migration ${migrationKey} checksum mismatch`);
+        error.code = 'TENANT_MIGRATION_CHECKSUM_MISMATCH';
+        throw error;
+      }
+      await client.query('COMMIT');
+      began = false;
+      return { tenant: label, status: 'skipped' };
+    }
+
     await client.query(sql);
+    await client.query(
+      'INSERT INTO tenant_schema_migrations(migration_key, checksum) VALUES($1, $2)',
+      [migrationKey, migrationChecksum]
+    );
     await client.query('COMMIT');
     began = false;
     return { tenant: label, status: 'applied' };
@@ -35,6 +61,8 @@ const runFleetMigration = async ({
   template,
   tenantFilter = null,
   sql,
+  migrationKey = 'manual.sql',
+  migrationChecksum = crypto.createHash('sha256').update(String(sql || '')).digest('hex'),
   dbSsl = false,
   PoolImpl = Pool,
   logger = console,
@@ -45,10 +73,14 @@ const runFleetMigration = async ({
   if (!sql || !String(sql).trim()) {
     throw new Error('Migration SQL is required.');
   }
+  if (!migrationKey || !String(migrationKey).trim()) {
+    throw new Error('Migration key is required.');
+  }
 
   const masterPool = new PoolImpl({ connectionString: masterUrl });
   const failures = [];
   const applied = [];
+  const skipped = [];
   try {
     const tenantRes = await masterPool.query(
       `SELECT database_name
@@ -64,7 +96,7 @@ const runFleetMigration = async ({
 
     if (tenants.length === 0) {
       logger.log('No tenant databases found for migration.');
-      return { applied, failures };
+      return { applied, skipped, failures };
     }
 
     for (const dbName of tenants) {
@@ -74,13 +106,19 @@ const runFleetMigration = async ({
         ssl: dbSsl ? { rejectUnauthorized: false } : false,
       });
       try {
-        await runStatements(pool, dbName, sql);
-        applied.push(dbName);
-        logger.log(`✔ Migration applied to ${dbName}`);
+        const result = await runStatements(pool, dbName, sql, { migrationKey, migrationChecksum });
+        if (result.status === 'skipped') {
+          skipped.push(dbName);
+          logger.log(`↷ Migration already applied to ${dbName}`);
+        } else {
+          applied.push(dbName);
+          logger.log(`✔ Migration applied to ${dbName}`);
+        }
       } catch (error) {
         const failure = {
           tenant: dbName,
           error: error.message,
+          code: error.code || null,
           rollback_error: error.rollbackError?.message || null,
         };
         failures.push(failure);
@@ -101,10 +139,11 @@ const runFleetMigration = async ({
     error.code = 'TENANT_MIGRATION_PARTIAL_FAILURE';
     error.failures = failures;
     error.applied = applied;
+    error.skipped = skipped;
     throw error;
   }
 
-  return { applied, failures };
+  return { applied, skipped, failures };
 };
 
 const main = async (argv = process.argv.slice(2), env = process.env) => {
@@ -124,11 +163,15 @@ const main = async (argv = process.argv.slice(2), env = process.env) => {
   }
 
   const sql = fs.readFileSync(resolvedPath, 'utf8');
+  const migrationKey = path.basename(resolvedPath);
+  const migrationChecksum = crypto.createHash('sha256').update(sql).digest('hex');
   return runFleetMigration({
     masterUrl: env.MASTER_DATABASE_URL,
     template: env.TENANT_DATABASE_URL_TEMPLATE,
     tenantFilter,
     sql,
+    migrationKey,
+    migrationChecksum,
     dbSsl: env.DB_SSL === 'true',
   });
 };
