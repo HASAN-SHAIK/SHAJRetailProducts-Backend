@@ -10,12 +10,15 @@ on:
       - 'src/controllers/dailySalesReportController.v1ReportingAcceptance.test.js'
       - 'src/controllers/mobileController.js'
       - 'src/controllers/mobileController.v1ReportingAcceptance.test.js'
-      - 'src/routes/reportRoutes.js'
-      - 'src/routes/mobileRoutes.js'
-      - 'src/middleware/requireReportScope.js'
-      - 'src/utils/rolePermissions.js'
       - 'src/api/v1/modules/sync/posEvent.processor.js'
       - 'src/api/v1/modules/sync/posEvent.reportingBranch.test.js'
+      - 'src/routes/reportRoutes.js'
+      - 'src/routes/mobileRoutes.js'
+      - 'src/routes/tenant.routes.js'
+      - 'src/middleware/requireReportScope.js'
+      - 'src/middleware/dashboardReportScope.js'
+      - 'src/middleware/dashboardReportScope.v1ReportingAcceptance.test.js'
+      - 'src/utils/rolePermissions.js'
       - '.github/workflows/v1-reporting-admin.yml'
   workflow_dispatch:
 
@@ -39,4 +42,5 @@ jobs:
           src/controllers/dailySalesReportController.v1ReportingAcceptance.test.js
           src/controllers/mobileController.v1ReportingAcceptance.test.js
           src/api/v1/modules/sync/posEvent.reportingBranch.test.js
+          src/middleware/dashboardReportScope.v1ReportingAcceptance.test.js
           --runInBand
