@@ -16,12 +16,16 @@ on:
       - 'src/controllers/customerOutstandingReportController.v1ReportingAcceptance.test.js'
       - 'src/controllers/canonicalGstReportController.js'
       - 'src/controllers/canonicalGstReportController.v1ReportingAcceptance.test.js'
+      - 'src/controllers/tenant/categoryPerformanceV1Controller.js'
+      - 'src/controllers/tenant/categoryPerformanceV1Controller.v1ReportingAcceptance.test.js'
       - 'src/controllers/mobileController.js'
       - 'src/controllers/mobileController.v1ReportingAcceptance.test.js'
       - 'src/controllers/dataQualityController.js'
       - 'src/controllers/dataQualityController.v1ReportingAcceptance.test.js'
       - 'src/api/v1/modules/sync/posEvent.processor.js'
       - 'src/api/v1/modules/sync/posEvent.reportingBranch.test.js'
+      - 'src/api/v1/modules/sync/saleCompleted.processor.js'
+      - 'src/api/v1/modules/sync/saleCompleted.categorySnapshot.test.js'
       - 'src/routes/reportRoutes.js'
       - 'src/routes/gstRoutes.js'
       - 'src/routes/mobileRoutes.js'
@@ -33,6 +37,7 @@ on:
       - 'src/middleware/requireReportDateRange.js'
       - 'src/middleware/requireReportDateRange.v1ReportingAcceptance.test.js'
       - 'src/utils/rolePermissions.js'
+      - 'Db/migrations/2026-08-18-pos-sale-category-snapshots.sql'
       - '.github/workflows/v1-reporting-admin.yml'
   workflow_dispatch:
 
@@ -58,9 +63,11 @@ jobs:
           src/controllers/dailySalesReportController.v1ReportingAcceptance.test.js
           src/controllers/customerOutstandingReportController.v1ReportingAcceptance.test.js
           src/controllers/canonicalGstReportController.v1ReportingAcceptance.test.js
+          src/controllers/tenant/categoryPerformanceV1Controller.v1ReportingAcceptance.test.js
           src/controllers/mobileController.v1ReportingAcceptance.test.js
           src/controllers/dataQualityController.v1ReportingAcceptance.test.js
           src/api/v1/modules/sync/posEvent.reportingBranch.test.js
+          src/api/v1/modules/sync/saleCompleted.categorySnapshot.test.js
           src/middleware/dashboardReportScope.v1ReportingAcceptance.test.js
           src/middleware/requireReportDateRange.v1ReportingAcceptance.test.js
           --runInBand
