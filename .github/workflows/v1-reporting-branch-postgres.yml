@@ -1,0 +1,40 @@
+name: V1 Reporting Branch PostgreSQL acceptance
+
+on:
+  pull_request:
+    paths:
+      - 'src/controllers/reportController.js'
+      - 'src/controllers/reportController.v1BranchPostgres.test.js'
+      - 'src/middleware/requireReportScope.js'
+      - '.github/workflows/v1-reporting-branch-postgres.yml'
+  workflow_dispatch:
+
+jobs:
+  reporting-branch-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: v1_reporting
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d v1_reporting"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+      V1_REPORTING_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/v1_reporting
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Run trusted branch PostgreSQL acceptance
+        run: npx jest src/controllers/reportController.v1BranchPostgres.test.js --runInBand
