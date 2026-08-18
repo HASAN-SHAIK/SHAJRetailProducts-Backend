@@ -23,7 +23,7 @@ const run = (query) => {
 describe('V1 reporting bounded date ranges', () => {
   test('sales and profit routes use the bounded range middleware', () => {
     const source = fs.readFileSync(path.join(__dirname, '..', 'routes', 'reportRoutes.js'), 'utf8');
-    expect(source).toContain("router.get('/sales', requirePermission('reports:read'), requireReportScope, requireReportDateRange, getSalesReport)");
+    expect(source).toContain("router.get('/sales', requirePermission('reports:read'), requireReportScope, requireReportDateRange, getHistoricalSalesReport)");
     expect(source).toContain("router.get('/profit', requirePermission('reports:read'), requireReportScope, requireReportDateRange, getProfitReport)");
   });
 
