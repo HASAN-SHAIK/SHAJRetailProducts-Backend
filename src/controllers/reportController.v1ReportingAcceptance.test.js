@@ -1,5 +1,8 @@
 const fs = require('fs');
 const path = require('path');
+
+jest.mock('../db', () => ({ query: jest.fn() }));
+
 const { ROLE_PERMISSIONS } = require('../utils/rolePermissions');
 const { requireReportScope } = require('../middleware/requireReportScope');
 const { getSalesReport } = require('./reportController');
@@ -19,8 +22,8 @@ describe('V1 Reporting/Admin permission authority', () => {
   });
 
   test('branch-restricted users are pinned to their trusted Central branch regardless of caller branch input', () => {
-    const trustedBranch = '11111111-1111-1111-1111-111111111111';
-    const spoofedBranch = '22222222-2222-2222-2222-222222222222';
+    const trustedBranch = '11111111-1111-4111-8111-111111111111';
+    const spoofedBranch = '22222222-2222-4222-8222-222222222222';
     const req = {
       path: '/sales',
       headers: { 'x-branch-id': spoofedBranch },
@@ -68,7 +71,7 @@ describe('V1 Reporting/Admin permission authority', () => {
       query: {},
       user: {
         type: 'tenant', role: 'manager', all_branch_access: false,
-        branch_id: '11111111-1111-1111-1111-111111111111',
+        branch_id: '11111111-1111-4111-8111-111111111111',
       },
     };
     const res = {
@@ -92,7 +95,7 @@ describe('V1 Reporting/Admin permission authority', () => {
       query: {},
       user: {
         type: 'tenant', role: 'manager', all_branch_access: false,
-        branch_id: '11111111-1111-1111-1111-111111111111',
+        branch_id: '11111111-1111-4111-8111-111111111111',
       },
     };
     const res = {
