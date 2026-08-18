@@ -1,0 +1,51 @@
+name: V1 tenant backup restore acceptance
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/tenantDatabaseRecovery.js'
+      - 'scripts/tenantDatabaseRecovery.v1Postgres.test.js'
+      - '.github/workflows/v1-tenant-backup-restore.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tenant-backup-restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: tenant_v1
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d tenant_v1"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+      TEST_TENANT_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_v1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install PostgreSQL client tools
+        run: |
+          if ! command -v pg_dump >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y postgresql-client
+          fi
+          pg_dump --version
+          pg_restore --version
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Run V1 native tenant backup restore acceptance
+        run: npx jest scripts/tenantDatabaseRecovery.v1Postgres.test.js --runInBand
