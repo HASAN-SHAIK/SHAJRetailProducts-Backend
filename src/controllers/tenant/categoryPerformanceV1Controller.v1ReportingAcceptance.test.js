@@ -42,8 +42,9 @@ describe('V1 Reporting/Admin immutable category attribution', () => {
     await getCategoryPerformance(req, res);
 
     expect(res.statusCode).toBe(200);
-    expect(res.body.category_attribution).toBe('sale_snapshot');
-    expect(res.body.category_performance).toEqual([
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.category_attribution).toBe('sale_snapshot');
+    expect(res.body.data.category_performance).toEqual([
       expect.objectContaining({ category_id: 'cat-beverages', category_name: 'Beverages', revenue: 100 }),
       expect.objectContaining({ category_id: null, category_name: 'Unattributed', revenue: 25 }),
     ]);
@@ -82,8 +83,9 @@ describe('V1 Reporting/Admin immutable category attribution', () => {
     await getCategoryPerformance(req, res);
 
     expect(res.statusCode).toBe(200);
-    expect(res.body.category_attribution).toBe('sale_snapshot');
-    expect(res.body.grouped[0].category_performance[0]).toEqual(
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.category_attribution).toBe('sale_snapshot');
+    expect(res.body.data.grouped[0].category_performance[0]).toEqual(
       expect.objectContaining({
         category_id: 'cat-a',
         category_name: 'Original Category',
