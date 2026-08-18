@@ -15,9 +15,19 @@ const {
 
 const getRequestPool = (req) => req.tenantPool;
 
+const boundedLimit = (value, { defaultValue, maxValue }) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return defaultValue;
+  return Math.min(Math.max(Math.trunc(parsed), 1), maxValue);
+};
+
 const getStockAuditTrail = async (req, res) => {
   try {
-    const logs = await listStockAuditLogs(getRequestPool(req), req.query || {});
+    const query = {
+      ...(req.query || {}),
+      limit: boundedLimit(req.query?.limit, { defaultValue: 100, maxValue: 500 })
+    };
+    const logs = await listStockAuditLogs(getRequestPool(req), query);
     return jsonOk(res, { logs });
   } catch (error) {
     return jsonError(res, 500, 'STOCK_AUDIT_FETCH_FAILED', error.message || 'Failed to load stock audit logs');
@@ -50,7 +60,7 @@ const getLatestStockConsistency = async (req, res) => {
 const getDuplicateSuggestions = async (req, res) => {
   try {
     const entity = String(req.query?.entity || '').toLowerCase();
-    const limit = Number(req.query?.limit || 50);
+    const limit = boundedLimit(req.query?.limit, { defaultValue: 50, maxValue: 100 });
     if (entity === 'customer') {
       const suggestions = await getCustomerDuplicateSuggestions(getRequestPool(req), limit);
       return jsonOk(res, { entity, suggestions });
