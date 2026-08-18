@@ -5,6 +5,7 @@ on:
     paths:
       - 'src/controllers/reportController.js'
       - 'src/controllers/reportController.v1ReportingAcceptance.test.js'
+      - 'src/controllers/reportController.v1TenantIsolation.test.js'
       - 'src/routes/reportRoutes.js'
       - 'src/middleware/requireReportScope.js'
       - 'src/utils/rolePermissions.js'
@@ -29,5 +30,6 @@ jobs:
         run: >-
           npx jest
           src/controllers/reportController.v1ReportingAcceptance.test.js
+          src/controllers/reportController.v1TenantIsolation.test.js
           src/api/v1/modules/sync/posEvent.reportingBranch.test.js
           --runInBand
