@@ -34,7 +34,7 @@ describe('V1 Reporting/Admin immutable category attribution', () => {
     };
     const req = {
       user: { tenant_id: 'tenant-a' },
-      query: { range: '30d' },
+      query: { range: 'last_30_days' },
       tenantPool,
     };
     const res = makeResponse();
@@ -74,7 +74,7 @@ describe('V1 Reporting/Admin immutable category attribution', () => {
     };
     const req = {
       user: { tenant_id: 'tenant-a' },
-      query: { range: '30d', group_by: 'location' },
+      query: { range: 'last_30_days', group_by: 'location' },
       tenantPool,
     };
     const res = makeResponse();
