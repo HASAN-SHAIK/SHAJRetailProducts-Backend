@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const { getSalesReport, getInventoryReport, getDailySalesReport, getProfitReport, getProfitGraph } = require('../controllers/reportController');
+const { getSalesReport, getInventoryReport, getProfitReport, getProfitGraph } = require('../controllers/reportController');
+const { getDailySalesReport } = require('../controllers/dailySalesReportController');
 const { requirePermission } = require('../middleware/requirePermission');
 const { requireReportScope } = require('../middleware/requireReportScope');
 
