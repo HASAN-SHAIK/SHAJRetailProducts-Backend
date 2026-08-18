@@ -18,6 +18,8 @@ on:
       - 'src/middleware/requireReportScope.js'
       - 'src/middleware/dashboardReportScope.js'
       - 'src/middleware/dashboardReportScope.v1ReportingAcceptance.test.js'
+      - 'src/middleware/requireReportDateRange.js'
+      - 'src/middleware/requireReportDateRange.v1ReportingAcceptance.test.js'
       - 'src/utils/rolePermissions.js'
       - '.github/workflows/v1-reporting-admin.yml'
   workflow_dispatch:
@@ -43,4 +45,5 @@ jobs:
           src/controllers/mobileController.v1ReportingAcceptance.test.js
           src/api/v1/modules/sync/posEvent.reportingBranch.test.js
           src/middleware/dashboardReportScope.v1ReportingAcceptance.test.js
+          src/middleware/requireReportDateRange.v1ReportingAcceptance.test.js
           --runInBand
