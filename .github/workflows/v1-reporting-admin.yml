@@ -12,11 +12,14 @@ on:
       - 'src/controllers/dailySalesReportController.v1ReportingAcceptance.test.js'
       - 'src/controllers/mobileController.js'
       - 'src/controllers/mobileController.v1ReportingAcceptance.test.js'
+      - 'src/controllers/dataQualityController.js'
+      - 'src/controllers/dataQualityController.v1ReportingAcceptance.test.js'
       - 'src/api/v1/modules/sync/posEvent.processor.js'
       - 'src/api/v1/modules/sync/posEvent.reportingBranch.test.js'
       - 'src/routes/reportRoutes.js'
       - 'src/routes/mobileRoutes.js'
       - 'src/routes/tenant.routes.js'
+      - 'src/routes/dataQualityRoutes.js'
       - 'src/middleware/requireReportScope.js'
       - 'src/middleware/dashboardReportScope.js'
       - 'src/middleware/dashboardReportScope.v1ReportingAcceptance.test.js'
@@ -46,6 +49,7 @@ jobs:
           src/controllers/branchInventoryReportController.v1ReportingAcceptance.test.js
           src/controllers/dailySalesReportController.v1ReportingAcceptance.test.js
           src/controllers/mobileController.v1ReportingAcceptance.test.js
+          src/controllers/dataQualityController.v1ReportingAcceptance.test.js
           src/api/v1/modules/sync/posEvent.reportingBranch.test.js
           src/middleware/dashboardReportScope.v1ReportingAcceptance.test.js
           src/middleware/requireReportDateRange.v1ReportingAcceptance.test.js
