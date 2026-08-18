@@ -1,3 +1,5 @@
+jest.mock('../db', () => ({ query: jest.fn() }));
+
 const { getHistoricalSalesReport } = require('./historicalSalesReportController');
 
 describe('V1 historical product reporting', () => {
