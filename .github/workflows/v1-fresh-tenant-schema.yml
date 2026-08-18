@@ -1,0 +1,28 @@
+name: V1 fresh tenant schema acceptance
+
+on:
+  pull_request:
+    paths:
+      - 'src/services/tenantProvisionService.js'
+      - 'src/services/tenantProvisionService.v1DatabaseQuality.test.js'
+      - 'Db/tenant_schema.sql'
+      - 'Db/migrations/**'
+      - '.github/workflows/v1-fresh-tenant-schema.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fresh-tenant-schema:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Run V1 fresh tenant schema acceptance
+        run: npx jest src/services/tenantProvisionService.v1DatabaseQuality.test.js --runInBand
