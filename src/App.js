@@ -22,6 +22,7 @@ const { startPoolWarmup } = require('./services/poolWarmup');
 const { startStockConsistencyJob } = require('./services/stockConsistencyJob');
 const { startOwnerDailyDigestJob } = require('./services/ownerDailyDigestJob');
 const { startSyncMessaging } = require('./services/syncMessagingBootstrap');
+const { createReadinessHandler } = require('./services/readiness');
 const masterPool = require('./db/masterPool');
 require('dotenv').config();
 
@@ -146,8 +147,12 @@ const handleHealth = async (req, res) => {
   }
 };
 
+const handleReady = createReadinessHandler(masterPool);
+
 app.get('/health', handleHealth);
 app.get('/api/health', handleHealth);
+app.get('/ready', handleReady);
+app.get('/api/ready', handleReady);
 
 // Public routes
 app.use('/platform/auth', platformAuthRoutes);
