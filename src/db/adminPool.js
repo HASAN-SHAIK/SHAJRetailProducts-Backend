@@ -1,6 +1,6 @@
 require('dotenv').config();
 const { Pool } = require('pg');
-const { getEnvPassword, getPoolTuning, attachQueryTimer } = require('./poolUtils');
+const { getEnvPassword, getPoolTuning, attachQueryTimer, logPoolError } = require('./poolUtils');
 const { resolveDatabaseSslConfig } = require('../security/databaseTlsPolicy');
 
 const adminDbName = process.env.MASTER_DB_NAME || process.env.DB_NAME || 'postgres';
@@ -35,7 +35,7 @@ const tunedConfig = {
 const adminPool = attachQueryTimer(new Pool(tunedConfig), 'admin');
 
 adminPool.on('error', (err) => {
-  console.error('Admin DB pool error:', err);
+  logPoolError('admin', err);
 });
 
 module.exports = adminPool;
