@@ -1,17 +1,10 @@
 require('dotenv').config();
 const bcrypt = require('bcryptjs');
 const masterPool = require('../src/db/masterPool');
+const { resolvePlatformAdminSeedConfig } = require('../src/security/platformAdminSeedPolicy');
 
 const run = async () => {
-  const email = process.env.ADMIN_SEED_EMAIL;
-  const password = process.env.ADMIN_SEED_PASSWORD;
-  const name = process.env.ADMIN_SEED_NAME || 'Platform Admin';
-  const role = process.env.ADMIN_SEED_ROLE || 'platform_admin';
-
-  if (!email || !password) {
-    console.error('ADMIN_SEED_EMAIL and ADMIN_SEED_PASSWORD are required.');
-    process.exit(1);
-  }
+  const { email, password, name, role } = resolvePlatformAdminSeedConfig();
 
   const existing = await masterPool.query(
     'SELECT id FROM platform_admins WHERE email = $1',
@@ -24,15 +17,15 @@ const run = async () => {
 
   const hashed = await bcrypt.hash(password, 10);
   const result = await masterPool.query(
-    'INSERT INTO platform_admins (name, email, password, role) VALUES ($1, $2, $3, $4) RETURNING id, email',
+    'INSERT INTO platform_admins (name, email, password, role) VALUES ($1, $2, $3, $4) RETURNING id',
     [name, email, hashed, role]
   );
 
-  console.log(`Admin created: id=${result.rows[0].id}, email=${result.rows[0].email}`);
+  console.log(`Platform admin created: id=${result.rows[0].id}`);
   process.exit(0);
 };
 
 run().catch((err) => {
-  console.error('Failed to seed admin:', err);
+  console.error(`Failed to seed platform admin: ${err?.message || 'unknown error'}`);
   process.exit(1);
 });
