@@ -38,6 +38,19 @@ const getPoolTuning = (prefix) => {
   return config;
 };
 
+const formatPoolError = (label = 'db', error) => {
+  const safeLabel = String(label || 'db').replace(/[^a-zA-Z0-9:_-]/g, '_').slice(0, 64) || 'db';
+  if (process.env.NODE_ENV === 'production') {
+    return `[DB] ${safeLabel} pool error | DB_POOL_ERROR`;
+  }
+  const message = error instanceof Error ? error.message : String(error || 'Unknown database pool error');
+  return `[DB] ${safeLabel} pool error | ${message.slice(0, 500)}`;
+};
+
+const logPoolError = (label, error) => {
+  console.error(formatPoolError(label, error));
+};
+
 const attachQueryTimer = (pool, label = 'db') => {
   if (!pool || pool.__timed) return pool;
 
@@ -101,4 +114,11 @@ const attachQueryTimer = (pool, label = 'db') => {
   return pool;
 };
 
-module.exports = { normalizePassword, getEnvPassword, getPoolTuning, attachQueryTimer };
+module.exports = {
+  normalizePassword,
+  getEnvPassword,
+  getPoolTuning,
+  formatPoolError,
+  logPoolError,
+  attachQueryTimer
+};
