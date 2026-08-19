@@ -61,6 +61,39 @@ jobs:
             .sort((a, b) => Number(b.direct) - Number(a.direct) || a.severity.localeCompare(b.severity) || a.name.localeCompare(b.name));
           console.log(JSON.stringify({ metadata: report.metadata?.vulnerabilities || {}, highCritical: rows }, null, 2));
           NODE
+      - name: Report direct dependency source reachability
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const packages = ['20', 'crypto', 'grep', 'latest', 'router', 'nodemailer', 'puppeteer', 'xlsx'];
+          const files = [];
+          const walk = (dir) => {
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+              const full = path.join(dir, entry.name);
+              if (entry.isDirectory()) walk(full);
+              else if (entry.isFile() && entry.name.endsWith('.js')) files.push(full);
+            }
+          };
+          walk(path.join(process.cwd(), 'src'));
+          const usage = Object.fromEntries(packages.map((pkg) => [pkg, []]));
+          for (const file of files) {
+            const source = fs.readFileSync(file, 'utf8');
+            for (const pkg of packages) {
+              const escaped = pkg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              const patterns = [
+                new RegExp(`require\\(\\s*['\"]${escaped}(?:/[^'\"]*)?['\"]\\s*\\)`),
+                new RegExp(`from\\s+['\"]${escaped}(?:/[^'\"]*)?['\"]`),
+                new RegExp(`import\\(\\s*['\"]${escaped}(?:/[^'\"]*)?['\"]\\s*\\)`)
+              ];
+              if (patterns.some((pattern) => pattern.test(source))) {
+                usage[pkg].push(path.relative(process.cwd(), file));
+              }
+            }
+          }
+          console.log(JSON.stringify(usage, null, 2));
+          NODE
       - name: Run V1 Security acceptance
         run: >-
           npx jest
