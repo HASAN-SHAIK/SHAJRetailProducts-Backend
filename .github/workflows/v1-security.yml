@@ -10,6 +10,7 @@ on:
       - 'src/db/adminPool.js'
       - 'src/db/masterPool.js'
       - 'src/db/tenantPool.js'
+      - 'src/db/poolUtils.js'
       - 'src/security/corsPolicy.js'
       - 'src/security/databaseTlsPolicy.js'
       - 'src/security/invoiceUploadPolicy.js'
@@ -24,6 +25,7 @@ on:
       - 'tests/v1SecurityCorsPolicy.test.js'
       - 'tests/v1SecurityAuthRateLimits.test.js'
       - 'tests/v1SecurityDatabaseTlsPolicy.test.js'
+      - 'tests/v1SecurityDbTimingLogHygiene.test.js'
       - 'tests/v1SecurityImportBoundary.test.js'
       - 'tests/v1SecurityInvoiceUploadPolicy.test.js'
       - 'tests/v1SecurityRabbitmqConfig.test.js'
@@ -109,6 +111,7 @@ jobs:
           tests/v1SecurityCorsPolicy.test.js
           tests/v1SecurityAuthRateLimits.test.js
           tests/v1SecurityDatabaseTlsPolicy.test.js
+          tests/v1SecurityDbTimingLogHygiene.test.js
           tests/v1SecurityImportBoundary.test.js
           tests/v1SecurityInvoiceUploadPolicy.test.js
           tests/v1SecurityRabbitmqConfig.test.js
