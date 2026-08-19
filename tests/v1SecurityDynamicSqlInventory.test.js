@@ -7,7 +7,7 @@ const walkJs = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((en
   return entry.isFile() && entry.name.endsWith('.js') ? [full] : [];
 });
 
-const BASELINE_INTERPOLATED_QUERY_COUNT = 81;
+const BASELINE_INTERPOLATED_QUERY_COUNT = 79;
 
 describe('V1 dynamic SQL inventory', () => {
   test('template-interpolated query inventory cannot grow silently', () => {
