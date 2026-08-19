@@ -34,7 +34,10 @@ describe('V1 Backend container runtime security', () => {
 describe('V1 production configuration residual audit', () => {
   test('source code does not provide literal fallback credentials for sensitive environment variables', () => {
     const findings = [];
-    const literalFallback = /process\.env\.([A-Z0-9_]*(?:SECRET|PASSWORD|TOKEN|PRIVATE_KEY|API_KEY)[A-Z0-9_]*)\s*(?:\|\||\?\?)\s*(['"`])([^'"`]+)\2/g;
+    // Credential-like names must end in the sensitive suffix. Operational
+    // settings such as ACCESS_TOKEN_EXPIRY are not credentials and therefore
+    // intentionally do not match this pattern.
+    const literalFallback = /process\.env\.([A-Z0-9_]*(?:SECRET|PASSWORD|TOKEN|PRIVATE_KEY|API_KEY))\s*(?:\|\||\?\?)\s*(['"`])([^'"`]+)\2/g;
 
     for (const file of walkJs(srcRoot)) {
       const source = fs.readFileSync(file, 'utf8');
@@ -64,11 +67,14 @@ describe('V1 production configuration residual audit', () => {
   test('known privileged production fallback credentials and destinations stay removed', () => {
     const masterBootstrap = read('src/services/masterBootstrap.js');
     const seedAdmin = read('scripts/seedPlatformAdmin.js');
+    const seedPolicy = read('src/security/platformAdminSeedPolicy.js');
     const supportNotification = read('src/services/supportNotification.service.js');
 
     expect(masterBootstrap).not.toContain('hasan@shaj.com');
-    expect(masterBootstrap).toContain('ADMIN_SEED_');
-    expect(seedAdmin).toContain('ADMIN_SEED_');
+    expect(masterBootstrap).toContain('resolvePlatformAdminSeedConfig');
+    expect(seedAdmin).toContain('resolvePlatformAdminSeedConfig');
+    expect(seedPolicy).toContain('ADMIN_SEED_EMAIL');
+    expect(seedPolicy).toContain('ADMIN_SEED_PASSWORD');
     expect(supportNotification).toContain('SUPPORT_CASE_INTAKE_EMAIL');
   });
 });
