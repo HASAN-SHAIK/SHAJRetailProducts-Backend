@@ -69,12 +69,15 @@ describe('V1 production configuration residual audit', () => {
     const seedAdmin = read('scripts/seedPlatformAdmin.js');
     const seedPolicy = read('src/security/platformAdminSeedPolicy.js');
     const supportNotification = read('src/services/supportNotification.service.js');
+    const supportPolicy = read('src/security/supportNotificationPolicy.js');
 
     expect(masterBootstrap).not.toContain('hasan@shaj.com');
     expect(masterBootstrap).toContain('resolvePlatformAdminSeedConfig');
     expect(seedAdmin).toContain('resolvePlatformAdminSeedConfig');
     expect(seedPolicy).toContain('ADMIN_SEED_EMAIL');
     expect(seedPolicy).toContain('ADMIN_SEED_PASSWORD');
-    expect(supportNotification).toContain('SUPPORT_CASE_INTAKE_EMAIL');
+    expect(supportNotification).toContain('resolveSupportIntakeEmail');
+    expect(supportPolicy).toContain('SUPPORT_CASE_INTAKE_EMAIL');
+    expect(supportPolicy).toContain("if (appEnvironment === 'production')");
   });
 });
