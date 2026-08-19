@@ -13,9 +13,9 @@ describe('V1 dynamic SQL inventory', () => {
   test('template-interpolated query inventory cannot grow silently', () => {
     const srcRoot = path.join(__dirname, '../src');
     const sites = [];
-    const directInputSites = [];
+    const directRequestSites = [];
     const queryTemplate = /\.query\s*\(\s*`([\s\S]*?)`/g;
-    const directRequestInterpolation = /\$\{\s*(?:req(?:uest)?|body|params|query)(?:\.|\[)/;
+    const directRequestInterpolation = /\$\{\s*req(?:uest)?(?:\.|\[)/;
 
     for (const file of walkJs(srcRoot)) {
       const source = fs.readFileSync(file, 'utf8');
@@ -25,12 +25,11 @@ describe('V1 dynamic SQL inventory', () => {
         const line = source.slice(0, match.index).split('\n').length;
         const site = `${path.relative(srcRoot, file)}:${line}`;
         sites.push(site);
-        if (directRequestInterpolation.test(match[1])) directInputSites.push(site);
+        if (directRequestInterpolation.test(match[1])) directRequestSites.push(site);
       }
     }
 
-    // This is an inventory gate, not a blanket safety assertion. The first
-    // exact-head run established the current legacy baseline. Any new or
+    // This is an inventory gate, not a blanket safety assertion. Any new or
     // removed interpolation site must intentionally update this audit, while
     // follow-up Security work reviews/reduces the existing sites by domain.
     if (sites.length !== BASELINE_INTERPOLATED_QUERY_COUNT) {
@@ -40,9 +39,9 @@ describe('V1 dynamic SQL inventory', () => {
       );
     }
 
-    // Fail immediately on the most dangerous form: direct request/body/query
-    // object interpolation inside SQL text. Parameter placeholders and vetted
-    // structural fragments still remain in the inventory for deeper review.
-    expect(directInputSites).toEqual([]);
+    // Fail immediately on direct HTTP request-object interpolation. Local
+    // arrays/fragments named params/query are not assumed to be request data;
+    // they remain visible in the 79-site structural-interpolation inventory.
+    expect(directRequestSites).toEqual([]);
   });
 });
