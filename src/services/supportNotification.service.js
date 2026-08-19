@@ -1,7 +1,6 @@
 const nodemailer = require('nodemailer');
 const masterPool = require('../config/masterDb');
-
-const DEFAULT_INTAKE_EMAIL = 'shajnextgen@gmail.com';
+const { resolveSupportIntakeEmail } = require('../security/supportNotificationPolicy');
 
 const buildTransporter = () => {
   const host = process.env.SMTP_HOST;
@@ -52,7 +51,7 @@ const notifyNewSupportCase = async ({
   createdByName,
   createdByEmail
 }) => {
-  const intakeEmail = String(process.env.SUPPORT_CASE_INTAKE_EMAIL || DEFAULT_INTAKE_EMAIL).trim();
+  const intakeEmail = resolveSupportIntakeEmail();
   const tenantRes = await masterPool.query(
     `SELECT id, shop_name, owner_name, email, mobile
      FROM tenants
@@ -144,6 +143,7 @@ const notifySupportAssigneeChanged = async ({
   return safeSendMail({ to: assigneeEmail, subject, text, html });
 };
 
+module.exports = { sendBill: undefined, sendText: undefined };
 module.exports = {
   notifyNewSupportCase,
   notifySupportAssigneeChanged
