@@ -17,6 +17,7 @@ const { errorHandler } = require('./middleware/errorHandler');
 const { requestCorrelationMiddleware } = require('./middleware/requestCorrelation');
 const { createCorsOptions } = require('./security/corsPolicy');
 const { isHealthWarmupAuthorized } = require('./security/healthWarmupKeyPolicy');
+const { logStartupFailure } = require('./security/startupFailurePolicy');
 const { apiV1AuthRouter, apiV1Router, swaggerRoutes } = require('./api/v1');
 const posSyncRoutes = require('./api/v1/modules/sync/posSync.routes');
 const { getTenantMe, getPlatformBanner } = require('./controllers/tenantController');
@@ -203,7 +204,7 @@ const startServer = async () => {
 
 if (!isTestRuntime()) {
   startServer().catch((error) => {
-    console.error('Failed to start server:', error);
+    logStartupFailure({ environment: APP_ENVIRONMENT, error });
     process.exit(1);
   });
 }
