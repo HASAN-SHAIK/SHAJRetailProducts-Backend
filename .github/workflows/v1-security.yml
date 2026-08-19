@@ -5,14 +5,17 @@ on:
     paths:
       - 'src/App.js'
       - 'src/security/corsPolicy.js'
+      - 'src/security/invoiceUploadPolicy.js'
       - 'src/config/rabbitmq.config.js'
       - 'src/middleware/authRateLimits.js'
       - 'src/routes/authRoutes.js'
+      - 'src/routes/purchaseInvoiceRoutes.js'
       - 'src/api/v1/modules/auth/auth.routes.js'
       - 'src/services/imports.service.js'
       - 'tests/v1SecurityCorsPolicy.test.js'
       - 'tests/v1SecurityAuthRateLimits.test.js'
       - 'tests/v1SecurityImportBoundary.test.js'
+      - 'tests/v1SecurityInvoiceUploadPolicy.test.js'
       - 'tests/v1SecurityRabbitmqConfig.test.js'
       - 'tests/v1AuthCookieSecretHardening.test.js'
       - 'tests/v1CrossTenantAuthIsolation.test.js'
@@ -37,6 +40,7 @@ jobs:
           tests/v1SecurityCorsPolicy.test.js
           tests/v1SecurityAuthRateLimits.test.js
           tests/v1SecurityImportBoundary.test.js
+          tests/v1SecurityInvoiceUploadPolicy.test.js
           tests/v1SecurityRabbitmqConfig.test.js
           tests/v1AuthCookieSecretHardening.test.js
           tests/v1CrossTenantAuthIsolation.test.js
