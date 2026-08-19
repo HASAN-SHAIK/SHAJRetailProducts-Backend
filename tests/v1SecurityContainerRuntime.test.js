@@ -63,7 +63,7 @@ describe('V1 production configuration residual audit', () => {
 
   test('known privileged production fallback credentials and destinations stay removed', () => {
     const masterBootstrap = read('src/services/masterBootstrap.js');
-    const seedAdmin = read('scripts/seedAdmin.js');
+    const seedAdmin = read('scripts/seedPlatformAdmin.js');
     const supportNotification = read('src/services/supportNotification.service.js');
 
     expect(masterBootstrap).not.toContain('hasan@shaj.com');
