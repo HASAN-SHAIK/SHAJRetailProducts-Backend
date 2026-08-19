@@ -20,6 +20,7 @@ on:
       - 'tests/v1SecurityImportBoundary.test.js'
       - 'tests/v1SecurityInvoiceUploadPolicy.test.js'
       - 'tests/v1SecurityRabbitmqConfig.test.js'
+      - 'tests/v1SecurityDynamicSqlInventory.test.js'
       - 'tests/v1AuthCookieSecretHardening.test.js'
       - 'tests/v1CrossTenantAuthIsolation.test.js'
       - '.github/workflows/v1-security.yml'
@@ -48,6 +49,7 @@ jobs:
           tests/v1SecurityImportBoundary.test.js
           tests/v1SecurityInvoiceUploadPolicy.test.js
           tests/v1SecurityRabbitmqConfig.test.js
+          tests/v1SecurityDynamicSqlInventory.test.js
           tests/v1AuthCookieSecretHardening.test.js
           tests/v1CrossTenantAuthIsolation.test.js
           --runInBand
