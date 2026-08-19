@@ -41,6 +41,26 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Verify dependency tree
         run: npm ls --depth=0
+      - name: Report high and critical dependency advisories
+        shell: bash
+        run: |
+          npm audit --omit=dev --json > /tmp/npm-audit.json || true
+          node <<'NODE'
+          const fs = require('fs');
+          const report = JSON.parse(fs.readFileSync('/tmp/npm-audit.json', 'utf8'));
+          const rows = Object.entries(report.vulnerabilities || {})
+            .filter(([, item]) => item?.severity === 'high' || item?.severity === 'critical')
+            .map(([name, item]) => ({
+              name,
+              severity: item.severity,
+              direct: Boolean(item.isDirect),
+              range: item.range,
+              via: (item.via || []).map((v) => typeof v === 'string' ? v : `${v.name}:${v.severity}`).slice(0, 8),
+              fixAvailable: item.fixAvailable
+            }))
+            .sort((a, b) => Number(b.direct) - Number(a.direct) || a.severity.localeCompare(b.severity) || a.name.localeCompare(b.name));
+          console.log(JSON.stringify({ metadata: report.metadata?.vulnerabilities || {}, highCritical: rows }, null, 2));
+          NODE
       - name: Run V1 Security acceptance
         run: >-
           npx jest
