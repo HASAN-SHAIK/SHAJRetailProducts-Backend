@@ -8,6 +8,8 @@ on:
       - 'src/App.v1ObservabilityAcceptance.test.js'
       - 'src/middleware/errorHandler.js'
       - 'src/middleware/errorHandler.v1ObservabilityAcceptance.test.js'
+      - 'src/middleware/requestCorrelation.js'
+      - 'src/middleware/requestCorrelation.v1ObservabilityAcceptance.test.js'
       - '.github/workflows/v1-observability-health.yml'
   workflow_dispatch:
 
@@ -30,4 +32,4 @@ jobs:
       - name: Install dependencies
         run: npm install --ignore-scripts --no-audit --no-fund
       - name: Run V1 Central health/readiness acceptance
-        run: npx jest src/App.v1ObservabilityAcceptance.test.js src/middleware/errorHandler.v1ObservabilityAcceptance.test.js --runInBand
+        run: npx jest src/App.v1ObservabilityAcceptance.test.js src/middleware/errorHandler.v1ObservabilityAcceptance.test.js src/middleware/requestCorrelation.v1ObservabilityAcceptance.test.js --runInBand

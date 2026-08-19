@@ -14,6 +14,7 @@ const { subscriptionMiddleware } = require('./middleware/subscription');
 const { mergeFeatureFlags } = require('./middleware/featureFlags');
 const { attachAuditDbContext } = require('./middleware/auditDbContext');
 const { errorHandler } = require('./middleware/errorHandler');
+const { requestCorrelationMiddleware } = require('./middleware/requestCorrelation');
 const { apiV1AuthRouter, apiV1Router, swaggerRoutes } = require('./api/v1');
 const posSyncRoutes = require('./api/v1/modules/sync/posSync.routes');
 const { getTenantMe, getPlatformBanner } = require('./controllers/tenantController');
@@ -27,6 +28,7 @@ const masterPool = require('./db/masterPool');
 require('dotenv').config();
 
 app.set('trust proxy', 1);
+app.use(requestCorrelationMiddleware);
 app.use(cookieParser());
 const rawCorsOrigins = process.env.CORS_ORIGINS;
 const allowedOrigins = rawCorsOrigins
