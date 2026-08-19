@@ -3,9 +3,12 @@ name: V1 Security acceptance
 on:
   pull_request:
     paths:
+      - 'src/App.js'
+      - 'src/security/corsPolicy.js'
       - 'src/middleware/authRateLimits.js'
       - 'src/routes/authRoutes.js'
       - 'src/api/v1/modules/auth/auth.routes.js'
+      - 'tests/v1SecurityCorsPolicy.test.js'
       - 'tests/v1SecurityAuthRateLimits.test.js'
       - 'tests/v1AuthCookieSecretHardening.test.js'
       - 'tests/v1CrossTenantAuthIsolation.test.js'
@@ -27,6 +30,7 @@ jobs:
       - name: Run V1 Security acceptance
         run: >-
           npx jest
+          tests/v1SecurityCorsPolicy.test.js
           tests/v1SecurityAuthRateLimits.test.js
           tests/v1AuthCookieSecretHardening.test.js
           tests/v1CrossTenantAuthIsolation.test.js
