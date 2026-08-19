@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'src/App.js'
+      - 'src/services/readiness.js'
       - 'src/App.v1ObservabilityAcceptance.test.js'
       - '.github/workflows/v1-observability-health.yml'
   workflow_dispatch:
