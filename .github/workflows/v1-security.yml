@@ -46,10 +46,12 @@ on:
       - 'tests/v1SecurityRabbitmqConfig.test.js'
       - 'tests/v1SecurityDynamicSqlInventory.test.js'
       - 'tests/v1SecurityStartupLogHygiene.test.js'
+      - 'tests/v1SecurityFilePathBoundary.test.js'
       - 'tests/v1SecuritySupportNotificationPolicy.test.js'
       - 'tests/v1SecurityContainerRuntime.test.js'
       - 'tests/v1AuthCookieSecretHardening.test.js'
       - 'tests/v1CrossTenantAuthIsolation.test.js'
+      - 'docs/V1_SECURITY_FILE_PATH_BOUNDARY.md'
       - '.github/workflows/v1-security.yml'
       - 'docs/V1_SECURITY_ACCEPTANCE_MATRIX.md'
   workflow_dispatch:
@@ -139,6 +141,7 @@ jobs:
           tests/v1SecurityRabbitmqConfig.test.js
           tests/v1SecurityDynamicSqlInventory.test.js
           tests/v1SecurityStartupLogHygiene.test.js
+          tests/v1SecurityFilePathBoundary.test.js
           tests/v1SecuritySupportNotificationPolicy.test.js
           tests/v1SecurityContainerRuntime.test.js
           tests/v1AuthCookieSecretHardening.test.js
