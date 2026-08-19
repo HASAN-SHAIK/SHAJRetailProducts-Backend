@@ -36,6 +36,7 @@ const hasSupportedInvoiceSignature = (file) => {
 };
 
 const assertSupportedInvoiceContent = (file) => {
+  if (!file) return;
   if (hasSupportedInvoiceSignature(file)) return;
   const error = new Error('Uploaded invoice content does not match its declared file type.');
   error.status = 415;
