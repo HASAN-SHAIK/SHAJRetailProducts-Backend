@@ -143,7 +143,6 @@ const notifySupportAssigneeChanged = async ({
   return safeSendMail({ to: assigneeEmail, subject, text, html });
 };
 
-module.exports = { sendBill: undefined, sendText: undefined };
 module.exports = {
   notifyNewSupportCase,
   notifySupportAssigneeChanged
