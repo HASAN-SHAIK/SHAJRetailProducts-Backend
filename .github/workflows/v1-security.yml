@@ -20,6 +20,7 @@ on:
       - 'tests/v1SecurityImportBoundary.test.js'
       - 'tests/v1SecurityInvoiceUploadPolicy.test.js'
       - 'tests/v1SecurityRabbitmqConfig.test.js'
+      - 'tests/v1SecurityDynamicSqlInventory.test.js'
       - 'tests/v1AuthCookieSecretHardening.test.js'
       - 'tests/v1CrossTenantAuthIsolation.test.js'
       - '.github/workflows/v1-security.yml'
@@ -40,6 +41,59 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Verify dependency tree
         run: npm ls --depth=0
+      - name: Report high and critical dependency advisories
+        shell: bash
+        run: |
+          npm audit --omit=dev --json > /tmp/npm-audit.json || true
+          node <<'NODE'
+          const fs = require('fs');
+          const report = JSON.parse(fs.readFileSync('/tmp/npm-audit.json', 'utf8'));
+          const rows = Object.entries(report.vulnerabilities || {})
+            .filter(([, item]) => item?.severity === 'high' || item?.severity === 'critical')
+            .map(([name, item]) => ({
+              name,
+              severity: item.severity,
+              direct: Boolean(item.isDirect),
+              range: item.range,
+              via: (item.via || []).map((v) => typeof v === 'string' ? v : `${v.name}:${v.severity}`).slice(0, 8),
+              fixAvailable: item.fixAvailable
+            }))
+            .sort((a, b) => Number(b.direct) - Number(a.direct) || a.severity.localeCompare(b.severity) || a.name.localeCompare(b.name));
+          console.log(JSON.stringify({ metadata: report.metadata?.vulnerabilities || {}, highCritical: rows }, null, 2));
+          NODE
+      - name: Report direct dependency source reachability
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const packages = ['20', 'crypto', 'grep', 'latest', 'router', 'nodemailer', 'puppeteer', 'xlsx'];
+          const files = [];
+          const walk = (dir) => {
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+              const full = path.join(dir, entry.name);
+              if (entry.isDirectory()) walk(full);
+              else if (entry.isFile() && entry.name.endsWith('.js')) files.push(full);
+            }
+          };
+          walk(path.join(process.cwd(), 'src'));
+          const usage = Object.fromEntries(packages.map((pkg) => [pkg, []]));
+          for (const file of files) {
+            const source = fs.readFileSync(file, 'utf8');
+            for (const pkg of packages) {
+              const escaped = pkg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              const patterns = [
+                new RegExp(`require\\(\\s*['\"]${escaped}(?:/[^'\"]*)?['\"]\\s*\\)`),
+                new RegExp(`from\\s+['\"]${escaped}(?:/[^'\"]*)?['\"]`),
+                new RegExp(`import\\(\\s*['\"]${escaped}(?:/[^'\"]*)?['\"]\\s*\\)`)
+              ];
+              if (patterns.some((pattern) => pattern.test(source))) {
+                usage[pkg].push(path.relative(process.cwd(), file));
+              }
+            }
+          }
+          console.log(JSON.stringify(usage, null, 2));
+          NODE
       - name: Run V1 Security acceptance
         run: >-
           npx jest
@@ -48,6 +102,7 @@ jobs:
           tests/v1SecurityImportBoundary.test.js
           tests/v1SecurityInvoiceUploadPolicy.test.js
           tests/v1SecurityRabbitmqConfig.test.js
+          tests/v1SecurityDynamicSqlInventory.test.js
           tests/v1AuthCookieSecretHardening.test.js
           tests/v1CrossTenantAuthIsolation.test.js
           --runInBand
