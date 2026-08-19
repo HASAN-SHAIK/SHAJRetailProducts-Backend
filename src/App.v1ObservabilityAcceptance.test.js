@@ -36,6 +36,26 @@ describe('V1 Central health and readiness boundary', () => {
     expect(JSON.stringify(response.body)).not.toContain('db.internal');
   });
 
+  test('keeps public liveness independent from required PostgreSQL readiness unless warmup is requested', () => {
+    const appSource = fs.readFileSync(path.join(__dirname, 'App.js'), 'utf8');
+    const handlerStart = appSource.indexOf('const handleHealth = async (req, res) => {');
+    const handlerEnd = appSource.indexOf('\n};', handlerStart);
+    const handlerSource = appSource.slice(handlerStart, handlerEnd);
+
+    expect(handlerStart).toBeGreaterThan(-1);
+    expect(handlerSource).toContain("status: 'ok'");
+    expect(handlerSource).toContain("reason: 'not_requested'");
+
+    const noWarmupGuardIndex = handlerSource.indexOf('if (!isWarmupRequested(req))');
+    const noWarmupReturnIndex = handlerSource.indexOf('return res.status(200).json(response);', noWarmupGuardIndex);
+    const warmupQueryIndex = handlerSource.indexOf('await performHealthWarmup()');
+
+    expect(noWarmupGuardIndex).toBeGreaterThan(-1);
+    expect(noWarmupReturnIndex).toBeGreaterThan(noWarmupGuardIndex);
+    expect(warmupQueryIndex).toBeGreaterThan(noWarmupReturnIndex);
+    expect(handlerSource).not.toMatch(/password|postgres(?:ql)?:\/\//i);
+  });
+
   test('keeps readiness and liveness routes wired independently in the production app', () => {
     const appSource = fs.readFileSync(path.join(__dirname, 'App.js'), 'utf8');
 
