@@ -1,10 +1,11 @@
 const puppeteer = require('puppeteer');
+const { buildPuppeteerLaunchOptions } = require('../security/puppeteerLaunchPolicy');
 
 const generatePDF = async (html) => {
-  const browser = await puppeteer.launch({
-    headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  });
+  const browser = await puppeteer.launch(buildPuppeteerLaunchOptions({
+    environment: process.env.APP_ENVIRONMENT || process.env.NODE_ENV || 'development',
+    allowNoSandbox: process.env.PUPPETEER_ALLOW_NO_SANDBOX,
+  }));
   try {
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: 'networkidle0' });
