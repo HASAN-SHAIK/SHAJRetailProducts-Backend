@@ -1,0 +1,37 @@
+name: V1 Security dependency residual acceptance
+
+on:
+  pull_request:
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'docs/V1_SECURITY_DEPENDENCY_RESIDUALS.md'
+      - 'tests/v1SecurityDependencyResidualPolicy.test.js'
+      - 'src/security/supportNotificationPolicy.js'
+      - 'src/security/puppeteerLaunchPolicy.js'
+      - 'src/security/productImportUploadPolicy.js'
+      - 'src/services/imports.service.js'
+      - '.github/workflows/v1-security-dependency-residuals.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-residual-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Install dependencies from lockfile
+        run: npm ci --ignore-scripts
+      - name: Verify dependency tree
+        run: npm ls --depth=0
+      - name: Run dependency residual policy acceptance
+        run: npx jest tests/v1SecurityDependencyResidualPolicy.test.js --runInBand
+      - name: Report production dependency advisories
+        run: npm audit --omit=dev || true
