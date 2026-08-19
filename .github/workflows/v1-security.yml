@@ -40,6 +40,7 @@ on:
       - 'tests/v1SecurityMasterBootstrapAdmin.test.js'
       - 'tests/v1SecurityPlatformAdminSeedPolicy.test.js'
       - 'tests/v1SecurityProductImportUploadPolicy.test.js'
+      - 'tests/v1SecurityProductImportRowLimit.test.js'
       - 'tests/v1SecurityPuppeteerLaunchPolicy.test.js'
       - 'tests/v1SecurityRabbitmqConfig.test.js'
       - 'tests/v1SecurityDynamicSqlInventory.test.js'
@@ -131,6 +132,7 @@ jobs:
           tests/v1SecurityMasterBootstrapAdmin.test.js
           tests/v1SecurityPlatformAdminSeedPolicy.test.js
           tests/v1SecurityProductImportUploadPolicy.test.js
+          tests/v1SecurityProductImportRowLimit.test.js
           tests/v1SecurityPuppeteerLaunchPolicy.test.js
           tests/v1SecurityRabbitmqConfig.test.js
           tests/v1SecurityDynamicSqlInventory.test.js
