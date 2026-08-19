@@ -10,38 +10,54 @@ const walkJs = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((en
 const BASELINE_INTERPOLATED_QUERY_COUNT = 79;
 const readSource = (relativePath) => fs.readFileSync(path.join(__dirname, '..', relativePath), 'utf8');
 
+const REVIEWED_STRUCTURAL_EXPRESSION_PATTERNS = [
+  /^(dedupeExpr|whereClause|where|branchClause|branchFilterClause|dateFilterOrders|returnedQuantityJoin)$/,
+  /^(productNameSql|productIdentitySql|categoryIdSql|categoryNameSql|revenueSql|netQuantitySql|locationPredicate)$/,
+  /^(barcodeSelect|sort|sortBy|sortColumn|sortOrder|resolvedSort|resolvedAt|whereSql|table|dbIdentifier|placeholders)$/,
+  /^(branchA|branchB)$/,
+  /^(params|values|shopValues|listParams|updateValues)\.length(?:\s*[+-]\s*\d+)?$/,
+  /^idx(?:\s*\+\s*\d+)?$/,
+  /^(updates|shopUpdates|insertColumns|columns|updateFields|fields)\.join\(', '\)$/,
+  /^(where|conditions)\.join\(' AND '\)$/,
+  /^placeholders\.join\(', '\)$/,
+  /^status \? '\$[123]' : '\$[123]'$/,
+];
+
+const collectDynamicQueryInventory = () => {
+  const srcRoot = path.join(__dirname, '../src');
+  const sites = [];
+  const directRequestSites = [];
+  const expressionsBySite = [];
+  const queryTemplate = /\.query\s*\(\s*`([\s\S]*?)`/g;
+  const directRequestInterpolation = /\$\{\s*req(?:uest)?(?:\.|\[)/;
+  const interpolation = /\$\{([^}]+)\}/g;
+
+  for (const file of walkJs(srcRoot)) {
+    const source = fs.readFileSync(file, 'utf8');
+    let match;
+    while ((match = queryTemplate.exec(source)) !== null) {
+      if (!match[1].includes('${')) continue;
+      const line = source.slice(0, match.index).split('\n').length;
+      const site = `${path.relative(srcRoot, file)}:${line}`;
+      sites.push(site);
+      if (directRequestInterpolation.test(match[1])) directRequestSites.push(site);
+
+      const expressions = [];
+      let expressionMatch;
+      while ((expressionMatch = interpolation.exec(match[1])) !== null) {
+        expressions.push(expressionMatch[1].trim());
+      }
+      expressionsBySite.push({ site, expressions });
+    }
+  }
+
+  return { sites, directRequestSites, expressionsBySite };
+};
+
 describe('V1 dynamic SQL inventory', () => {
   test('template-interpolated query inventory cannot grow silently', () => {
-    const srcRoot = path.join(__dirname, '../src');
-    const sites = [];
-    const directRequestSites = [];
-    const expressionsBySite = [];
-    const queryTemplate = /\.query\s*\(\s*`([\s\S]*?)`/g;
-    const directRequestInterpolation = /\$\{\s*req(?:uest)?(?:\.|\[)/;
-    const interpolation = /\$\{([^}]+)\}/g;
+    const { sites, directRequestSites, expressionsBySite } = collectDynamicQueryInventory();
 
-    for (const file of walkJs(srcRoot)) {
-      const source = fs.readFileSync(file, 'utf8');
-      let match;
-      while ((match = queryTemplate.exec(source)) !== null) {
-        if (!match[1].includes('${')) continue;
-        const line = source.slice(0, match.index).split('\n').length;
-        const site = `${path.relative(srcRoot, file)}:${line}`;
-        sites.push(site);
-        if (directRequestInterpolation.test(match[1])) directRequestSites.push(site);
-
-        const expressions = [];
-        let expressionMatch;
-        while ((expressionMatch = interpolation.exec(match[1])) !== null) {
-          expressions.push(expressionMatch[1].trim());
-        }
-        expressionsBySite.push({ site, expressions });
-      }
-    }
-
-    // This is an inventory gate, not a blanket safety assertion. Any new or
-    // removed interpolation site must intentionally update this audit, while
-    // follow-up Security work reviews/reduces the existing sites by domain.
     if (sites.length !== BASELINE_INTERPOLATED_QUERY_COUNT) {
       throw new Error(
         `Dynamic SQL inventory changed from ${BASELINE_INTERPOLATED_QUERY_COUNT} sites to ${sites.length}.\n` +
@@ -49,15 +65,31 @@ describe('V1 dynamic SQL inventory', () => {
       );
     }
 
-    // Emit the exact structural expressions while this V1 review classifies
-    // every legacy interpolation family. This contains source identifiers only,
-    // never runtime request or database values.
     console.log('V1_DYNAMIC_SQL_EXPRESSIONS', JSON.stringify(expressionsBySite));
 
-    // Fail immediately on direct HTTP request-object interpolation. Local
-    // arrays/fragments named params/query are not assumed to be request data;
-    // they remain visible in the 79-site structural-interpolation inventory.
+    // Direct HTTP request-object interpolation is never an acceptable V1 query
+    // structure. Request values must remain PostgreSQL parameters.
     expect(directRequestSites).toEqual([]);
+  });
+
+  test('all existing structural interpolation expressions have an explicit V1 disposition', () => {
+    const { expressionsBySite } = collectDynamicQueryInventory();
+    const unreviewed = [];
+
+    for (const { site, expressions } of expressionsBySite) {
+      for (const expression of expressions) {
+        if (!REVIEWED_STRUCTURAL_EXPRESSION_PATTERNS.some((pattern) => pattern.test(expression))) {
+          unreviewed.push({ site, expression });
+        }
+      }
+    }
+
+    // The reviewed families are source-owned WHERE/JOIN/SELECT fragments,
+    // parameter-position arithmetic, fixed update-field lists, schema-capability
+    // fragments, or the separately certified identifier families below. This
+    // gate prevents a new interpolation shape from hiding behind the same site
+    // count and forces a fresh Security disposition.
+    expect(unreviewed).toEqual([]);
   });
 
   test('caller-influenced SQL identifiers are allowlisted or internally generated', () => {
@@ -70,15 +102,11 @@ describe('V1 dynamic SQL inventory', () => {
     const dataQualityService = readSource('src/services/dataQualityService.js');
     const tenantProvisionService = readSource('src/services/tenantProvisionService.js');
 
-    // Shared V1 repository sorting converts request keys through a fixed map and
-    // collapses order to the only two legal SQL keywords.
     expect(sharedSort).toContain("const order = sortOrderRaw === 'asc' ? 'ASC' : 'DESC';");
     expect(sharedSort).toContain('const column = allowed[sortKey] || fallback.column;');
     expect(customerService).toContain('parseSort(query, SORTABLE');
     expect(productService).toContain('parseSort(query, SORTABLE');
 
-    // Legacy product/order read paths that still interpolate ORDER BY identifiers
-    // independently use fixed allowlists and ASC/DESC normalization before SQL.
     expect(tenantProductController).toContain('const allowedSorts = new Set([');
     expect(tenantProductController).toContain("sort = allowedSorts.has(normalized) ? normalized : 'name';");
     expect(productController).toContain('const allowedSorts = {');
@@ -88,14 +116,9 @@ describe('V1 dynamic SQL inventory', () => {
     expect(orderController).toContain("const resolvedSort = allowedSorts.has(sortKey) ? sortKey : 'created_at';");
     expect(orderController).toContain("const sortOrder = (sortOrderRaw || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';");
 
-    // The only dynamic table identifier in the support backup path iterates a
-    // source-owned fixed table allowlist; request data cannot choose a table.
     expect(dataQualityService).toContain("const tables = ['products', 'batches', 'customers', 'orders', 'order_items', 'transactions', 'suppliers', 'expenses'];");
     expect(dataQualityService).toContain('pool.query(`SELECT * FROM ${table} ORDER BY 1 ASC`)');
 
-    // PostgreSQL CREATE/DROP DATABASE cannot parameterize identifiers. Tenant
-    // provisioning therefore generates the name internally and quotes embedded
-    // double quotes before structural interpolation; caller input is not used.
     expect(tenantProvisionService).toContain('const dbName = `shaj_tenant_${Date.now()}`;');
     expect(tenantProvisionService).toContain('const dbIdentifier = quoteIdentifier(dbName);');
     expect(tenantProvisionService).toContain("const escaped = String(value).replace(/\"/g, '\"\"');");
