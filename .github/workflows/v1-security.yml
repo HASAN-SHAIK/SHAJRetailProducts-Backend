@@ -23,6 +23,7 @@ on:
       - 'src/routes/purchaseInvoiceRoutes.js'
       - 'src/api/v1/modules/auth/auth.routes.js'
       - 'src/services/imports.service.js'
+      - 'src/services/masterBootstrap.js'
       - 'src/services/supportNotification.service.js'
       - 'tests/v1SecurityCorsPolicy.test.js'
       - 'tests/v1SecurityAuthRateLimits.test.js'
@@ -30,6 +31,7 @@ on:
       - 'tests/v1SecurityDbTimingLogHygiene.test.js'
       - 'tests/v1SecurityImportBoundary.test.js'
       - 'tests/v1SecurityInvoiceUploadPolicy.test.js'
+      - 'tests/v1SecurityMasterBootstrapAdmin.test.js'
       - 'tests/v1SecurityPlatformAdminSeedPolicy.test.js'
       - 'tests/v1SecurityRabbitmqConfig.test.js'
       - 'tests/v1SecurityDynamicSqlInventory.test.js'
@@ -117,6 +119,7 @@ jobs:
           tests/v1SecurityDbTimingLogHygiene.test.js
           tests/v1SecurityImportBoundary.test.js
           tests/v1SecurityInvoiceUploadPolicy.test.js
+          tests/v1SecurityMasterBootstrapAdmin.test.js
           tests/v1SecurityPlatformAdminSeedPolicy.test.js
           tests/v1SecurityRabbitmqConfig.test.js
           tests/v1SecurityDynamicSqlInventory.test.js
