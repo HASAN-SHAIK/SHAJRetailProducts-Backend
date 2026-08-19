@@ -1,13 +1,15 @@
 const productImportService = require('../services/productImport.service');
+const { validateProductImportFile } = require('../security/productImportUploadPolicy');
 
 const importProducts = async (req, res) => {
   try {
+    validateProductImportFile(req.file);
     const summary = await productImportService.importProducts(req, req.file);
     return res.status(200).json({ success: true, summary });
   } catch (error) {
     const status = error.status || 500;
     const message = error.message || 'Import failed';
-    return res.status(status).json({ success: false, message });
+    return res.status(status).json({ success: false, message, code: error.code });
   }
 };
 

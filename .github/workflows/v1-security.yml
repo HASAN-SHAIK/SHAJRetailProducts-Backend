@@ -8,6 +8,7 @@ on:
       - 'Dockerfile'
       - 'scripts/seedPlatformAdmin.js'
       - 'src/App.js'
+      - 'src/controllers/productImport.controller.js'
       - 'src/db/adminPool.js'
       - 'src/db/masterPool.js'
       - 'src/db/tenantPool.js'
@@ -17,6 +18,7 @@ on:
       - 'src/security/healthWarmupKeyPolicy.js'
       - 'src/security/invoiceUploadPolicy.js'
       - 'src/security/platformAdminSeedPolicy.js'
+      - 'src/security/productImportUploadPolicy.js'
       - 'src/security/puppeteerLaunchPolicy.js'
       - 'src/security/supportNotificationPolicy.js'
       - 'src/config/rabbitmq.config.js'
@@ -37,6 +39,7 @@ on:
       - 'tests/v1SecurityInvoiceUploadPolicy.test.js'
       - 'tests/v1SecurityMasterBootstrapAdmin.test.js'
       - 'tests/v1SecurityPlatformAdminSeedPolicy.test.js'
+      - 'tests/v1SecurityProductImportUploadPolicy.test.js'
       - 'tests/v1SecurityPuppeteerLaunchPolicy.test.js'
       - 'tests/v1SecurityRabbitmqConfig.test.js'
       - 'tests/v1SecurityDynamicSqlInventory.test.js'
@@ -127,6 +130,7 @@ jobs:
           tests/v1SecurityInvoiceUploadPolicy.test.js
           tests/v1SecurityMasterBootstrapAdmin.test.js
           tests/v1SecurityPlatformAdminSeedPolicy.test.js
+          tests/v1SecurityProductImportUploadPolicy.test.js
           tests/v1SecurityPuppeteerLaunchPolicy.test.js
           tests/v1SecurityRabbitmqConfig.test.js
           tests/v1SecurityDynamicSqlInventory.test.js
