@@ -3,6 +3,7 @@ name: V1 generate Backend lockfile
 on:
   pull_request:
     paths:
+      - '.gitignore'
       - 'package.json'
       - '.github/workflows/v1-generate-lockfile.yml'
   workflow_dispatch:
