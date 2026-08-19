@@ -22,6 +22,7 @@ const { startPoolWarmup } = require('./services/poolWarmup');
 const { startStockConsistencyJob } = require('./services/stockConsistencyJob');
 const { startOwnerDailyDigestJob } = require('./services/ownerDailyDigestJob');
 const { startSyncMessaging } = require('./services/syncMessagingBootstrap');
+const { createReadinessHandler } = require('./services/readiness');
 const masterPool = require('./db/masterPool');
 require('dotenv').config();
 
@@ -146,14 +147,7 @@ const handleHealth = async (req, res) => {
   }
 };
 
-const handleReady = async (_req, res) => {
-  try {
-    await masterPool.query('SELECT 1');
-    return res.status(200).json({ status: 'ready' });
-  } catch (_error) {
-    return res.status(503).json({ status: 'not_ready', reason: 'database_unavailable' });
-  }
-};
+const handleReady = createReadinessHandler(masterPool);
 
 app.get('/health', handleHealth);
 app.get('/api/health', handleHealth);
