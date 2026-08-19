@@ -1,5 +1,11 @@
 const fs = require('fs');
 const path = require('path');
+
+jest.mock('../src/db', () => ({
+  connect: jest.fn(),
+  query: jest.fn(),
+}));
+
 const {
   importOfflineItems,
   MAX_OFFLINE_IMPORT_ITEMS,
