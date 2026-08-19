@@ -180,6 +180,9 @@ const startServer = async () => {
   try {
     await bootstrapMasterDatabase();
   } catch (error) {
+    if (APP_ENVIRONMENT === 'production') {
+      throw error;
+    }
     console.error('Master DB bootstrap skipped:', error.message || error);
   }
 
