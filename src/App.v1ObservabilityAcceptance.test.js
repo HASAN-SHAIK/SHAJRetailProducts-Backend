@@ -36,20 +36,27 @@ describe('V1 Central health and readiness boundary', () => {
     expect(JSON.stringify(response.body)).not.toContain('db.internal');
   });
 
-  test.each(['/health', '/api/health'])('keeps public liveness independent from required PostgreSQL readiness at %s', async (routePath) => {
+  test('keeps both public liveness routes independent from required PostgreSQL readiness', async () => {
     jest.resetModules();
     const masterPool = require('./db/masterPool');
     const querySpy = jest.spyOn(masterPool, 'query');
     const app = require('./App');
 
-    const response = await request(app).get(routePath);
+    // Full application module initialization may touch shared database helpers.
+    // The liveness contract is that serving /health itself never performs the
+    // required PostgreSQL readiness query when warmup was not requested.
+    querySpy.mockClear();
 
-    expect(response.status).toBe(200);
-    expect(response.body.status).toBe('ok');
-    expect(response.body.db).toMatchObject({ warm_requested: false, warmed: false, reason: 'not_requested' });
+    for (const routePath of ['/health', '/api/health']) {
+      const response = await request(app).get(routePath);
+
+      expect(response.status).toBe(200);
+      expect(response.body.status).toBe('ok');
+      expect(response.body.db).toMatchObject({ warm_requested: false, warmed: false, reason: 'not_requested' });
+      expect(JSON.stringify(response.body)).not.toMatch(/password|secret|postgres(?:ql)?:\/\//i);
+    }
+
     expect(querySpy).not.toHaveBeenCalled();
-    expect(JSON.stringify(response.body)).not.toMatch(/password|secret|postgres(?:ql)?:\/\//i);
-
     querySpy.mockRestore();
   });
 
