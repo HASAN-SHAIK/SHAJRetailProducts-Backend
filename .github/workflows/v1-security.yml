@@ -17,6 +17,7 @@ on:
       - 'src/security/healthWarmupKeyPolicy.js'
       - 'src/security/invoiceUploadPolicy.js'
       - 'src/security/platformAdminSeedPolicy.js'
+      - 'src/security/puppeteerLaunchPolicy.js'
       - 'src/security/supportNotificationPolicy.js'
       - 'src/config/rabbitmq.config.js'
       - 'src/middleware/authRateLimits.js'
@@ -26,6 +27,7 @@ on:
       - 'src/services/imports.service.js'
       - 'src/services/masterBootstrap.js'
       - 'src/services/supportNotification.service.js'
+      - 'src/utils/pdfGenerator.js'
       - 'tests/v1SecurityCorsPolicy.test.js'
       - 'tests/v1SecurityAuthRateLimits.test.js'
       - 'tests/v1SecurityDatabaseTlsPolicy.test.js'
@@ -35,6 +37,7 @@ on:
       - 'tests/v1SecurityInvoiceUploadPolicy.test.js'
       - 'tests/v1SecurityMasterBootstrapAdmin.test.js'
       - 'tests/v1SecurityPlatformAdminSeedPolicy.test.js'
+      - 'tests/v1SecurityPuppeteerLaunchPolicy.test.js'
       - 'tests/v1SecurityRabbitmqConfig.test.js'
       - 'tests/v1SecurityDynamicSqlInventory.test.js'
       - 'tests/v1SecuritySupportNotificationPolicy.test.js'
@@ -124,6 +127,7 @@ jobs:
           tests/v1SecurityInvoiceUploadPolicy.test.js
           tests/v1SecurityMasterBootstrapAdmin.test.js
           tests/v1SecurityPlatformAdminSeedPolicy.test.js
+          tests/v1SecurityPuppeteerLaunchPolicy.test.js
           tests/v1SecurityRabbitmqConfig.test.js
           tests/v1SecurityDynamicSqlInventory.test.js
           tests/v1SecuritySupportNotificationPolicy.test.js
