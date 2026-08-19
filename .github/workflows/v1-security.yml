@@ -5,6 +5,7 @@ on:
     paths:
       - 'src/App.js'
       - 'src/security/corsPolicy.js'
+      - 'src/config/rabbitmq.config.js'
       - 'src/middleware/authRateLimits.js'
       - 'src/routes/authRoutes.js'
       - 'src/api/v1/modules/auth/auth.routes.js'
@@ -12,6 +13,7 @@ on:
       - 'tests/v1SecurityCorsPolicy.test.js'
       - 'tests/v1SecurityAuthRateLimits.test.js'
       - 'tests/v1SecurityImportBoundary.test.js'
+      - 'tests/v1SecurityRabbitmqConfig.test.js'
       - 'tests/v1AuthCookieSecretHardening.test.js'
       - 'tests/v1CrossTenantAuthIsolation.test.js'
       - '.github/workflows/v1-security.yml'
@@ -35,6 +37,7 @@ jobs:
           tests/v1SecurityCorsPolicy.test.js
           tests/v1SecurityAuthRateLimits.test.js
           tests/v1SecurityImportBoundary.test.js
+          tests/v1SecurityRabbitmqConfig.test.js
           tests/v1AuthCookieSecretHardening.test.js
           tests/v1CrossTenantAuthIsolation.test.js
           --runInBand
