@@ -1,0 +1,33 @@
+name: V1 Security acceptance
+
+on:
+  pull_request:
+    paths:
+      - 'src/middleware/authRateLimits.js'
+      - 'src/routes/authRoutes.js'
+      - 'src/api/v1/modules/auth/auth.routes.js'
+      - 'tests/v1SecurityAuthRateLimits.test.js'
+      - 'tests/v1AuthCookieSecretHardening.test.js'
+      - 'tests/v1CrossTenantAuthIsolation.test.js'
+      - '.github/workflows/v1-security.yml'
+      - 'docs/V1_SECURITY_ACCEPTANCE_MATRIX.md'
+  workflow_dispatch:
+
+jobs:
+  security-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+      - name: Run V1 Security acceptance
+        run: >-
+          npx jest
+          tests/v1SecurityAuthRateLimits.test.js
+          tests/v1AuthCookieSecretHardening.test.js
+          tests/v1CrossTenantAuthIsolation.test.js
+          --runInBand
