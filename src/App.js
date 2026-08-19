@@ -16,6 +16,7 @@ const { attachAuditDbContext } = require('./middleware/auditDbContext');
 const { errorHandler } = require('./middleware/errorHandler');
 const { requestCorrelationMiddleware } = require('./middleware/requestCorrelation');
 const { createCorsOptions } = require('./security/corsPolicy');
+const { isHealthWarmupAuthorized } = require('./security/healthWarmupKeyPolicy');
 const { apiV1AuthRouter, apiV1Router, swaggerRoutes } = require('./api/v1');
 const posSyncRoutes = require('./api/v1/modules/sync/posSync.routes');
 const { getTenantMe, getPlatformBanner } = require('./controllers/tenantController');
@@ -84,12 +85,12 @@ const isWithinWarmupWindow = () => {
   return nowMinutes >= start || nowMinutes < end;
 };
 
-const isWarmupAuthorized = (req) => {
-  const expectedKey = process.env.HEALTH_WARMUP_KEY;
-  if (!expectedKey) return false;
-  const providedKey = req.query?.key || req.headers['x-warmup-key'];
-  return typeof providedKey === 'string' && providedKey === expectedKey;
-};
+const isWarmupAuthorized = (req) => isHealthWarmupAuthorized({
+  environment: APP_ENVIRONMENT,
+  expectedKey: process.env.HEALTH_WARMUP_KEY,
+  headerKey: req.headers['x-warmup-key'],
+  queryKey: req.query?.key,
+});
 
 const isWarmupRequested = (req) => {
   const query = req.query || {};
