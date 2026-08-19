@@ -4,6 +4,7 @@ const { asyncHandler } = require('../../shared/errors/asyncHandler');
 const { sendSuccess } = require('../../shared/dto/apiResponse');
 const { validateRequest } = require('../../shared/middleware/validateRequest');
 const { authTenantMiddleware } = require('../../../../middleware/authTenant');
+const { tenantLoginLimiter, tenantRefreshLimiter } = require('../../../../middleware/authRateLimits');
 const { login, refresh, getLogin, logout } = require('../../../../controllers/authController');
 
 const router = express.Router();
@@ -22,8 +23,8 @@ const wrapLegacy = (handler) =>
 
 // V1 tenant user creation is an authenticated tenant-admin capability, not a
 // public authentication endpoint. Keep only session lifecycle routes here.
-router.post('/login', validateRequest(loginSchema), wrapLegacy(login));
-router.post('/refresh', wrapLegacy(refresh));
+router.post('/login', tenantLoginLimiter, validateRequest(loginSchema), wrapLegacy(login));
+router.post('/refresh', tenantRefreshLimiter, wrapLegacy(refresh));
 router.get('/me', authTenantMiddleware, wrapLegacy(getLogin));
 router.post('/logout', wrapLegacy(logout));
 
