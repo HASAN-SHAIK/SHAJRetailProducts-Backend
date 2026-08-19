@@ -14,8 +14,10 @@ describe('V1 dynamic SQL inventory', () => {
     const srcRoot = path.join(__dirname, '../src');
     const sites = [];
     const directRequestSites = [];
+    const expressionsBySite = [];
     const queryTemplate = /\.query\s*\(\s*`([\s\S]*?)`/g;
     const directRequestInterpolation = /\$\{\s*req(?:uest)?(?:\.|\[)/;
+    const interpolation = /\$\{([^}]+)\}/g;
 
     for (const file of walkJs(srcRoot)) {
       const source = fs.readFileSync(file, 'utf8');
@@ -26,6 +28,13 @@ describe('V1 dynamic SQL inventory', () => {
         const site = `${path.relative(srcRoot, file)}:${line}`;
         sites.push(site);
         if (directRequestInterpolation.test(match[1])) directRequestSites.push(site);
+
+        const expressions = [];
+        let expressionMatch;
+        while ((expressionMatch = interpolation.exec(match[1])) !== null) {
+          expressions.push(expressionMatch[1].trim());
+        }
+        expressionsBySite.push({ site, expressions });
       }
     }
 
@@ -38,6 +47,11 @@ describe('V1 dynamic SQL inventory', () => {
         `Current sites:\n${sites.sort().join('\n')}`
       );
     }
+
+    // Emit the exact structural expressions while this V1 review classifies
+    // every legacy interpolation family. This contains source identifiers only,
+    // never runtime request or database values.
+    console.log('V1_DYNAMIC_SQL_EXPRESSIONS', JSON.stringify(expressionsBySite));
 
     // Fail immediately on direct HTTP request-object interpolation. Local
     // arrays/fragments named params/query are not assumed to be request data;
