@@ -1,6 +1,7 @@
 require('dotenv').config();
 const { Pool } = require('pg');
 const { getEnvPassword, getPoolTuning, attachQueryTimer } = require('./poolUtils');
+const { resolveDatabaseSslConfig } = require('../security/databaseTlsPolicy');
 
 const pools = new Map();
 let cleanupTimer = null;
@@ -12,11 +13,12 @@ const getIdleSettings = () => {
 };
 
 const buildTenantPoolConfig = (database) => {
+  const ssl = resolveDatabaseSslConfig();
   if (process.env.TENANT_DATABASE_URL_TEMPLATE) {
     const connectionString = process.env.TENANT_DATABASE_URL_TEMPLATE.replace('{db}', database);
     return {
       connectionString,
-      ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false
+      ssl
     };
   }
 
@@ -26,7 +28,7 @@ const buildTenantPoolConfig = (database) => {
     database,
     password: getEnvPassword(process.env.TENANT_DB_PASSWORD, process.env.DB_PASSWORD, 'TENANT_DB_PASSWORD/DB_PASSWORD'),
     port: process.env.TENANT_DB_PORT || process.env.DB_PORT || 5432,
-    ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false
+    ssl
   };
 };
 

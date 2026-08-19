@@ -7,7 +7,11 @@ on:
       - 'package-lock.json'
       - 'Dockerfile'
       - 'src/App.js'
+      - 'src/db/adminPool.js'
+      - 'src/db/masterPool.js'
+      - 'src/db/tenantPool.js'
       - 'src/security/corsPolicy.js'
+      - 'src/security/databaseTlsPolicy.js'
       - 'src/security/invoiceUploadPolicy.js'
       - 'src/config/rabbitmq.config.js'
       - 'src/middleware/authRateLimits.js'
@@ -17,6 +21,7 @@ on:
       - 'src/services/imports.service.js'
       - 'tests/v1SecurityCorsPolicy.test.js'
       - 'tests/v1SecurityAuthRateLimits.test.js'
+      - 'tests/v1SecurityDatabaseTlsPolicy.test.js'
       - 'tests/v1SecurityImportBoundary.test.js'
       - 'tests/v1SecurityInvoiceUploadPolicy.test.js'
       - 'tests/v1SecurityRabbitmqConfig.test.js'
@@ -99,6 +104,7 @@ jobs:
           npx jest
           tests/v1SecurityCorsPolicy.test.js
           tests/v1SecurityAuthRateLimits.test.js
+          tests/v1SecurityDatabaseTlsPolicy.test.js
           tests/v1SecurityImportBoundary.test.js
           tests/v1SecurityInvoiceUploadPolicy.test.js
           tests/v1SecurityRabbitmqConfig.test.js
