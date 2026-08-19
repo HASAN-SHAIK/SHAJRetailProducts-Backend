@@ -15,6 +15,7 @@ const { mergeFeatureFlags } = require('./middleware/featureFlags');
 const { attachAuditDbContext } = require('./middleware/auditDbContext');
 const { errorHandler } = require('./middleware/errorHandler');
 const { requestCorrelationMiddleware } = require('./middleware/requestCorrelation');
+const { createCorsOptions } = require('./security/corsPolicy');
 const { apiV1AuthRouter, apiV1Router, swaggerRoutes } = require('./api/v1');
 const posSyncRoutes = require('./api/v1/modules/sync/posSync.routes');
 const { getTenantMe, getPlatformBanner } = require('./controllers/tenantController');
@@ -27,29 +28,21 @@ const { createReadinessHandler } = require('./services/readiness');
 const masterPool = require('./db/masterPool');
 require('dotenv').config();
 
-app.set('trust proxy', 1);
-app.use(requestCorrelationMiddleware);
-app.use(cookieParser());
-const rawCorsOrigins = process.env.CORS_ORIGINS;
-const allowedOrigins = rawCorsOrigins
-  ? rawCorsOrigins.split(',').map((origin) => origin.trim()).filter(Boolean)
-  : [process.env.FRONTEND_ADMIN_URL, process.env.FRONTEND_TENANT_URL].filter(Boolean);
-const allowAllOrigins = allowedOrigins.includes('*');
 const APP_ENVIRONMENT = process.env.APP_ENVIRONMENT || process.env.NODE_ENV || 'development';
 const isTestRuntime = () => APP_ENVIRONMENT === 'test' || process.env.NODE_ENV === 'test' || Boolean(process.env.JEST_WORKER_ID);
 const PORT = process.env.APP_PORT || process.env.PORT || 5000;
 
+app.set('trust proxy', 1);
+app.use(requestCorrelationMiddleware);
+app.use(cookieParser());
 app.use(
-  cors({
-    origin: function (origin, callback) {
-      if (!origin || allowAllOrigins || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error('Not allowed by CORS'));
-      }
-    },
-    credentials: true
-  })
+  cors(
+    createCorsOptions({
+      environment: APP_ENVIRONMENT,
+      rawCorsOrigins: process.env.CORS_ORIGINS,
+      fallbackOrigins: [process.env.FRONTEND_ADMIN_URL, process.env.FRONTEND_TENANT_URL],
+    })
+  )
 );
 app.use(express.json({ limit: '5mb' }));
 
