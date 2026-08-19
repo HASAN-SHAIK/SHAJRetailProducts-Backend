@@ -13,12 +13,14 @@ on:
       - 'src/security/corsPolicy.js'
       - 'src/security/databaseTlsPolicy.js'
       - 'src/security/invoiceUploadPolicy.js'
+      - 'src/security/supportNotificationPolicy.js'
       - 'src/config/rabbitmq.config.js'
       - 'src/middleware/authRateLimits.js'
       - 'src/routes/authRoutes.js'
       - 'src/routes/purchaseInvoiceRoutes.js'
       - 'src/api/v1/modules/auth/auth.routes.js'
       - 'src/services/imports.service.js'
+      - 'src/services/supportNotification.service.js'
       - 'tests/v1SecurityCorsPolicy.test.js'
       - 'tests/v1SecurityAuthRateLimits.test.js'
       - 'tests/v1SecurityDatabaseTlsPolicy.test.js'
@@ -26,6 +28,7 @@ on:
       - 'tests/v1SecurityInvoiceUploadPolicy.test.js'
       - 'tests/v1SecurityRabbitmqConfig.test.js'
       - 'tests/v1SecurityDynamicSqlInventory.test.js'
+      - 'tests/v1SecuritySupportNotificationPolicy.test.js'
       - 'tests/v1AuthCookieSecretHardening.test.js'
       - 'tests/v1CrossTenantAuthIsolation.test.js'
       - '.github/workflows/v1-security.yml'
@@ -109,6 +112,7 @@ jobs:
           tests/v1SecurityInvoiceUploadPolicy.test.js
           tests/v1SecurityRabbitmqConfig.test.js
           tests/v1SecurityDynamicSqlInventory.test.js
+          tests/v1SecuritySupportNotificationPolicy.test.js
           tests/v1AuthCookieSecretHardening.test.js
           tests/v1CrossTenantAuthIsolation.test.js
           --runInBand
