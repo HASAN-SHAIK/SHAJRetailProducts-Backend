@@ -53,8 +53,11 @@ const attachQueryTimer = (pool, label = 'db') => {
   const thresholdMs = Number(process.env.DB_LOG_TIMING_THRESHOLD_MS || 0);
   const originalQuery = pool.query.bind(pool);
   const originalConnect = pool.connect.bind(pool);
+  const includeQueryText = process.env.NODE_ENV !== 'production';
 
   const formatQueryText = (args) => {
+    if (!includeQueryText) return '';
+
     const first = args?.[0];
     let text = '';
     if (typeof first === 'string') {
