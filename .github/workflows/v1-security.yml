@@ -20,6 +20,7 @@ on:
       - 'src/security/platformAdminSeedPolicy.js'
       - 'src/security/productImportUploadPolicy.js'
       - 'src/security/puppeteerLaunchPolicy.js'
+      - 'src/security/startupFailurePolicy.js'
       - 'src/security/supportNotificationPolicy.js'
       - 'src/config/rabbitmq.config.js'
       - 'src/middleware/authRateLimits.js'
@@ -44,6 +45,7 @@ on:
       - 'tests/v1SecurityPuppeteerLaunchPolicy.test.js'
       - 'tests/v1SecurityRabbitmqConfig.test.js'
       - 'tests/v1SecurityDynamicSqlInventory.test.js'
+      - 'tests/v1SecurityStartupLogHygiene.test.js'
       - 'tests/v1SecuritySupportNotificationPolicy.test.js'
       - 'tests/v1SecurityContainerRuntime.test.js'
       - 'tests/v1AuthCookieSecretHardening.test.js'
@@ -136,6 +138,7 @@ jobs:
           tests/v1SecurityPuppeteerLaunchPolicy.test.js
           tests/v1SecurityRabbitmqConfig.test.js
           tests/v1SecurityDynamicSqlInventory.test.js
+          tests/v1SecurityStartupLogHygiene.test.js
           tests/v1SecuritySupportNotificationPolicy.test.js
           tests/v1SecurityContainerRuntime.test.js
           tests/v1AuthCookieSecretHardening.test.js
