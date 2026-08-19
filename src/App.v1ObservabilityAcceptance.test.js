@@ -36,6 +36,23 @@ describe('V1 Central health and readiness boundary', () => {
     expect(JSON.stringify(response.body)).not.toContain('db.internal');
   });
 
+  test.each(['/health', '/api/health'])('keeps public liveness independent from required PostgreSQL readiness at %s', async (routePath) => {
+    jest.resetModules();
+    const masterPool = require('./db/masterPool');
+    const querySpy = jest.spyOn(masterPool, 'query');
+    const app = require('./App');
+
+    const response = await request(app).get(routePath);
+
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe('ok');
+    expect(response.body.db).toMatchObject({ warm_requested: false, warmed: false, reason: 'not_requested' });
+    expect(querySpy).not.toHaveBeenCalled();
+    expect(JSON.stringify(response.body)).not.toMatch(/password|secret|postgres(?:ql)?:\/\//i);
+
+    querySpy.mockRestore();
+  });
+
   test('keeps readiness and liveness routes wired independently in the production app', () => {
     const appSource = fs.readFileSync(path.join(__dirname, 'App.js'), 'utf8');
 
