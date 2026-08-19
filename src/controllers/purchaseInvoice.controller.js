@@ -1,9 +1,11 @@
 const purchaseInvoiceService = require('../services/purchaseInvoice.service');
 const { generatePDF } = require('../utils/pdfGenerator');
 const { buildPurchaseTemplate } = require('../templates/purchasePdfTemplate');
+const { assertSupportedInvoiceContent } = require('../security/invoiceUploadPolicy');
 
 const parseInvoice = async (req, res) => {
   try {
+    assertSupportedInvoiceContent(req.file);
     const parsed = await purchaseInvoiceService.parseInvoice(req, req.file);
     return res.status(200).json({ success: true, ...parsed });
   } catch (error) {
@@ -14,6 +16,7 @@ const parseInvoice = async (req, res) => {
 
 const importPdfInvoice = async (req, res) => {
   try {
+    assertSupportedInvoiceContent(req.file);
     const parsed = await purchaseInvoiceService.parseInvoice(req, req.file);
     const branchId = req.body?.branch_id || req.query?.branch_id || null;
     const items = parsed.parsed_data?.items || [];
