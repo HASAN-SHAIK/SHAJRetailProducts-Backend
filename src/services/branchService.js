@@ -15,6 +15,16 @@ const buildStatusError = (status, code, message) => {
   return err;
 };
 
+const isMissingActiveColumnError = (error) =>
+  error?.code === '42703' && String(error?.message || '').toLowerCase().includes('is_active');
+
+const ensureBranchLifecycleColumns = async (requestPool) => {
+  await requestPool.query(
+    `ALTER TABLE IF EXISTS branches
+     ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE`
+  );
+};
+
 const getBranches = async (req) => {
   const requestPool = getRequestPool(req);
   try {
@@ -27,6 +37,24 @@ const getBranches = async (req) => {
   } catch (error) {
     if (error?.message && error.message.toLowerCase().includes('relation "branches" does not exist')) {
       return [];
+    }
+    if (isMissingActiveColumnError(error)) {
+      try {
+        await ensureBranchLifecycleColumns(requestPool);
+        const healed = await requestPool.query(
+          `SELECT id, name, location, created_at, subscription_plan, max_devices_allowed, is_active
+           FROM branches
+           ORDER BY created_at DESC`
+        );
+        return healed.rows;
+      } catch (_) {
+        const legacy = await requestPool.query(
+          `SELECT id, name, location, created_at, subscription_plan, max_devices_allowed, TRUE AS is_active
+           FROM branches
+           ORDER BY created_at DESC`
+        );
+        return legacy.rows;
+      }
     }
     throw error;
   }
