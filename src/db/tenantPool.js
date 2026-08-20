@@ -1,6 +1,7 @@
 require('dotenv').config();
 const { Pool } = require('pg');
-const { getEnvPassword, getPoolTuning, attachQueryTimer } = require('./poolUtils');
+const { getEnvPassword, getPoolTuning, attachQueryTimer, logPoolError } = require('./poolUtils');
+const { resolveDatabaseSslConfig } = require('../security/databaseTlsPolicy');
 
 const pools = new Map();
 let cleanupTimer = null;
@@ -12,11 +13,12 @@ const getIdleSettings = () => {
 };
 
 const buildTenantPoolConfig = (database) => {
+  const ssl = resolveDatabaseSslConfig();
   if (process.env.TENANT_DATABASE_URL_TEMPLATE) {
     const connectionString = process.env.TENANT_DATABASE_URL_TEMPLATE.replace('{db}', database);
     return {
       connectionString,
-      ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false
+      ssl
     };
   }
 
@@ -26,7 +28,7 @@ const buildTenantPoolConfig = (database) => {
     database,
     password: getEnvPassword(process.env.TENANT_DB_PASSWORD, process.env.DB_PASSWORD, 'TENANT_DB_PASSWORD/DB_PASSWORD'),
     port: process.env.TENANT_DB_PORT || process.env.DB_PORT || 5432,
-    ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false
+    ssl
   };
 };
 
@@ -57,9 +59,10 @@ const getTenantPool = (database) => {
     max: resolveTenantPoolMax(),
     ...getPoolTuning('TENANT_DB')
   };
-  const pool = attachQueryTimer(new Pool(tunedConfig), `tenant:${database}`);
+  const timerLabel = process.env.NODE_ENV === 'production' ? 'tenant' : `tenant:${database}`;
+  const pool = attachQueryTimer(new Pool(tunedConfig), timerLabel);
   pool.on('error', (err) => {
-    console.error(`Tenant DB pool error (${database}):`, err);
+    logPoolError('tenant', err);
   });
   pools.set(database, { pool, lastUsed: Date.now() });
   startIdleCleanup();
@@ -101,7 +104,7 @@ const startIdleCleanup = () => {
   const { sweepMs } = getIdleSettings();
   cleanupTimer = setInterval(() => {
     closeIdleTenantPools().catch((error) => {
-      console.error('Failed to close idle tenant pools:', error);
+      logPoolError('tenant-cleanup', error);
     });
   }, Math.max(30_000, sweepMs));
   cleanupTimer.unref?.();

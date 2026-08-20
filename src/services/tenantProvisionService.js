@@ -9,6 +9,21 @@ const quoteIdentifier = (value) => {
   return `"${escaped}"`;
 };
 
+// tenant_schema.sql is the canonical bootstrap baseline. These later V1
+// migrations add certified structures that are intentionally not duplicated
+// in that large baseline file. Keep this list explicit: replaying the entire
+// historical migrations directory over a fresh schema would risk executing
+// old, non-idempotent data migrations that the baseline has already absorbed.
+const FRESH_TENANT_V1_OVERLAY_MIGRATIONS = Object.freeze([
+  '2026-08-16-v1-auth-tenant-roles.sql',
+  '2026-08-13-pos-inventory-canonical-application.sql',
+  '2026-08-14-pos-inventory-batch-allocations.sql',
+  '2026-08-14-pos-inventory-reconciliation-provenance.sql',
+  '2026-08-15-pos-customer-canonical-mapping.sql',
+  '2026-08-15-customer-outstanding-projection.sql',
+  '2026-08-18-pos-sale-category-snapshots.sql',
+]);
+
 const runSqlFile = async (pool, filePath) => {
   const sql = fs.readFileSync(filePath, 'utf8');
   const client = await pool.connect();
@@ -19,6 +34,11 @@ const runSqlFile = async (pool, filePath) => {
     client.release();
   }
 };
+
+const getFreshTenantOverlayPaths = () =>
+  FRESH_TENANT_V1_OVERLAY_MIGRATIONS.map((fileName) =>
+    path.join(__dirname, '..', '..', 'Db', 'migrations', fileName)
+  );
 
 const provisionTenant = async (payload) => {
   const {
@@ -42,14 +62,7 @@ const provisionTenant = async (payload) => {
   const dbName = `shaj_tenant_${Date.now()}`;
   const dbIdentifier = quoteIdentifier(dbName);
   const tenantSchemaPath = path.join(__dirname, '..', '..', 'Db', 'tenant_schema.sql');
-  const tenantRoleMigrationPath = path.join(
-    __dirname,
-    '..',
-    '..',
-    'Db',
-    'migrations',
-    '2026-08-16-v1-auth-tenant-roles.sql'
-  );
+  const tenantOverlayPaths = getFreshTenantOverlayPaths();
 
   let tenantPool = null;
   let masterClient = null;
@@ -62,7 +75,9 @@ const provisionTenant = async (payload) => {
 
     tenantPool = getTenantPool(dbName);
     await runSqlFile(tenantPool, tenantSchemaPath);
-    await runSqlFile(tenantPool, tenantRoleMigrationPath);
+    for (const migrationPath of tenantOverlayPaths) {
+      await runSqlFile(tenantPool, migrationPath);
+    }
 
     masterClient = await masterPool.connect();
     await masterClient.query('BEGIN');
@@ -130,4 +145,8 @@ const provisionTenant = async (payload) => {
   }
 };
 
-module.exports = { provisionTenant };
+module.exports = {
+  provisionTenant,
+  FRESH_TENANT_V1_OVERLAY_MIGRATIONS,
+  getFreshTenantOverlayPaths,
+};

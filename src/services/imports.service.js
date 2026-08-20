@@ -2,6 +2,8 @@ const pool = require('../db');
 const { resolveBranchIdFromRequest, isUuid } = require('../utils/branch');
 const { resolveGstPercentage, upsertHsnGst } = require('./hsnGst.service');
 
+const MAX_OFFLINE_IMPORT_ITEMS = 500;
+
 const getRequestPool = (req) => req.tenantPool || pool;
 
 const normalizeNumber = (value) => {
@@ -43,6 +45,12 @@ const importOfflineItems = async (req, payload = {}) => {
   if (!items.length) {
     const err = new Error('items are required.');
     err.status = 400;
+    throw err;
+  }
+  if (items.length > MAX_OFFLINE_IMPORT_ITEMS) {
+    const err = new Error(`Import batch exceeds the ${MAX_OFFLINE_IMPORT_ITEMS}-item limit.`);
+    err.status = 413;
+    err.code = 'IMPORT_BATCH_TOO_LARGE';
     throw err;
   }
 
@@ -256,4 +264,4 @@ const importOfflineItems = async (req, payload = {}) => {
   return { summary, mappings };
 };
 
-module.exports = { importOfflineItems };
+module.exports = { importOfflineItems, MAX_OFFLINE_IMPORT_ITEMS };

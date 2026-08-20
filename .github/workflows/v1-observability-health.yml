@@ -1,0 +1,35 @@
+name: V1 Observability Health acceptance
+
+on:
+  pull_request:
+    paths:
+      - 'src/App.js'
+      - 'src/services/readiness.js'
+      - 'src/App.v1ObservabilityAcceptance.test.js'
+      - 'src/middleware/errorHandler.js'
+      - 'src/middleware/errorHandler.v1ObservabilityAcceptance.test.js'
+      - 'src/middleware/requestCorrelation.js'
+      - 'src/middleware/requestCorrelation.v1ObservabilityAcceptance.test.js'
+      - '.github/workflows/v1-observability-health.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  central-health-readiness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+      NODE_ENV: test
+      APP_ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Run V1 Central health/readiness acceptance
+        run: npx jest src/App.v1ObservabilityAcceptance.test.js src/middleware/errorHandler.v1ObservabilityAcceptance.test.js src/middleware/requestCorrelation.v1ObservabilityAcceptance.test.js --runInBand

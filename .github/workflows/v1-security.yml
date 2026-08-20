@@ -1,0 +1,149 @@
+name: V1 Security acceptance
+
+on:
+  pull_request:
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'Dockerfile'
+      - 'scripts/seedPlatformAdmin.js'
+      - 'src/App.js'
+      - 'src/controllers/productImport.controller.js'
+      - 'src/db/adminPool.js'
+      - 'src/db/masterPool.js'
+      - 'src/db/tenantPool.js'
+      - 'src/db/poolUtils.js'
+      - 'src/security/corsPolicy.js'
+      - 'src/security/databaseTlsPolicy.js'
+      - 'src/security/healthWarmupKeyPolicy.js'
+      - 'src/security/invoiceUploadPolicy.js'
+      - 'src/security/platformAdminSeedPolicy.js'
+      - 'src/security/productImportUploadPolicy.js'
+      - 'src/security/puppeteerLaunchPolicy.js'
+      - 'src/security/startupFailurePolicy.js'
+      - 'src/security/supportNotificationPolicy.js'
+      - 'src/config/rabbitmq.config.js'
+      - 'src/middleware/authRateLimits.js'
+      - 'src/routes/authRoutes.js'
+      - 'src/routes/purchaseInvoiceRoutes.js'
+      - 'src/api/v1/modules/auth/auth.routes.js'
+      - 'src/services/imports.service.js'
+      - 'src/services/masterBootstrap.js'
+      - 'src/services/supportNotification.service.js'
+      - 'src/utils/pdfGenerator.js'
+      - 'tests/v1SecurityCorsPolicy.test.js'
+      - 'tests/v1SecurityAuthRateLimits.test.js'
+      - 'tests/v1SecurityDatabaseTlsPolicy.test.js'
+      - 'tests/v1SecurityDbTimingLogHygiene.test.js'
+      - 'tests/v1SecurityHealthWarmupKeyPolicy.test.js'
+      - 'tests/v1SecurityImportBoundary.test.js'
+      - 'tests/v1SecurityInvoiceUploadPolicy.test.js'
+      - 'tests/v1SecurityMasterBootstrapAdmin.test.js'
+      - 'tests/v1SecurityPlatformAdminSeedPolicy.test.js'
+      - 'tests/v1SecurityProductImportUploadPolicy.test.js'
+      - 'tests/v1SecurityProductImportRowLimit.test.js'
+      - 'tests/v1SecurityPuppeteerLaunchPolicy.test.js'
+      - 'tests/v1SecurityRabbitmqConfig.test.js'
+      - 'tests/v1SecurityDynamicSqlInventory.test.js'
+      - 'tests/v1SecurityStartupLogHygiene.test.js'
+      - 'tests/v1SecurityFilePathBoundary.test.js'
+      - 'tests/v1SecuritySupportNotificationPolicy.test.js'
+      - 'tests/v1SecurityContainerRuntime.test.js'
+      - 'tests/v1AuthCookieSecretHardening.test.js'
+      - 'tests/v1CrossTenantAuthIsolation.test.js'
+      - 'docs/V1_SECURITY_FILE_PATH_BOUNDARY.md'
+      - '.github/workflows/v1-security.yml'
+      - 'docs/V1_SECURITY_ACCEPTANCE_MATRIX.md'
+  workflow_dispatch:
+
+jobs:
+  security-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install dependencies from lockfile
+        run: npm ci --ignore-scripts
+      - name: Verify dependency tree
+        run: npm ls --depth=0
+      - name: Report high and critical dependency advisories
+        shell: bash
+        run: |
+          npm audit --omit=dev --json > /tmp/npm-audit.json || true
+          node <<'NODE'
+          const fs = require('fs');
+          const report = JSON.parse(fs.readFileSync('/tmp/npm-audit.json', 'utf8'));
+          const rows = Object.entries(report.vulnerabilities || {})
+            .filter(([, item]) => item?.severity === 'high' || item?.severity === 'critical')
+            .map(([name, item]) => ({
+              name,
+              severity: item.severity,
+              direct: Boolean(item.isDirect),
+              range: item.range,
+              via: (item.via || []).map((v) => typeof v === 'string' ? v : `${v.name}:${v.severity}`).slice(0, 8),
+              fixAvailable: item.fixAvailable
+            }))
+            .sort((a, b) => Number(b.direct) - Number(a.direct) || a.severity.localeCompare(b.severity) || a.name.localeCompare(b.name));
+          console.log(JSON.stringify({ metadata: report.metadata?.vulnerabilities || {}, highCritical: rows }, null, 2));
+          NODE
+      - name: Report direct dependency source reachability
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const packages = ['20', 'crypto', 'grep', 'latest', 'router', 'nodemailer', 'puppeteer', 'xlsx'];
+          const files = [];
+          const walk = (dir) => {
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+              const full = path.join(dir, entry.name);
+              if (entry.isDirectory()) walk(full);
+              else if (entry.isFile() && entry.name.endsWith('.js')) files.push(full);
+            }
+          };
+          walk(path.join(process.cwd(), 'src'));
+          const usage = Object.fromEntries(packages.map((pkg) => [pkg, []]));
+          for (const file of files) {
+            const source = fs.readFileSync(file, 'utf8');
+            for (const pkg of packages) {
+              const escaped = pkg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              const patterns = [
+                new RegExp(`require\\(\\s*['\"]${escaped}(?:/[^'\"]*)?['\"]\\s*\\)`),
+                new RegExp(`from\\s+['\"]${escaped}(?:/[^'\"]*)?['\"]`),
+                new RegExp(`import\\(\\s*['\"]${escaped}(?:/[^'\"]*)?['\"]\\s*\\)`)
+              ];
+              if (patterns.some((pattern) => pattern.test(source))) {
+                usage[pkg].push(path.relative(process.cwd(), file));
+              }
+            }
+          }
+          console.log(JSON.stringify(usage, null, 2));
+          NODE
+      - name: Run V1 Security acceptance
+        run: >-
+          npx jest
+          tests/v1SecurityCorsPolicy.test.js
+          tests/v1SecurityAuthRateLimits.test.js
+          tests/v1SecurityDatabaseTlsPolicy.test.js
+          tests/v1SecurityDbTimingLogHygiene.test.js
+          tests/v1SecurityHealthWarmupKeyPolicy.test.js
+          tests/v1SecurityImportBoundary.test.js
+          tests/v1SecurityInvoiceUploadPolicy.test.js
+          tests/v1SecurityMasterBootstrapAdmin.test.js
+          tests/v1SecurityPlatformAdminSeedPolicy.test.js
+          tests/v1SecurityProductImportUploadPolicy.test.js
+          tests/v1SecurityProductImportRowLimit.test.js
+          tests/v1SecurityPuppeteerLaunchPolicy.test.js
+          tests/v1SecurityRabbitmqConfig.test.js
+          tests/v1SecurityDynamicSqlInventory.test.js
+          tests/v1SecurityStartupLogHygiene.test.js
+          tests/v1SecurityFilePathBoundary.test.js
+          tests/v1SecuritySupportNotificationPolicy.test.js
+          tests/v1SecurityContainerRuntime.test.js
+          tests/v1AuthCookieSecretHardening.test.js
+          tests/v1CrossTenantAuthIsolation.test.js
+          --runInBand

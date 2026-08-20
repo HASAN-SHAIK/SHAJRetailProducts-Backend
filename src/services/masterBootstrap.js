@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const masterPool = require('../db/masterPool');
+const { resolvePlatformAdminSeedConfig } = require('../security/platformAdminSeedPolicy');
 
 const EXPECTED_TABLES = [
   'shop_types',
@@ -74,19 +75,12 @@ const ensurePlatformSchema = async () => {
 };
 
 const ensureDefaultPlatformAdmin = async () => {
-  const email = (process.env.PLATFORM_BOOTSTRAP_EMAIL || 'hasan@shaj.com').toLowerCase();
-  const password = process.env.PLATFORM_BOOTSTRAP_PASSWORD || 'hasan@6255';
-  const name = process.env.PLATFORM_BOOTSTRAP_NAME || 'Hasan';
-  const role = process.env.PLATFORM_BOOTSTRAP_ROLE || 'platform_admin';
-
-  const existing = await masterPool.query(
-    'SELECT id FROM platform_admins WHERE email = $1',
-    [email]
-  );
+  const existing = await masterPool.query('SELECT id FROM platform_admins LIMIT 1');
   if (existing.rowCount > 0) {
     return;
   }
 
+  const { email, password, name, role } = resolvePlatformAdminSeedConfig();
   const hashed = await bcrypt.hash(password, 10);
   await masterPool.query(
     'INSERT INTO platform_admins (name, email, password, role) VALUES ($1, $2, $3, $4)',

@@ -14,6 +14,10 @@ const { subscriptionMiddleware } = require('./middleware/subscription');
 const { mergeFeatureFlags } = require('./middleware/featureFlags');
 const { attachAuditDbContext } = require('./middleware/auditDbContext');
 const { errorHandler } = require('./middleware/errorHandler');
+const { requestCorrelationMiddleware } = require('./middleware/requestCorrelation');
+const { createCorsOptions } = require('./security/corsPolicy');
+const { isHealthWarmupAuthorized } = require('./security/healthWarmupKeyPolicy');
+const { logStartupFailure } = require('./security/startupFailurePolicy');
 const { apiV1AuthRouter, apiV1Router, swaggerRoutes } = require('./api/v1');
 const posSyncRoutes = require('./api/v1/modules/sync/posSync.routes');
 const { getTenantMe, getPlatformBanner } = require('./controllers/tenantController');
@@ -22,31 +26,25 @@ const { startPoolWarmup } = require('./services/poolWarmup');
 const { startStockConsistencyJob } = require('./services/stockConsistencyJob');
 const { startOwnerDailyDigestJob } = require('./services/ownerDailyDigestJob');
 const { startSyncMessaging } = require('./services/syncMessagingBootstrap');
+const { createReadinessHandler } = require('./services/readiness');
 const masterPool = require('./db/masterPool');
 require('dotenv').config();
 
-app.set('trust proxy', 1);
-app.use(cookieParser());
-const rawCorsOrigins = process.env.CORS_ORIGINS;
-const allowedOrigins = rawCorsOrigins
-  ? rawCorsOrigins.split(',').map((origin) => origin.trim()).filter(Boolean)
-  : [process.env.FRONTEND_ADMIN_URL, process.env.FRONTEND_TENANT_URL].filter(Boolean);
-const allowAllOrigins = allowedOrigins.includes('*');
 const APP_ENVIRONMENT = process.env.APP_ENVIRONMENT || process.env.NODE_ENV || 'development';
 const isTestRuntime = () => APP_ENVIRONMENT === 'test' || process.env.NODE_ENV === 'test' || Boolean(process.env.JEST_WORKER_ID);
 const PORT = process.env.APP_PORT || process.env.PORT || 5000;
 
+app.set('trust proxy', 1);
+app.use(requestCorrelationMiddleware);
+app.use(cookieParser());
 app.use(
-  cors({
-    origin: function (origin, callback) {
-      if (!origin || allowAllOrigins || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error('Not allowed by CORS'));
-      }
-    },
-    credentials: true
-  })
+  cors(
+    createCorsOptions({
+      environment: APP_ENVIRONMENT,
+      rawCorsOrigins: process.env.CORS_ORIGINS,
+      fallbackOrigins: [process.env.FRONTEND_ADMIN_URL, process.env.FRONTEND_TENANT_URL],
+    })
+  )
 );
 app.use(express.json({ limit: '5mb' }));
 
@@ -88,12 +86,12 @@ const isWithinWarmupWindow = () => {
   return nowMinutes >= start || nowMinutes < end;
 };
 
-const isWarmupAuthorized = (req) => {
-  const expectedKey = process.env.HEALTH_WARMUP_KEY;
-  if (!expectedKey) return false;
-  const providedKey = req.query?.key || req.headers['x-warmup-key'];
-  return typeof providedKey === 'string' && providedKey === expectedKey;
-};
+const isWarmupAuthorized = (req) => isHealthWarmupAuthorized({
+  environment: APP_ENVIRONMENT,
+  expectedKey: process.env.HEALTH_WARMUP_KEY,
+  headerKey: req.headers['x-warmup-key'],
+  queryKey: req.query?.key,
+});
 
 const isWarmupRequested = (req) => {
   const query = req.query || {};
@@ -146,8 +144,12 @@ const handleHealth = async (req, res) => {
   }
 };
 
+const handleReady = createReadinessHandler(masterPool);
+
 app.get('/health', handleHealth);
 app.get('/api/health', handleHealth);
+app.get('/ready', handleReady);
+app.get('/api/ready', handleReady);
 
 // Public routes
 app.use('/platform/auth', platformAuthRoutes);
@@ -180,6 +182,9 @@ const startServer = async () => {
   try {
     await bootstrapMasterDatabase();
   } catch (error) {
+    if (APP_ENVIRONMENT === 'production') {
+      throw error;
+    }
     console.error('Master DB bootstrap skipped:', error.message || error);
   }
 
@@ -199,7 +204,7 @@ const startServer = async () => {
 
 if (!isTestRuntime()) {
   startServer().catch((error) => {
-    console.error('Failed to start server:', error);
+    logStartupFailure({ environment: APP_ENVIRONMENT, error });
     process.exit(1);
   });
 }
