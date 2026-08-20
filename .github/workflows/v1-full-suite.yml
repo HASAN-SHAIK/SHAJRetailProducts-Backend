@@ -1,0 +1,27 @@
+name: V1 Backend full suite
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'Dockerfile'
+      - '.github/workflows/v1-full-suite.yml'
+  workflow_dispatch:
+
+jobs:
+  full-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Complete Backend Jest suite
+        run: npm test -- --runInBand
+      - name: Production container build
+        run: docker build -t shajretail-backend:v1-full-suite .
