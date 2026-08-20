@@ -1,0 +1,23 @@
+name: V1 Backend deployment acceptance
+
+on:
+  pull_request:
+    paths:
+      - 'Dockerfile'
+      - 'docs/POS_SYNC.md'
+      - 'docs/V1_DEPLOYMENT_SECRET_ROTATION.md'
+      - 'tests/v1DeploymentSecretRotation.test.js'
+      - '.github/workflows/v1-deployment-backend.yml'
+
+jobs:
+  deployment-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Validate deployment secret rotation contract
+        run: npx jest tests/v1DeploymentSecretRotation.test.js --runInBand
