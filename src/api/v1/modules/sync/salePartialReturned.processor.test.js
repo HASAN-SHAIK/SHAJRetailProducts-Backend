@@ -11,6 +11,7 @@ describe('sale.partial_returned projection', () => {
     payload: {
       return_id: 'ret-1',
       refund_minor: 2500,
+      refunded_by_user_id: 'cashier-1',
       approved_by_user_id: 'manager-1',
       approval_reason: 'customer returned one item',
       returned_at: '2026-08-09T06:00:00Z',
@@ -26,7 +27,7 @@ describe('sale.partial_returned projection', () => {
     },
   };
 
-  test('records one partial-return operation and advances canonical item/payment/return-principal facts', async () => {
+  test('records one partial-return operation with distinct refund initiator and approver', async () => {
     const client = {
       query: jest
         .fn()
@@ -48,6 +49,13 @@ describe('sale.partial_returned projection', () => {
       status: 'completed',
     });
 
+    const insertSql = String(client.query.mock.calls[2][0]);
+    expect(insertSql).toContain('refunded_by_user_id');
+    expect(insertSql).toContain('approved_by_user_id');
+    expect(client.query.mock.calls[2][1]).toEqual([
+      'ret-1', 42, 'ord-1', 4, 2500, 'cashier-1', 'manager-1',
+      'customer returned one item', 'evt-partial-return-1', '2026-08-09T06:00:00Z',
+    ]);
     expect(String(client.query.mock.calls[3][0])).toContain('source_returned_quantity_milli=source_returned_quantity_milli+$3');
     expect(client.query.mock.calls[3][1]).toEqual([42, 'item-1', 250, 2500]);
     const orderSql = String(client.query.mock.calls[5][0]);
@@ -65,7 +73,7 @@ describe('sale.partial_returned projection', () => {
           rowCount: 1,
           rows: [{
             source_order_id: 'ord-1', source_version: 4, refund_minor: 2500,
-            approved_by_user_id: 'manager-1', reason: 'customer returned one item',
+            refunded_by_user_id: 'cashier-1', approved_by_user_id: 'manager-1', reason: 'customer returned one item',
           }],
         })
         .mockResolvedValueOnce({
@@ -81,7 +89,27 @@ describe('sale.partial_returned projection', () => {
     expect(client.query).toHaveBeenCalledTimes(3);
   });
 
-  test('fails closed when a return_id is reused with different facts', async () => {
+  test('does not infer a missing legacy initiator from the approver', async () => {
+    const legacy = { ...event, payload: { ...event.payload } };
+    delete legacy.payload.refunded_by_user_id;
+    const client = {
+      query: jest
+        .fn()
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 42, source_version: 3 }] })
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 99 }] })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }),
+    };
+
+    await processSalePartialReturned(client, legacy);
+    expect(client.query.mock.calls[2][1][5]).toBeNull();
+    expect(client.query.mock.calls[2][1][6]).toBe('manager-1');
+  });
+
+  test('fails closed when a return_id is reused with different actor facts', async () => {
     const client = {
       query: jest
         .fn()
@@ -89,8 +117,8 @@ describe('sale.partial_returned projection', () => {
         .mockResolvedValueOnce({
           rowCount: 1,
           rows: [{
-            source_order_id: 'ord-1', source_version: 4, refund_minor: 2400,
-            approved_by_user_id: 'manager-1', reason: 'customer returned one item',
+            source_order_id: 'ord-1', source_version: 4, refund_minor: 2500,
+            refunded_by_user_id: 'different-cashier', approved_by_user_id: 'manager-1', reason: 'customer returned one item',
           }],
         }),
     };

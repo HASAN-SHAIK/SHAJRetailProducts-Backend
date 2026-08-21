@@ -28,6 +28,7 @@ describePostgres('V1 POS return balance facts on PostgreSQL', () => {
         total_price NUMERIC(14,2) NOT NULL DEFAULT 0,
         total_paid NUMERIC(14,2) NOT NULL DEFAULT 0,
         returned_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+        source_refunded_by_user_id TEXT,
         source_refund_approved_by_user_id TEXT,
         source_refund_reason TEXT,
         source_returned_at TIMESTAMPTZ,
@@ -58,6 +59,7 @@ describePostgres('V1 POS return balance facts on PostgreSQL', () => {
         source_order_id TEXT NOT NULL,
         source_version INT NOT NULL,
         refund_minor BIGINT NOT NULL,
+        refunded_by_user_id TEXT,
         approved_by_user_id TEXT NOT NULL,
         reason TEXT NOT NULL,
         source_event_id TEXT NOT NULL,
@@ -77,7 +79,7 @@ describePostgres('V1 POS return balance facts on PostgreSQL', () => {
     if (client) await client.end();
   });
 
-  test('full return projects returned principal exactly once', async () => {
+  test('full return projects returned principal exactly once with distinct refund actors', async () => {
     await client.query(`
       INSERT INTO orders(source_channel,source_order_id,source_version,order_status,total_price,total_paid,returned_amount)
       VALUES('pos','ord-full',1,'completed',100.00,100.00,0);
@@ -92,6 +94,7 @@ describePostgres('V1 POS return balance facts on PostgreSQL', () => {
       aggregate_version: 2,
       payload: {
         order: { id: 'ord-full', version: 2, status: 'returned', updated_at: '2026-08-15T00:00:00Z' },
+        refunded_by_user_id: 'cashier-1',
         approved_by_user_id: 'manager-1',
         approval_reason: 'customer returned full sale',
       },
@@ -106,19 +109,26 @@ describePostgres('V1 POS return balance facts on PostgreSQL', () => {
       throw error;
     }
 
-    const first = await client.query("SELECT total_price,total_paid,returned_amount,order_status,source_version FROM orders WHERE source_order_id='ord-full'");
-    expect(first.rows[0]).toMatchObject({ order_status: 'returned', source_version: 2 });
+    const first = await client.query("SELECT total_price,total_paid,returned_amount,order_status,source_version,source_refunded_by_user_id,source_refund_approved_by_user_id FROM orders WHERE source_order_id='ord-full'");
+    expect(first.rows[0]).toMatchObject({
+      order_status: 'returned',
+      source_version: 2,
+      source_refunded_by_user_id: 'cashier-1',
+      source_refund_approved_by_user_id: 'manager-1',
+    });
     expect(Number(first.rows[0].total_price)).toBe(100);
     expect(Number(first.rows[0].total_paid)).toBe(0);
     expect(Number(first.rows[0].returned_amount)).toBe(100);
 
     await processSaleReturned(client, event);
-    const replay = await client.query("SELECT total_paid,returned_amount FROM orders WHERE source_order_id='ord-full'");
+    const replay = await client.query("SELECT total_paid,returned_amount,source_refunded_by_user_id,source_refund_approved_by_user_id FROM orders WHERE source_order_id='ord-full'");
     expect(Number(replay.rows[0].total_paid)).toBe(0);
     expect(Number(replay.rows[0].returned_amount)).toBe(100);
+    expect(replay.rows[0].source_refunded_by_user_id).toBe('cashier-1');
+    expect(replay.rows[0].source_refund_approved_by_user_id).toBe('manager-1');
   });
 
-  test('partial return accumulates immutable refund principal once and preserves remaining paid amount', async () => {
+  test('partial return accumulates immutable refund principal once and preserves distinct actors', async () => {
     const inserted = await client.query(`
       INSERT INTO orders(source_channel,source_order_id,source_version,order_status,total_price,total_paid,returned_amount)
       VALUES('pos','ord-partial',1,'completed',100.00,100.00,0)
@@ -141,7 +151,8 @@ describePostgres('V1 POS return balance facts on PostgreSQL', () => {
         order: { id: 'ord-partial', version: 2, status: 'completed', updated_at: '2026-08-15T00:01:00Z' },
         return_id: 'ret-partial-1',
         refund_minor: 2500,
-        approved_by_user_id: 'manager-1',
+        refunded_by_user_id: 'cashier-2',
+        approved_by_user_id: 'manager-2',
         approval_reason: 'customer returned one quarter',
         returned_at: '2026-08-15T00:01:00Z',
         lines: [{ order_item_id: 'item-1', quantity_milli: 250, refund_minor: 2500 }],
@@ -163,6 +174,12 @@ describePostgres('V1 POS return balance facts on PostgreSQL', () => {
     expect(Number(first.rows[0].total_paid)).toBe(75);
     expect(Number(first.rows[0].returned_amount)).toBe(25);
     expect(first.rows[0].source_version).toBe(2);
+
+    const actorFacts = await client.query("SELECT refunded_by_user_id,approved_by_user_id FROM pos_partial_returns WHERE return_id='ret-partial-1'");
+    expect(actorFacts.rows[0]).toMatchObject({
+      refunded_by_user_id: 'cashier-2',
+      approved_by_user_id: 'manager-2',
+    });
 
     const replayed = await processSalePartialReturned(client, event);
     expect(replayed.replayed).toBe(true);

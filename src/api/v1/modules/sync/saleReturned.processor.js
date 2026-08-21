@@ -10,6 +10,11 @@ const requiredString = (value, name) => {
   return result;
 };
 
+const optionalString = (value) => {
+  const result = String(value || '').trim();
+  return result || null;
+};
+
 const integer = (value, name) => {
   const result = Number(value);
   if (!Number.isSafeInteger(result) || result <= 0) throw invalid(`${name} must be a positive integer`);
@@ -25,6 +30,7 @@ const processSaleReturned = async (client, event) => {
 
   const orderId = requiredString(order.id, 'order.id');
   const sourceVersion = integer(order.version, 'order.version');
+  const refundedByUserID = optionalString(payload.refunded_by_user_id);
   const approvedByUserID = requiredString(payload.approved_by_user_id, 'payload.approved_by_user_id');
   const approvalReason = requiredString(payload.approval_reason, 'payload.approval_reason');
   if (event.aggregate_type !== 'sales_order' || event.aggregate_id !== orderId) {
@@ -44,10 +50,11 @@ const processSaleReturned = async (client, event) => {
        returned_amount=total_price,
        source_event_id=$2,
        source_version=$3,
-       source_refund_approved_by_user_id=$4,
-       source_refund_reason=$5,
-       source_returned_at=COALESCE($6::timestamptz,NOW()),
-       updated_at=COALESCE($6::timestamptz,NOW())
+       source_refunded_by_user_id=$4,
+       source_refund_approved_by_user_id=$5,
+       source_refund_reason=$6,
+       source_returned_at=COALESCE($7::timestamptz,NOW()),
+       updated_at=COALESCE($7::timestamptz,NOW())
      WHERE source_channel='pos' AND source_order_id=$1
        AND COALESCE(source_version,0) <= $3
      RETURNING id,source_version`,
@@ -55,6 +62,7 @@ const processSaleReturned = async (client, event) => {
       orderId,
       event.event_id,
       sourceVersion,
+      refundedByUserID,
       approvedByUserID,
       approvalReason,
       order.updated_at || null,
