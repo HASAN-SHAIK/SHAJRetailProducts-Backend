@@ -10,6 +10,11 @@ const requiredString = (value, name) => {
   return result;
 };
 
+const optionalString = (value) => {
+  const result = String(value || '').trim();
+  return result || null;
+};
+
 const positiveInteger = (value, name) => {
   const result = Number(value);
   if (!Number.isSafeInteger(result) || result <= 0) throw invalid(`${name} must be a positive integer`);
@@ -27,6 +32,7 @@ const sameReplay = async (client, existing, expected) => {
     existing.source_order_id !== expected.orderId ||
     Number(existing.source_version) !== expected.sourceVersion ||
     Number(existing.refund_minor) !== expected.refundMinor ||
+    (existing.refunded_by_user_id || null) !== expected.refundedByUserID ||
     existing.approved_by_user_id !== expected.approvedByUserID ||
     existing.reason !== expected.reason
   ) {
@@ -63,6 +69,7 @@ const processSalePartialReturned = async (client, event) => {
   const sourceVersion = positiveInteger(order.version, 'order.version');
   const returnId = requiredString(payload.return_id, 'payload.return_id');
   const refundMinor = positiveInteger(payload.refund_minor, 'payload.refund_minor');
+  const refundedByUserID = optionalString(payload.refunded_by_user_id);
   const approvedByUserID = requiredString(payload.approved_by_user_id, 'payload.approved_by_user_id');
   const reason = requiredString(payload.approval_reason, 'payload.approval_reason');
 
@@ -110,13 +117,13 @@ const processSalePartialReturned = async (client, event) => {
   const centralOrderId = canonical.rows[0].id;
 
   const replay = await client.query(
-    `SELECT source_order_id,source_version,refund_minor,approved_by_user_id,reason
+    `SELECT source_order_id,source_version,refund_minor,refunded_by_user_id,approved_by_user_id,reason
        FROM pos_partial_returns WHERE return_id=$1`,
     [returnId]
   );
   if (replay.rowCount > 0) {
     const matches = await sameReplay(client, replay.rows[0], {
-      orderId, sourceVersion, returnId, refundMinor, approvedByUserID, reason, lines,
+      orderId, sourceVersion, returnId, refundMinor, refundedByUserID, approvedByUserID, reason, lines,
     });
     if (!matches) throw invalid('return_id was already used with different partial-return facts');
     return {
@@ -131,9 +138,9 @@ const processSalePartialReturned = async (client, event) => {
 
   await client.query(
     `INSERT INTO pos_partial_returns(
-       return_id,order_id,source_order_id,source_version,refund_minor,approved_by_user_id,reason,source_event_id,source_returned_at
-     ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::timestamptz)`,
-    [returnId, centralOrderId, orderId, sourceVersion, refundMinor, approvedByUserID, reason, event.event_id, payload.returned_at || order.updated_at || null]
+       return_id,order_id,source_order_id,source_version,refund_minor,refunded_by_user_id,approved_by_user_id,reason,source_event_id,source_returned_at
+     ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::timestamptz)`,
+    [returnId, centralOrderId, orderId, sourceVersion, refundMinor, refundedByUserID, approvedByUserID, reason, event.event_id, payload.returned_at || order.updated_at || null]
   );
 
   for (const line of lines) {
