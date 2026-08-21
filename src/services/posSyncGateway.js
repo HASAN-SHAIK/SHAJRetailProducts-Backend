@@ -127,16 +127,36 @@ const loadChangeRecords = async (pool, cursor, fetchLimit) => {
     `SELECT to_regclass('public.pos_customer_mappings') IS NOT NULL AS has_pos_customer_mappings`
   );
   const hasPosCustomerMappings = schema.rows[0]?.has_pos_customer_mappings === true;
-  const posMappingsSelect = hasPosCustomerMappings
-    ? `COALESCE((
+  const customersQuery = hasPosCustomerMappings
+    ? `SELECT c.id, c.name, COALESCE(c.phone, c.mobile) AS phone,
+              c.email, c.gst_number AS tax_id,
+              COALESCE(c.credit_limit, 0) AS credit_limit,
+              COALESCE(c.current_balance, 0) AS current_balance,
+              COALESCE(c.is_active, TRUE) AS is_active,
+              COALESCE((
                 SELECT json_agg(json_build_object(
                   'id', m.pos_customer_id,
                   'source_version', m.source_version
                 ) ORDER BY m.pos_customer_id)
                 FROM pos_customer_mappings m
                 WHERE m.canonical_customer_id = c.id
-              ), '[]'::json) AS pos_mappings,`
-    : `'[]'::json AS pos_mappings,`;
+              ), '[]'::json) AS pos_mappings,
+              COALESCE(c.updated_at, c.created_at, NOW()) AS updated_at
+       FROM customers c
+       WHERE COALESCE(c.updated_at, c.created_at, NOW()) >= $1
+       ORDER BY COALESCE(c.updated_at, c.created_at, NOW()), c.id
+       LIMIT $2`
+    : `SELECT c.id, c.name, COALESCE(c.phone, c.mobile) AS phone,
+              c.email, c.gst_number AS tax_id,
+              COALESCE(c.credit_limit, 0) AS credit_limit,
+              COALESCE(c.current_balance, 0) AS current_balance,
+              COALESCE(c.is_active, TRUE) AS is_active,
+              '[]'::json AS pos_mappings,
+              COALESCE(c.updated_at, c.created_at, NOW()) AS updated_at
+       FROM customers c
+       WHERE COALESCE(c.updated_at, c.created_at, NOW()) >= $1
+       ORDER BY COALESCE(c.updated_at, c.created_at, NOW()), c.id
+       LIMIT $2`;
 
   const [products, customers] = await Promise.all([
     pool.query(
@@ -150,19 +170,7 @@ const loadChangeRecords = async (pool, cursor, fetchLimit) => {
        ORDER BY COALESCE(updated_at, created_at, NOW()), id
        LIMIT $2`, [since, fetchLimit]
     ),
-    pool.query(
-      `SELECT c.id, c.name, COALESCE(c.phone, c.mobile) AS phone,
-              c.email, c.gst_number AS tax_id,
-              COALESCE(c.credit_limit, 0) AS credit_limit,
-              COALESCE(c.current_balance, 0) AS current_balance,
-              COALESCE(c.is_active, TRUE) AS is_active,
-              ${posMappingsSelect}
-              COALESCE(c.updated_at, c.created_at, NOW()) AS updated_at
-       FROM customers c
-       WHERE COALESCE(c.updated_at, c.created_at, NOW()) >= $1
-       ORDER BY COALESCE(c.updated_at, c.created_at, NOW()), c.id
-       LIMIT $2`, [since, fetchLimit]
-    ),
+    pool.query(customersQuery, [since, fetchLimit]),
   ]);
 
   const records = [
