@@ -53,6 +53,24 @@ const centralIntegerId = (value) => {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 };
 
+const resolveCanonicalCustomerId = async (client, sourceCustomerId) => {
+  const directId = centralIntegerId(sourceCustomerId);
+  if (directId !== null) return directId;
+
+  const sourceId = optionalString(sourceCustomerId);
+  if (!sourceId) return null;
+
+  const mapping = await client.query(
+    `SELECT canonical_customer_id
+       FROM pos_customer_mappings
+      WHERE source_customer_id=$1
+      LIMIT 1`,
+    [sourceId]
+  );
+  if (mapping.rowCount === 0) return null;
+  return centralIntegerId(mapping.rows[0].canonical_customer_id);
+};
+
 const hasCentralProductId = (value) => centralIntegerId(value) !== null;
 
 const canonicalOrderStatus = (status) => {
@@ -64,7 +82,7 @@ const canonicalOrderStatus = (status) => {
 const projectCanonicalOrder = async (client, event, order, receipt, items, actor) => {
   const sourceOrderId = requiredString(order.id, 'order.id');
   const sourceVersion = integer(order.version, 'order.version');
-  const customerId = centralIntegerId(order.customer_id);
+  const customerId = await resolveCanonicalCustomerId(client, order.customer_id);
   const actorUserId = optionalString(actor?.user_id);
   const createdByUserId = optionalString(order.created_by_user_id) || actorUserId;
   const completedByUserId = optionalString(order.completed_by_user_id) || actorUserId;
