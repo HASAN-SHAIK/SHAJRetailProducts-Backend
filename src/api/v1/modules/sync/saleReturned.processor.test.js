@@ -15,6 +15,7 @@ describe('sale.returned projection', () => {
         version: 3,
         updated_at: '2026-08-09T00:00:00Z',
       },
+      refunded_by_user_id: 'cashier-1',
       approved_by_user_id: 'manager-1',
       approval_reason: 'customer returned all items',
       payments: [],
@@ -22,7 +23,7 @@ describe('sale.returned projection', () => {
     },
   };
 
-  test('advances an existing canonical POS sale to returned and preserves refund/balance audit facts', async () => {
+  test('advances an existing canonical POS sale and preserves distinct refund initiator/approver audit facts', async () => {
     const client = {
       query: jest
         .fn()
@@ -35,6 +36,7 @@ describe('sale.returned projection', () => {
     expect(result).toEqual({ order_id: 'ord-1', central_order_id: 42, canonical_applied: true, status: 'returned' });
     const canonicalSql = String(client.query.mock.calls[0][0]);
     expect(canonicalSql).toContain("order_status='returned'");
+    expect(canonicalSql).toContain('source_refunded_by_user_id');
     expect(canonicalSql).toContain('source_refund_approved_by_user_id');
     expect(canonicalSql).toContain('total_paid=0');
     expect(canonicalSql).toContain('returned_amount=total_price');
@@ -42,10 +44,26 @@ describe('sale.returned projection', () => {
       'ord-1',
       'evt-return-1',
       3,
+      'cashier-1',
       'manager-1',
       'customer returned all items',
       '2026-08-09T00:00:00Z',
     ]);
+  });
+
+  test('keeps legacy missing initiator nullable rather than inferring it from the approver', async () => {
+    const client = {
+      query: jest
+        .fn()
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 42, source_version: 3 }] })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }),
+    };
+    const legacy = { ...event, payload: { ...event.payload } };
+    delete legacy.payload.refunded_by_user_id;
+
+    await processSaleReturned(client, legacy);
+    expect(client.query.mock.calls[0][1][3]).toBeNull();
+    expect(client.query.mock.calls[0][1][4]).toBe('manager-1');
   });
 
   test('treats an older replay as non-applied when a newer canonical version already exists', async () => {
