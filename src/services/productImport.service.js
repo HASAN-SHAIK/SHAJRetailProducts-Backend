@@ -97,6 +97,11 @@ const HEADER_MAP = {
   batch_number: 'batch_number',
   batchno: 'batch_number',
   'batch no': 'batch_number',
+  'batch enabled': 'is_batch_enabled',
+  batch_enabled: 'is_batch_enabled',
+  batchenabled: 'is_batch_enabled',
+  'is batch enabled': 'is_batch_enabled',
+  is_batch_enabled: 'is_batch_enabled',
   'is weight based': 'is_weight_based',
   is_weight_based: 'is_weight_based',
   weight_based: 'is_weight_based',
@@ -146,6 +151,16 @@ const normalizeBoolean = (value, defaultValue = false) => {
   if (['yes', 'y', 'true', '1', 'weight', 'weighted', 'weight based', 'weight-based', 'kg', 'kgs', 'gram', 'grams'].includes(raw)) return true;
   if (['no', 'n', 'false', '0', 'piece', 'pieces', 'piece based', 'piece-based', 'unit', 'units'].includes(raw)) return false;
   return defaultValue;
+};
+
+const hasExplicitValue = (value) =>
+  value !== null && value !== undefined && String(value).trim() !== '';
+
+const resolveBatchEnabled = (row = {}, batchNumberInput = '') => {
+  if (hasExplicitValue(row.is_batch_enabled)) {
+    return normalizeBoolean(row.is_batch_enabled, false);
+  }
+  return Boolean(batchNumberInput);
 };
 
 const normalizeRow = (row = {}) => {
@@ -341,7 +356,7 @@ const importProducts = async (req, file) => {
         continue;
       }
       const resolvedPurchasePrice = purchase_price;
-      const hasBatch = true;
+      const hasBatch = resolveBatchEnabled(raw, batch_number_input);
 
       try {
         await client.query('SAVEPOINT product_import_row');
@@ -357,7 +372,7 @@ const importProducts = async (req, file) => {
                  hsn_code = COALESCE($6, p.hsn_code),
                  gst_percentage = COALESCE($7, p.gst_percentage),
                  barcode = COALESCE($8, p.barcode),
-                 stock_quantity = p.stock_quantity + COALESCE($9, 0),
+                 stock_quantity = COALESCE($9, p.stock_quantity),
                  expiry_date = COALESCE($10, p.expiry_date),
                  is_batch_enabled = CASE WHEN $11 THEN TRUE ELSE p.is_batch_enabled END,
                  branch_id = COALESCE(p.branch_id, $12),
@@ -568,7 +583,7 @@ const importProductsFromRows = async (req, rows = []) => {
       const stock_quantity = normalizeNumber(raw.stock_quantity) ?? 0;
       const is_weight_based = normalizeBoolean(raw.is_weight_based, false);
       const time_for_delivery = Number.isFinite(Number(raw.time_for_delivery)) ? Number(raw.time_for_delivery) : 0;
-      const hasBatch = true;
+      const hasBatch = resolveBatchEnabled(raw, batch_number_input);
       let gst_percentage = normalizeNumber(raw.gst_percentage);
       if (gst_percentage === null) {
         gst_percentage = await resolveGstPercentage({ tenantPool: client }, hsn_code);
@@ -611,7 +626,7 @@ const importProductsFromRows = async (req, rows = []) => {
                  hsn_code = COALESCE($7, p.hsn_code),
                  gst_percentage = COALESCE($8, p.gst_percentage),
                  barcode = COALESCE($9, p.barcode),
-                 stock_quantity = p.stock_quantity + COALESCE($10, 0),
+                 stock_quantity = COALESCE($10, p.stock_quantity),
                  expiry_date = COALESCE($11, p.expiry_date),
                  is_batch_enabled = CASE WHEN $12 THEN TRUE ELSE p.is_batch_enabled END,
                  branch_id = COALESCE(p.branch_id, $14),

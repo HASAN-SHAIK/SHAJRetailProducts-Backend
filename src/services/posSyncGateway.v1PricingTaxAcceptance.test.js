@@ -9,6 +9,7 @@ describe('V1 Pricing/Tax product fact transport', () => {
     const updatedAt = new Date('2026-08-14T18:10:00.000Z');
     const tenantPool = {
       query: jest.fn()
+        .mockResolvedValueOnce({ rows: [{ has_pos_customer_mappings: true }] })
         .mockResolvedValueOnce({ rows: [{
           id: 101,
           name: 'GST Product',
@@ -29,7 +30,7 @@ describe('V1 Pricing/Tax product fact transport', () => {
     const result = await getPosChanges({ tenantPool, limit: 10, branchId: 'branch-1' });
     const product = result.changes.find((change) => change.type === 'catalog.product.upsert');
 
-    expect(tenantPool.query.mock.calls[0][0]).toContain('hsn_code, gst_percentage');
+    expect(tenantPool.query.mock.calls[1][0]).toContain('hsn_code, gst_percentage');
     expect(product.payload).toMatchObject({
       id: '101',
       tax_code: '0401',
@@ -41,6 +42,7 @@ describe('V1 Pricing/Tax product fact transport', () => {
     const updatedAt = new Date('2026-08-14T18:11:00.000Z');
     const tenantPool = {
       query: jest.fn()
+        .mockResolvedValueOnce({ rows: [{ has_pos_customer_mappings: true }] })
         .mockResolvedValueOnce({ rows: [
           {
             id: 102, name: 'Zero GST', barcode: null, selling_price: null, category: null,

@@ -92,6 +92,22 @@ const processInventoryMovementRecorded = async (client, event, inventoryDevice =
     occurredAt: requiredString(source.occurred_at, 'movement.occurred_at'),
   };
 
+  const saleProjection = await client.query(
+    `SELECT order_id
+     FROM pos_sales
+     WHERE order_id=$1`,
+    [movement.orderId]
+  );
+  if (saleProjection.rowCount === 0) {
+    return {
+      movement_id: movement.movementId,
+      order_id: movement.orderId,
+      product_id: movement.productId,
+      canonical_applied: false,
+      waiting_for_sale_projection: true,
+    };
+  }
+
   const inserted = await client.query(
     `INSERT INTO pos_inventory_movements(
        movement_id,order_id,store_id,product_id,movement_type,quantity_delta_milli,

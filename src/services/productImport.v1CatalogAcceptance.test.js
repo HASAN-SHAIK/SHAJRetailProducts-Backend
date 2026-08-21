@@ -121,8 +121,47 @@ describe('V1 Products/Catalog import acceptance', () => {
     const update = queries.find(({ text }) => text.startsWith('UPDATE products p'));
     expect(update).toBeTruthy();
     expect(update.text).toContain('selling_price = $4');
+    expect(update.text).toContain('stock_quantity = COALESCE($10, p.stock_quantity)');
     expect(update.text).toContain('p.branch_id = $14');
     expect(update.params[3]).toBe(95);
     expect(queries.some(({ text }) => text.startsWith('INSERT INTO products'))).toBe(false);
+  });
+
+  test('explicit batch-disabled import keeps product non-batch and does not create a batch row', async () => {
+    const queries = [];
+    const client = {
+      query: jest.fn(async (sql, params = []) => {
+        const text = String(sql).replace(/\s+/g, ' ').trim();
+        queries.push({ text, params });
+        if (text.includes('SELECT COALESCE(is_opening_completed')) {
+          return { rows: [{ is_opening_completed: false }], rowCount: 1 };
+        }
+        if (text.startsWith('INSERT INTO products')) {
+          return { rows: [{ id: 303 }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      }),
+      release: jest.fn(),
+    };
+    const tenantPool = {
+      query: jest.fn(async () => ({ rows: [], rowCount: 0 })),
+      connect: jest.fn(async () => client),
+    };
+
+    const summary = await importProductsFromRows({ tenantPool }, [{
+      name: 'Imported Toothpaste',
+      barcode: '8901234567303',
+      purchase_price: 40,
+      selling_price: 55,
+      stock_quantity: 10,
+      batch_number: 'IGNORED-WHEN-DISABLED',
+      is_batch_enabled: 0,
+    }]);
+
+    expect(summary).toMatchObject({ total: 1, inserted: 1, updated: 0, skipped: 0 });
+    const productInsert = queries.find(({ text }) => text.startsWith('INSERT INTO products'));
+    expect(productInsert).toBeTruthy();
+    expect(productInsert.params[11]).toBe(false);
+    expect(queries.some(({ text }) => text.startsWith('INSERT INTO batches'))).toBe(false);
   });
 });

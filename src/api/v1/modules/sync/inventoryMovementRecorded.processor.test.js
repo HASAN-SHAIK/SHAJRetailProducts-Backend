@@ -46,9 +46,10 @@ const movementRow = (overrides = {}) => ({
 describe('inventory.movement.recorded projection', () => {
   beforeEach(() => mockApplyPosInventoryBatchMovement.mockClear());
 
-  test('applies a movement to canonical stock without requiring the sale projection first', async () => {
+  test('applies a movement to canonical stock after the sale projection exists', async () => {
     const client = {
       query: jest.fn()
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ order_id: 'ord-1' }] })
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ movement_id: 'mov-1' }] })
         .mockResolvedValueOnce({ rowCount: 1, rows: [movementRow()] })
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ movement_id: 'mov-1' }] })
@@ -67,12 +68,12 @@ describe('inventory.movement.recorded projection', () => {
       canonical_stock_quantity: '4.000',
       batch: { batch_applied: false, batch_enabled: false },
     });
-    expect(client.query).toHaveBeenCalledTimes(5);
-    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('FROM pos_sales'))).toBe(false);
-    expect(String(client.query.mock.calls[3][0])).toContain("set_config('app.stock_source', 'pos_sync', true)");
-    expect(client.query.mock.calls[3][1]).toEqual(['device-e2e', 'sale', 'mov-1']);
-    expect(String(client.query.mock.calls[4][0])).toContain('UPDATE products');
-    expect(client.query.mock.calls[4][1]).toEqual([-1000, 101]);
+    expect(client.query).toHaveBeenCalledTimes(6);
+    expect(String(client.query.mock.calls[0][0])).toContain('FROM pos_sales');
+    expect(String(client.query.mock.calls[4][0])).toContain("set_config('app.stock_source', 'pos_sync', true)");
+    expect(client.query.mock.calls[4][1]).toEqual(['device-e2e', 'sale', 'mov-1']);
+    expect(String(client.query.mock.calls[5][0])).toContain('UPDATE products');
+    expect(client.query.mock.calls[5][1]).toEqual([-1000, 101]);
     expect(mockApplyPosInventoryBatchMovement).toHaveBeenCalledWith(
       client,
       expect.objectContaining({ movementId: 'mov-1', productId: 101, orderItemId: 'itm-1' }),
@@ -96,6 +97,7 @@ describe('inventory.movement.recorded projection', () => {
     };
     const client = {
       query: jest.fn()
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ order_id: 'ord-1' }] })
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ movement_id: 'mov-return-1' }] })
         .mockResolvedValueOnce({ rowCount: 1, rows: [movementRow({
           movement_id: 'mov-return-1',
@@ -110,13 +112,14 @@ describe('inventory.movement.recorded projection', () => {
 
     await processInventoryMovementRecorded(client, returnEvent, { deviceId: 'device-e2e', branchId: '11111111-1111-1111-1111-111111111111' });
 
-    expect(client.query.mock.calls[3][1]).toEqual(['device-e2e', 'refund', 'mov-return-1']);
-    expect(client.query.mock.calls[4][1]).toEqual([250, 101]);
+    expect(client.query.mock.calls[4][1]).toEqual(['device-e2e', 'refund', 'mov-return-1']);
+    expect(client.query.mock.calls[5][1]).toEqual([250, 101]);
   });
 
   test('applies exactly once when sale.completed already projected the movement ledger row', async () => {
     const client = {
       query: jest.fn()
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ order_id: 'ord-1' }] })
         .mockResolvedValueOnce({ rowCount: 0, rows: [] })
         .mockResolvedValueOnce({ rowCount: 1, rows: [movementRow()] })
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ movement_id: 'mov-1' }] })
@@ -134,6 +137,7 @@ describe('inventory.movement.recorded projection', () => {
   test('does not apply canonical stock or batches again when the movement was already applied', async () => {
     const client = {
       query: jest.fn()
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ order_id: 'ord-1' }] })
         .mockResolvedValueOnce({ rowCount: 0, rows: [] })
         .mockResolvedValueOnce({
           rowCount: 1,
@@ -144,7 +148,7 @@ describe('inventory.movement.recorded projection', () => {
     const result = await processInventoryMovementRecorded(client, event, { branchId: '11111111-1111-1111-1111-111111111111' });
 
     expect(result).toMatchObject({ canonical_applied: false, already_applied: true });
-    expect(client.query).toHaveBeenCalledTimes(2);
+    expect(client.query).toHaveBeenCalledTimes(3);
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes('UPDATE products'))).toBe(false);
     expect(mockApplyPosInventoryBatchMovement).not.toHaveBeenCalled();
   });
@@ -152,6 +156,7 @@ describe('inventory.movement.recorded projection', () => {
   test('fails closed when the same movement id is bound to different immutable facts', async () => {
     const client = {
       query: jest.fn()
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ order_id: 'ord-1' }] })
         .mockResolvedValueOnce({ rowCount: 0, rows: [] })
         .mockResolvedValueOnce({ rowCount: 1, rows: [movementRow({ quantity_delta_milli: '-2000' })] }),
     };
@@ -159,7 +164,7 @@ describe('inventory.movement.recorded projection', () => {
     await expect(processInventoryMovementRecorded(client, event)).rejects.toMatchObject({
       code: 'INVALID_INVENTORY_MOVEMENT_PAYLOAD',
     });
-    expect(client.query).toHaveBeenCalledTimes(2);
+    expect(client.query).toHaveBeenCalledTimes(3);
     expect(mockApplyPosInventoryBatchMovement).not.toHaveBeenCalled();
   });
 
@@ -169,6 +174,7 @@ describe('inventory.movement.recorded projection', () => {
     }));
     const client = {
       query: jest.fn()
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ order_id: 'ord-1' }] })
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ movement_id: 'mov-1' }] })
         .mockResolvedValueOnce({ rowCount: 1, rows: [movementRow()] }),
     };
@@ -176,7 +182,28 @@ describe('inventory.movement.recorded projection', () => {
     await expect(processInventoryMovementRecorded(client, event, { branchId: '11111111-1111-1111-1111-111111111111' })).rejects.toMatchObject({
       code: 'CANONICAL_INVENTORY_PROJECTION_FAILED',
     });
-    expect(client.query).toHaveBeenCalledTimes(2);
+    expect(client.query).toHaveBeenCalledTimes(3);
+  });
+
+  test('acknowledges standalone movement when it is waiting for the sale projection to reach Central first', async () => {
+    const client = {
+      query: jest.fn().mockResolvedValueOnce({ rowCount: 0, rows: [] }),
+    };
+
+    const result = await processInventoryMovementRecorded(client, event, {
+      deviceId: 'device-e2e',
+      branchId: '11111111-1111-1111-1111-111111111111',
+    });
+
+    expect(result).toEqual({
+      movement_id: 'mov-1',
+      order_id: 'ord-1',
+      product_id: '101',
+      canonical_applied: false,
+      waiting_for_sale_projection: true,
+    });
+    expect(client.query).toHaveBeenCalledTimes(1);
+    expect(mockApplyPosInventoryBatchMovement).not.toHaveBeenCalled();
   });
 
   test('rejects aggregate mismatch', async () => {

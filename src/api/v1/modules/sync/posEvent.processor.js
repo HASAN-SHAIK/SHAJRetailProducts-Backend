@@ -38,7 +38,7 @@ const processPosEvent = async (client, event, context = {}) => {
         error.code = 'INVALID_SALE_COMPLETED_PAYLOAD';
         throw error;
       }
-      const projection = await processSaleCompleted(client, event);
+      const projection = await processSaleCompleted(client, event, context.syncDevice || null);
       await bindCanonicalOrderBranch(client, projection, context.syncDevice || null);
       return projection;
     }

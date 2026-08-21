@@ -7,11 +7,15 @@ const { getPosChanges } = require('./posSyncGateway');
 const product = (overrides = {}) => ({
   id: 101,
   name: 'Fresh Milk',
+  company: 'Dairy Co',
   barcode: '8901234567890',
   selling_price: '65.50',
+  mrp: '72.00',
   category: 'Fresh Produce & Dairy',
   stock_quantity: '5.000',
   branch_id: 'branch-1',
+  expiry_date: '2026-09-30',
+  is_weight_based: true,
   is_deleted: false,
   updated_at: new Date('2026-08-14T06:30:00.000Z'),
   ...overrides,
@@ -19,6 +23,7 @@ const product = (overrides = {}) => ({
 
 const poolFor = (products, categories = null) => {
   const query = jest.fn()
+    .mockResolvedValueOnce({ rows: [{ has_pos_customer_mappings: true }] })
     .mockResolvedValueOnce({ rows: products })
     .mockResolvedValueOnce({ rows: [] });
   if (categories !== null) query.mockResolvedValueOnce({ rows: categories.map((name) => ({ name })) });
@@ -51,7 +56,14 @@ describe('V1 Products/Catalog change-feed acceptance', () => {
       id: '101',
       category_id: expectedCategoryId,
       name: 'Fresh Milk',
+      company: 'Dairy Co',
+      mrp: 72,
+      expiry_date: '2026-09-30',
+      unit_of_measure: 'kg',
+      is_weight_based: true,
       is_active: true,
+      store_id: 'branch-1',
+      stock_quantity: 5,
     });
     expect(barcode.payload).toMatchObject({
       barcode: '8901234567890',
@@ -68,10 +80,10 @@ describe('V1 Products/Catalog change-feed acceptance', () => {
       version: new Date('2026-08-14T06:30:00.000Z').getTime(),
     });
 
-    expect(tenantPool.query.mock.calls[0][0]).not.toContain('branch_id IS NULL OR branch_id::text = $3');
-    expect(tenantPool.query.mock.calls[0][1]).toHaveLength(2);
-    expect(tenantPool.query.mock.calls[2][0]).toContain('branch_id IS NULL OR branch_id::text = $1');
-    expect(tenantPool.query.mock.calls[2][1]).toEqual(['branch-1']);
+    expect(tenantPool.query.mock.calls[1][0]).not.toContain('branch_id IS NULL OR branch_id::text = $3');
+    expect(tenantPool.query.mock.calls[1][1]).toHaveLength(2);
+    expect(tenantPool.query.mock.calls[3][0]).toContain('branch_id IS NULL OR branch_id::text = $1');
+    expect(tenantPool.query.mock.calls[3][1]).toEqual(['branch-1']);
   });
 
   test('propagates Central soft-delete and an empty authoritative snapshot when no categories remain', async () => {
@@ -144,7 +156,7 @@ describe('V1 Products/Catalog change-feed acceptance', () => {
 
     expect(replay.changes).toEqual([]);
     expect(replay.cursor).toBe(first.cursor);
-    expect(replayPool.query).toHaveBeenCalledTimes(2);
+    expect(replayPool.query).toHaveBeenCalledTimes(3);
   });
 
   test('orders mixed catalog/customer entities across pages without duplicates at the cursor boundary', async () => {
@@ -166,6 +178,7 @@ describe('V1 Products/Catalog change-feed acceptance', () => {
 
     const firstPool = {
       query: jest.fn()
+        .mockResolvedValueOnce({ rows: [{ has_pos_customer_mappings: true }] })
         .mockResolvedValueOnce({ rows: [firstProduct, laterProduct] })
         .mockResolvedValueOnce({ rows: [middleCustomer] })
         .mockResolvedValueOnce({ rows: [{ name: 'Fresh Produce & Dairy' }] }),
@@ -179,6 +192,7 @@ describe('V1 Products/Catalog change-feed acceptance', () => {
 
     const secondPool = {
       query: jest.fn()
+        .mockResolvedValueOnce({ rows: [{ has_pos_customer_mappings: true }] })
         .mockResolvedValueOnce({ rows: [laterProduct] })
         .mockResolvedValueOnce({ rows: [middleCustomer] })
         .mockResolvedValueOnce({ rows: [{ name: 'Fresh Produce & Dairy' }] }),
@@ -197,6 +211,7 @@ describe('V1 Products/Catalog change-feed acceptance', () => {
 
     const replayPool = {
       query: jest.fn()
+        .mockResolvedValueOnce({ rows: [{ has_pos_customer_mappings: true }] })
         .mockResolvedValueOnce({ rows: [laterProduct] })
         .mockResolvedValueOnce({ rows: [] }),
     };

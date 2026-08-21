@@ -53,6 +53,8 @@ const centralIntegerId = (value) => {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 };
 
+const hasCentralProductId = (value) => centralIntegerId(value) !== null;
+
 const canonicalOrderStatus = (status) => {
   const normalized = String(status || '').trim().toLowerCase();
   if (normalized === 'confirmed' || normalized === 'completed') return 'completed';
@@ -188,7 +190,7 @@ const projectCanonicalOrder = async (client, event, order, receipt, items, actor
   return { central_order_id: centralOrderId, canonical_applied: applied };
 };
 
-const processSaleCompleted = async (client, event) => {
+const processSaleCompleted = async (client, event, inventoryDevice = null) => {
   const payload = asObject(event.payload, 'payload');
   const order = asObject(payload.order, 'payload.order');
   const receipt = asObject(payload.receipt, 'payload.receipt');
@@ -309,22 +311,32 @@ const processSaleCompleted = async (client, event) => {
   );
 
   for (const movement of inventory) {
-    await client.query(
-      `INSERT INTO pos_inventory_movements(
-         movement_id,order_id,store_id,product_id,movement_type,quantity_delta_milli,
-         reference_type,reference_id,order_item_id,balance_after_milli,occurred_at
-       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-       ON CONFLICT(movement_id) DO NOTHING`,
-      [
-        requiredString(movement.id, 'movement.id'), orderId,
-        requiredString(movement.store_id, 'movement.store_id'), requiredString(movement.product_id, 'movement.product_id'),
-        requiredString(movement.movement_type, 'movement.movement_type'),
-        integer(movement.quantity_delta_milli, 'movement.quantity_delta_milli'), movement.reference_type || null,
-        movement.reference_id || null, movement.order_item_id || null,
-        integer(movement.balance_after_milli, 'movement.balance_after_milli'),
-        requiredString(movement.occurred_at, 'movement.occurred_at'),
-      ]
-    );
+    if (inventoryDevice?.deviceId && inventoryDevice?.branchId && hasCentralProductId(movement.product_id)) {
+      await processInventoryMovementRecorded(client, {
+        ...event,
+        event_type: 'inventory.movement.recorded',
+        aggregate_type: 'inventory_movement',
+        aggregate_id: requiredString(movement.id, 'movement.id'),
+        payload: { movement },
+      }, inventoryDevice);
+    } else {
+      await client.query(
+        `INSERT INTO pos_inventory_movements(
+           movement_id,order_id,store_id,product_id,movement_type,quantity_delta_milli,
+           reference_type,reference_id,order_item_id,balance_after_milli,occurred_at
+         ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         ON CONFLICT(movement_id) DO NOTHING`,
+        [
+          requiredString(movement.id, 'movement.id'), orderId,
+          requiredString(movement.store_id, 'movement.store_id'), requiredString(movement.product_id, 'movement.product_id'),
+          requiredString(movement.movement_type, 'movement.movement_type'),
+          integer(movement.quantity_delta_milli, 'movement.quantity_delta_milli'), movement.reference_type || null,
+          movement.reference_id || null, movement.order_item_id || null,
+          integer(movement.balance_after_milli, 'movement.balance_after_milli'),
+          requiredString(movement.occurred_at, 'movement.occurred_at'),
+        ]
+      );
+    }
   }
 
   return {
@@ -347,3 +359,4 @@ const processPosEvent = async (client, event) => {
 };
 
 module.exports = { processPosEvent, processSaleCompleted };
+const { processInventoryMovementRecorded } = require('./inventoryMovementRecorded.processor');

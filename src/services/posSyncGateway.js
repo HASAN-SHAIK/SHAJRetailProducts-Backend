@@ -114,15 +114,35 @@ const categoryIdentity = (value) => {
   const name = String(value || '').trim();
   return name ? { id: encodeURIComponent(name), name } : null;
 };
+const stockQuantity = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
 
 const loadChangeRecords = async (pool, cursor, fetchLimit) => {
   const since = new Date(cursor.t);
   if (Number.isNaN(since.getTime())) throw Object.assign(new Error('Invalid cursor timestamp.'), { code: 'INVALID_CURSOR' });
 
+  const schema = await pool.query(
+    `SELECT to_regclass('public.pos_customer_mappings') IS NOT NULL AS has_pos_customer_mappings`
+  );
+  const hasPosCustomerMappings = schema.rows[0]?.has_pos_customer_mappings === true;
+  const posMappingsSelect = hasPosCustomerMappings
+    ? `COALESCE((
+                SELECT json_agg(json_build_object(
+                  'id', m.pos_customer_id,
+                  'source_version', m.source_version
+                ) ORDER BY m.pos_customer_id)
+                FROM pos_customer_mappings m
+                WHERE m.canonical_customer_id = c.id
+              ), '[]'::json) AS pos_mappings,`
+    : `'[]'::json AS pos_mappings,`;
+
   const [products, customers] = await Promise.all([
     pool.query(
-      `SELECT id, name, barcode, selling_price, category, stock_quantity, branch_id,
-              hsn_code, gst_percentage,
+      `SELECT id, name, company, barcode, selling_price, mrp, category, stock_quantity, branch_id,
+              hsn_code, gst_percentage, expiry_date,
+              COALESCE(is_weight_based, FALSE) AS is_weight_based,
               COALESCE(is_deleted, FALSE) AS is_deleted,
               COALESCE(updated_at, created_at, NOW()) AS updated_at
        FROM products
@@ -136,14 +156,7 @@ const loadChangeRecords = async (pool, cursor, fetchLimit) => {
               COALESCE(c.credit_limit, 0) AS credit_limit,
               COALESCE(c.current_balance, 0) AS current_balance,
               COALESCE(c.is_active, TRUE) AS is_active,
-              COALESCE((
-                SELECT json_agg(json_build_object(
-                  'id', m.pos_customer_id,
-                  'source_version', m.source_version
-                ) ORDER BY m.pos_customer_id)
-                FROM pos_customer_mappings m
-                WHERE m.canonical_customer_id = c.id
-              ), '[]'::json) AS pos_mappings,
+              ${posMappingsSelect}
               COALESCE(c.updated_at, c.created_at, NOW()) AS updated_at
        FROM customers c
        WHERE COALESCE(c.updated_at, c.created_at, NOW()) >= $1
@@ -200,9 +213,15 @@ const productMessages = (row, branchId = null) => {
     id: `${prefix}:product`, type: 'catalog.product.upsert', schema_version: 1, source: 'central',
     payload: {
       id: String(row.id), category_id: category?.id || null, sku: null, name: row.name,
-      description: null, unit_of_measure: 'unit', tax_code: row.hsn_code || null,
+      company: row.company || null,
+      description: null, unit_of_measure: row.is_weight_based ? 'kg' : 'unit', tax_code: row.hsn_code || null,
       gst_rate_percent: row.gst_percentage === null || row.gst_percentage === undefined ? null : Number(row.gst_percentage),
+      mrp: row.mrp === null || row.mrp === undefined ? null : Number(row.mrp),
+      expiry_date: row.expiry_date || null,
+      is_weight_based: row.is_weight_based === true,
       is_active: !row.is_deleted, allow_manual_price: true, track_inventory: true,
+      store_id: row.branch_id ? String(row.branch_id) : (branchId ? String(branchId) : null),
+      stock_quantity: stockQuantity(row.stock_quantity),
       version, source_updated_at: updatedAt,
     },
   });

@@ -9,6 +9,7 @@ describe('V1 Customers Central to POS change-feed acceptance', () => {
     const updatedAt = new Date('2026-08-15T04:15:00.000Z');
     const tenantPool = {
       query: jest.fn()
+        .mockResolvedValueOnce({ rows: [{ has_pos_customer_mappings: true }] })
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [{
           id: 42,
@@ -54,7 +55,7 @@ describe('V1 Customers Central to POS change-feed acceptance', () => {
       },
     }]);
 
-    const customerQuery = tenantPool.query.mock.calls[1][0];
+    const customerQuery = tenantPool.query.mock.calls[2][0];
     expect(customerQuery).toContain('pos_customer_mappings');
     expect(customerQuery).toContain("'source_version', m.source_version");
     expect(customerQuery).toContain('c.email');
@@ -66,6 +67,7 @@ describe('V1 Customers Central to POS change-feed acceptance', () => {
     const updatedAt = new Date('2026-08-15T04:16:00.000Z');
     const tenantPool = {
       query: jest.fn()
+        .mockResolvedValueOnce({ rows: [{ has_pos_customer_mappings: true }] })
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [{
           id: 99,
@@ -86,5 +88,34 @@ describe('V1 Customers Central to POS change-feed acceptance', () => {
       type: 'customer.upsert',
       payload: { id: '99', canonical_id: '99', pos_mappings: [], status: 'active' },
     });
+  });
+
+  test('continues publishing customers with empty POS mappings when the mapping overlay is absent', async () => {
+    const updatedAt = new Date('2026-08-15T04:17:00.000Z');
+    const tenantPool = {
+      query: jest.fn()
+        .mockResolvedValueOnce({ rows: [{ has_pos_customer_mappings: false }] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{
+          id: 100,
+          name: 'Migration Pending',
+          phone: '9111111111',
+          email: null,
+          tax_id: null,
+          credit_limit: '0',
+          current_balance: '0',
+          is_active: true,
+          pos_mappings: [],
+          updated_at: updatedAt,
+        }] }),
+    };
+
+    const result = await getPosChanges({ tenantPool, limit: 10, branchId: 'branch-1' });
+
+    expect(result.changes[0]).toMatchObject({
+      type: 'customer.upsert',
+      payload: { id: '100', canonical_id: '100', pos_mappings: [], status: 'active' },
+    });
+    expect(tenantPool.query.mock.calls[2][0]).not.toContain('FROM pos_customer_mappings');
   });
 });
