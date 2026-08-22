@@ -4,6 +4,12 @@ const normalizePhone = (value) => {
   return digits || null;
 };
 
+const optionalValue = (payload, snakeKey, camelKey) => {
+  if (Object.prototype.hasOwnProperty.call(payload, snakeKey)) return payload[snakeKey];
+  if (camelKey && Object.prototype.hasOwnProperty.call(payload, camelKey)) return payload[camelKey];
+  return null;
+};
+
 const buildCustomerInput = (payload = {}) => {
   const phone = normalizePhone(payload.phone || payload.mobile || payload.customer_phone);
   const rawAddress =
@@ -23,14 +29,14 @@ const buildCustomerInput = (payload = {}) => {
     name: payload.name || payload.customer_name || null,
     phone,
     mobile: payload.mobile || phone || null,
-    type: payload.type || payload.customer_type || 'retail',
+    type: optionalValue(payload, 'type', 'customer_type'),
     email: payload.email || null,
     shop_name: payload.shop_name || payload.shopName || null,
     gst_number: payload.gst_number || payload.gstNumber || null,
-    credit_limit: payload.credit_limit ?? payload.creditLimit ?? 0,
-    current_balance: payload.current_balance ?? payload.currentBalance ?? null,
+    credit_limit: optionalValue(payload, 'credit_limit', 'creditLimit'),
+    current_balance: optionalValue(payload, 'current_balance', 'currentBalance'),
     notes: payload.notes || null,
-    is_active: payload.is_active !== undefined ? Boolean(payload.is_active) : true,
+    is_active: payload.is_active !== undefined ? Boolean(payload.is_active) : null,
     location: resolvedLocation,
     address: resolvedAddress,
   };
@@ -87,14 +93,18 @@ const createCustomer = async (pool, payload) => {
       input.name,
       input.mobile,
       input.phone,
-      input.type,
+      input.type || 'retail',
       input.email,
       input.shop_name,
       input.gst_number,
-      Number(input.credit_limit || 0),
-      Number.isFinite(Number(input.current_balance)) ? Number(input.current_balance) : 0,
+      input.credit_limit !== null && input.credit_limit !== undefined && Number.isFinite(Number(input.credit_limit))
+        ? Number(input.credit_limit)
+        : 0,
+      input.current_balance !== null && input.current_balance !== undefined && Number.isFinite(Number(input.current_balance))
+        ? Number(input.current_balance)
+        : 0,
       input.notes,
-      input.is_active,
+      input.is_active !== null ? input.is_active : true,
       input.location,
       input.address
     ]
@@ -130,10 +140,14 @@ const updateCustomer = async (pool, id, payload) => {
       input.email,
       input.shop_name,
       input.gst_number,
-      Number.isFinite(Number(input.credit_limit)) ? Number(input.credit_limit) : null,
-      Number.isFinite(Number(input.current_balance)) ? Number(input.current_balance) : null,
+      input.credit_limit !== null && input.credit_limit !== undefined && Number.isFinite(Number(input.credit_limit))
+        ? Number(input.credit_limit)
+        : null,
+      input.current_balance !== null && input.current_balance !== undefined && Number.isFinite(Number(input.current_balance))
+        ? Number(input.current_balance)
+        : null,
       input.notes,
-      payload.is_active !== undefined ? Boolean(payload.is_active) : null,
+      input.is_active,
       input.location,
       input.address,
       id
