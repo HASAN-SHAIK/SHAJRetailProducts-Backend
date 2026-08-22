@@ -37,6 +37,19 @@ describe('V1 Central customer CRUD authority and tenant-global scope', () => {
     expect(updateSql).not.toMatch(/branch_id/i);
   });
 
+  test('partial profile updates preserve omitted type and financial projection fields', async () => {
+    const tenantPool = makePool([
+      result([{ id: 11, name: 'Asha Updated', type: 'wholesale', credit_limit: 750, current_balance: 125 }]),
+    ]);
+
+    await updateCustomer(tenantPool, 11, { name: 'Asha Updated', email: 'asha@example.com' });
+
+    const [, params] = tenantPool.query.mock.calls[0];
+    expect(params[3]).toBeNull();
+    expect(params[7]).toBeNull();
+    expect(params[8]).toBeNull();
+  });
+
   test('customer list is tenant-global across stores and never branch-filtered', async () => {
     const tenantPool = makePool([
       result([
