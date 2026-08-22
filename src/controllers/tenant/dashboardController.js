@@ -193,6 +193,33 @@ const getDashboardOverview = async (req, res) => {
       [start, end, location, branchId]
     );
 
+    const rawRevenueOverviewQuery = tenantPool.query(
+      `SELECT
+         COALESCE(SUM(total_price - COALESCE(returned_amount, 0)), 0)::numeric AS total_revenue,
+         COUNT(*)::int AS total_orders
+       FROM orders
+       WHERE created_at BETWEEN $1 AND $2
+         AND transaction_type = 'sale'
+         AND order_status IN ('completed', 'partially_returned', 'fully_returned')
+         AND ($3::text IS NULL OR location = $3)
+         AND ($4::uuid IS NULL OR branch_id = $4)`,
+      [start, end, location, branchId]
+    );
+
+    const rawTrendQuery = tenantPool.query(
+      `SELECT DATE(created_at) AS date,
+              COALESCE(SUM(total_price - COALESCE(returned_amount, 0)), 0)::numeric AS revenue
+       FROM orders
+       WHERE created_at BETWEEN $1 AND $2
+         AND transaction_type = 'sale'
+         AND order_status IN ('completed', 'partially_returned', 'fully_returned')
+         AND ($3::text IS NULL OR location = $3)
+         AND ($4::uuid IS NULL OR branch_id = $4)
+       GROUP BY DATE(created_at)
+       ORDER BY DATE(created_at) ASC`,
+      [start, end, location, branchId]
+    );
+
     const categoryQuery = tenantPool.query(
       `SELECT p.category AS category_name,
               COALESCE(SUM(GREATEST(oi.quantity - COALESCE(r.returned_qty, 0), 0) * oi.selling_price), 0)::numeric AS revenue
@@ -335,6 +362,8 @@ const getDashboardOverview = async (req, res) => {
       revenueOverviewRes,
       revenueOverviewPrevRes,
       trendRes,
+      rawRevenueOverviewRes,
+      rawTrendRes,
       categoryRes,
       topProductsRes,
       lowStockRes,
@@ -347,6 +376,8 @@ const getDashboardOverview = async (req, res) => {
       revenueOverviewQuery,
       revenueOverviewPrevQuery,
       trendQuery,
+      rawRevenueOverviewQuery,
+      rawTrendQuery,
       categoryQuery,
       topProductsQuery,
       lowStockQuery,
@@ -360,9 +391,14 @@ const getDashboardOverview = async (req, res) => {
     const current = revenueOverviewRes.rows[0];
     const previous = revenueOverviewPrevRes.rows[0];
 
-    const totalRevenue = Number(current.total_revenue || 0);
+    const rawCurrent = rawRevenueOverviewRes.rows[0] || {};
+    const metricsOrders = Number(current.total_orders || 0);
+    const rawOrders = Number(rawCurrent.total_orders || 0);
+    const useRawRevenueFallback = metricsOrders === 0 && rawOrders > 0;
+
+    const totalRevenue = useRawRevenueFallback ? Number(rawCurrent.total_revenue || 0) : Number(current.total_revenue || 0);
     const totalProfit = Number(current.total_profit || 0);
-    const totalOrders = Number(current.total_orders || 0);
+    const totalOrders = useRawRevenueFallback ? rawOrders : metricsOrders;
     const avgOrderValue = totalOrders > 0 ? Math.round((totalRevenue / totalOrders) * 100) / 100 : 0;
 
     const revenueGrowth = percentGrowth(totalRevenue, Number(previous.total_revenue || 0));
@@ -407,7 +443,7 @@ const getDashboardOverview = async (req, res) => {
         profit_growth_percent: profitGrowth,
         order_growth_percent: orderGrowth
       },
-      trend_graph: trendRes.rows.map((row) => ({
+      trend_graph: (useRawRevenueFallback ? rawTrendRes.rows : trendRes.rows).map((row) => ({
         date: row.date,
         revenue: Number(row.revenue || 0)
       })),

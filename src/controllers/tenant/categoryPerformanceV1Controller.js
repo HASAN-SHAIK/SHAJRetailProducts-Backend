@@ -29,6 +29,7 @@ const returnedQuantityJoin = `
 
 const netQuantitySql = `GREATEST(oi.quantity - COALESCE(r.returned_qty, 0), 0)`;
 const revenueSql = `${netQuantitySql} * oi.selling_price`;
+const reportableSaleStatusSql = "('completed', 'partially_returned', 'fully_returned')";
 
 const getCategoryPerformance = async (req, res) => {
   try {
@@ -57,6 +58,7 @@ const getCategoryPerformance = async (req, res) => {
            WHERE o.created_at BETWEEN $1 AND $2
              AND o.location IS NOT NULL
              AND o.transaction_type = 'sale'
+             AND o.order_status IN ${reportableSaleStatusSql}
              AND ($3::text IS NULL OR o.location = $3)
            GROUP BY o.location, ${categoryIdSql}, ${categoryNameSql}
            ORDER BY o.location ASC, revenue DESC`,
@@ -79,6 +81,7 @@ const getCategoryPerformance = async (req, res) => {
              WHERE o.created_at BETWEEN $1 AND $2
                AND o.location IS NOT NULL
                AND o.transaction_type = 'sale'
+               AND o.order_status IN ${reportableSaleStatusSql}
                AND ($3::text IS NULL OR o.location = $3)
              GROUP BY o.location, ${productIdentitySql}, ${categoryIdSql}, ${categoryNameSql}
            ) ranked
@@ -103,6 +106,7 @@ const getCategoryPerformance = async (req, res) => {
              WHERE o.created_at BETWEEN $1 AND $2
                AND o.location IS NOT NULL
                AND o.transaction_type = 'sale'
+               AND o.order_status IN ${reportableSaleStatusSql}
                AND ($3::text IS NULL OR o.location = $3)
              GROUP BY o.location, ${productIdentitySql}, ${categoryIdSql}, ${categoryNameSql}
            ) ranked
@@ -180,6 +184,7 @@ const getCategoryPerformance = async (req, res) => {
          ${returnedQuantityJoin}
          WHERE o.created_at BETWEEN $1 AND $2
            AND o.transaction_type = 'sale'
+           AND o.order_status IN ${reportableSaleStatusSql}
            ${locationPredicate}
          GROUP BY ${categoryIdSql}, ${categoryNameSql}
          ORDER BY revenue DESC`,
@@ -196,6 +201,7 @@ const getCategoryPerformance = async (req, res) => {
          ${returnedQuantityJoin}
          WHERE o.created_at BETWEEN $1 AND $2
            AND o.transaction_type = 'sale'
+           AND o.order_status IN ${reportableSaleStatusSql}
            ${locationPredicate}
          GROUP BY ${productIdentitySql}, ${categoryIdSql}, ${categoryNameSql}
          ORDER BY quantity_sold DESC
@@ -213,6 +219,7 @@ const getCategoryPerformance = async (req, res) => {
          ${returnedQuantityJoin}
          WHERE o.created_at BETWEEN $1 AND $2
            AND o.transaction_type = 'sale'
+           AND o.order_status IN ${reportableSaleStatusSql}
            ${locationPredicate}
          GROUP BY ${productIdentitySql}, ${categoryIdSql}, ${categoryNameSql}
          ORDER BY revenue DESC

@@ -167,6 +167,10 @@ const processSalePartialReturned = async (client, event) => {
     `UPDATE orders SET
        total_paid=GREATEST(0,total_paid-($2::numeric / 100.0)),
        returned_amount=LEAST(total_price,COALESCE(returned_amount,0)+($2::numeric / 100.0)),
+       order_status=CASE
+         WHEN LEAST(total_price,COALESCE(returned_amount,0)+($2::numeric / 100.0)) >= total_price THEN 'fully_returned'
+         ELSE 'partially_returned'
+       END,
        source_version=GREATEST(COALESCE(source_version,0),$3),
        source_event_id=CASE WHEN COALESCE(source_version,0) <= $3 THEN $4 ELSE source_event_id END,
        updated_at=GREATEST(updated_at,COALESCE($5::timestamptz,updated_at))

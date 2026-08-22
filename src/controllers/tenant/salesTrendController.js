@@ -1,5 +1,6 @@
 const { jsonError, jsonOk } = require('../../utils/responses');
 const { getDateRange } = require('../../utils/dateRange');
+const { normalizeBranchId } = require('../../utils/branch');
 
 const formatLabel = (date, groupBy) => {
   if (groupBy === 'hour') {
@@ -31,9 +32,11 @@ const getSalesTrend = async (req, res) => {
       start_date: startDateRaw,
       end_date: endDateRaw,
       location,
+      branch_id: branchIdRaw,
       group_by: groupByRaw
     } = req.query || {};
     const { start, end, range: resolvedRange } = getDateRange(range, startDateRaw, endDateRaw);
+    const branchId = normalizeBranchId(branchIdRaw);
     const groupBy = resolvedRange === 'today' ? 'hour' : 'day';
 
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
@@ -45,17 +48,19 @@ const getSalesTrend = async (req, res) => {
     if (groupByRaw === 'location') {
       const result = await req.tenantPool.query(
         `SELECT o.location AS location,
-                DATE_TRUNC($3, t.created_at) AS period,
-                COALESCE(SUM(t.total_price), 0)::numeric AS revenue
-         FROM transactions t
-         JOIN orders o ON o.id = t.order_id
-         WHERE t.created_at BETWEEN $1 AND $2
+                DATE_TRUNC($3, o.created_at) AS period,
+                COALESCE(SUM(o.total_price - COALESCE(o.returned_amount, 0)), 0)::numeric AS revenue,
+                COUNT(*)::int AS order_count
+         FROM orders o
+         WHERE o.created_at BETWEEN $1 AND $2
            AND o.location IS NOT NULL
            AND o.transaction_type = 'sale'
+           AND o.order_status IN ('completed', 'partially_returned', 'fully_returned')
            AND ($4::text IS NULL OR o.location = $4)
+           AND ($5::uuid IS NULL OR o.branch_id = $5)
          GROUP BY o.location, period
          ORDER BY o.location ASC, period ASC`,
-        [start, end, period, location || null]
+        [start, end, period, location || null, branchId]
       );
 
       const buckets = buildBuckets(start, end, groupBy);
@@ -65,14 +70,18 @@ const getSalesTrend = async (req, res) => {
         if (!byLocation.has(row.location)) {
           byLocation.set(row.location, new Map());
         }
-        byLocation.get(row.location).set(label, Number(row.revenue || 0));
+        byLocation.get(row.location).set(label, {
+          revenue: Number(row.revenue || 0),
+          order_count: Number(row.order_count || 0)
+        });
       }
 
       const groupedTrends = Array.from(byLocation.entries()).map(([loc, revenueMap]) => ({
         location: loc,
         data: buckets.map((bucket) => {
           const label = formatLabel(bucket, groupBy);
-          return { label, revenue: revenueMap.get(label) ?? 0 };
+          const point = revenueMap.get(label) || {};
+          return { label, revenue: point.revenue || 0, order_count: point.order_count || 0 };
         })
       }));
 
@@ -85,31 +94,40 @@ const getSalesTrend = async (req, res) => {
 
     const result = location
       ? await req.tenantPool.query(
-          `SELECT DATE_TRUNC($3, t.created_at) AS period,
-                  COALESCE(SUM(t.total_price), 0)::numeric AS revenue
-           FROM transactions t
-           JOIN orders o ON o.id = t.order_id
-           WHERE t.created_at BETWEEN $1 AND $2
+          `SELECT DATE_TRUNC($3, o.created_at) AS period,
+                  COALESCE(SUM(o.total_price - COALESCE(o.returned_amount, 0)), 0)::numeric AS revenue,
+                  COUNT(*)::int AS order_count
+           FROM orders o
+           WHERE o.created_at BETWEEN $1 AND $2
              AND o.transaction_type = 'sale'
+             AND o.order_status IN ('completed', 'partially_returned', 'fully_returned')
              AND o.location = $4
+             AND ($5::uuid IS NULL OR o.branch_id = $5)
            GROUP BY period
            ORDER BY period ASC`,
-          [start, end, period, location]
+          [start, end, period, location, branchId]
         )
       : await req.tenantPool.query(
           `SELECT DATE_TRUNC($3, created_at) AS period,
-                  COALESCE(SUM(total_price), 0)::numeric AS revenue
-           FROM transactions
+                  COALESCE(SUM(total_price - COALESCE(returned_amount, 0)), 0)::numeric AS revenue,
+                  COUNT(*)::int AS order_count
+           FROM orders
            WHERE created_at BETWEEN $1 AND $2
+             AND transaction_type = 'sale'
+             AND order_status IN ('completed', 'partially_returned', 'fully_returned')
+             AND ($4::uuid IS NULL OR branch_id = $4)
            GROUP BY period
            ORDER BY period ASC`,
-          [start, end, period]
+          [start, end, period, branchId]
         );
 
     const revenueMap = new Map();
     for (const row of result.rows) {
       const label = formatLabel(new Date(row.period), groupBy);
-      revenueMap.set(label, Number(row.revenue || 0));
+      revenueMap.set(label, {
+        revenue: Number(row.revenue || 0),
+        order_count: Number(row.order_count || 0)
+      });
     }
 
     const buckets = buildBuckets(start, end, groupBy);
@@ -117,7 +135,8 @@ const getSalesTrend = async (req, res) => {
       const label = formatLabel(bucket, groupBy);
       return {
         label,
-        revenue: revenueMap.get(label) ?? 0
+        revenue: revenueMap.get(label)?.revenue ?? 0,
+        order_count: revenueMap.get(label)?.order_count ?? 0
       };
     });
 

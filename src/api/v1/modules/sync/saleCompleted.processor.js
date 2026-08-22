@@ -75,7 +75,7 @@ const hasCentralProductId = (value) => centralIntegerId(value) !== null;
 
 const canonicalOrderStatus = (status) => {
   const normalized = String(status || '').trim().toLowerCase();
-  if (normalized === 'confirmed' || normalized === 'completed') return 'completed';
+  if (['confirmed', 'completed', 'paid'].includes(normalized)) return 'completed';
   return normalized || 'pending';
 };
 
@@ -174,11 +174,14 @@ const projectCanonicalOrder = async (client, event, order, receipt, items, actor
       await client.query(
         `INSERT INTO order_items(
            order_id,product_id,quantity,selling_price,discount_amount,gst_percent,
+           purchase_price_snapshot,profit,
            source_item_id,source_product_id,line_no,sku_snapshot,product_name_snapshot,barcode_snapshot,
            quantity_milli,unit_price_minor,source_discount_minor,taxable_minor,gst_rate_bps,tax_minor,line_total_minor,tax_code,
            category_id_snapshot,category_name_snapshot
          ) VALUES(
            $1,$2,($3::numeric / 1000.0),($4::numeric / 100.0),($5::numeric / 100.0),COALESCE($13::numeric / 100.0,0),
+           COALESCE((SELECT purchase_price FROM products WHERE id=$2),0),
+           ((($4::numeric / 100.0) - COALESCE((SELECT purchase_price FROM products WHERE id=$2),0)) * ($3::numeric / 1000.0)) - ($5::numeric / 100.0),
            $6,$7,$8,$9,$10,$11,$3,$4,$5,$12,$13,$14,$15,$16,$17,$18
          )`,
         [

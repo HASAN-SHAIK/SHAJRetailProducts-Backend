@@ -16,6 +16,168 @@ const normalizeLocation = (value) => {
   return text ? text : null;
 };
 
+const completedSaleStatusSql = "('completed', 'partially_returned', 'fully_returned')";
+
+const rawSalesSummarySql = ({ grouped = false, previous = false } = {}) => {
+  const selectLocation = grouped ? 'location,' : '';
+  const locationNotNull = grouped ? 'AND location IS NOT NULL' : '';
+  const datePredicate = previous
+    ? `((created_at BETWEEN $1 AND $2) OR (created_at BETWEEN $3 AND $4))`
+    : `created_at BETWEEN $1 AND $2`;
+  const locationParam = previous ? '$5' : '$3';
+  const branchParam = previous ? '$6' : '$4';
+  const periodCase = previous
+    ? `CASE WHEN created_at BETWEEN $1 AND $2 THEN 'current' ELSE 'previous' END AS period_key,`
+    : '';
+  const selectPeriod = previous ? 'period_key,' : '';
+  const revenueGroupFields = [
+    grouped ? 'location' : null,
+    previous ? 'period_key' : null,
+  ].filter(Boolean);
+  const revenueGroupBy = revenueGroupFields.length > 0 ? `GROUP BY ${revenueGroupFields.join(', ')}` : '';
+  const profitGroupFields = [
+    grouped ? 'o.location' : null,
+    previous ? 'o.period_key' : null,
+  ].filter(Boolean);
+  const profitGroupBy = profitGroupFields.length > 0 ? `GROUP BY ${profitGroupFields.join(', ')}` : '';
+
+  return `WITH orders_filtered AS (
+     SELECT id,location,total_price,returned_amount,${periodCase} created_at
+     FROM orders
+     WHERE ${datePredicate}
+       AND transaction_type = 'sale'
+       AND order_status IN ${completedSaleStatusSql}
+       ${locationNotNull}
+       AND (${locationParam}::text IS NULL OR location = ${locationParam})
+       AND (${branchParam}::uuid IS NULL OR branch_id = ${branchParam})
+   ),
+   returned_items AS (
+     SELECT r.order_id,ori.product_id,SUM(ori.quantity) AS returned_qty
+     FROM order_returns r
+     JOIN order_return_items ori ON ori.return_id = r.id
+     JOIN orders_filtered o ON o.id = r.order_id
+     GROUP BY r.order_id,ori.product_id
+   ),
+   revenue_summary AS (
+     SELECT ${selectLocation}${selectPeriod}
+            COALESCE(SUM(total_price - COALESCE(returned_amount, 0)), 0)::numeric AS total_revenue,
+            COUNT(*)::int AS total_orders
+     FROM orders_filtered
+     ${revenueGroupBy}
+   ),
+   profit_summary AS (
+     SELECT ${grouped ? 'o.location,' : ''}${previous ? 'o.period_key,' : ''}
+            COALESCE(SUM(
+              GREATEST(oi.quantity - COALESCE(ri.returned_qty, 0), 0)
+              * (
+                COALESCE(
+                  NULLIF(oi.profit, 0),
+                  (COALESCE(oi.selling_price, 0) - COALESCE(oi.purchase_price_snapshot, p.purchase_price, 0)) * oi.quantity
+                ) / NULLIF(oi.quantity, 0)
+              )
+            ), 0)::numeric AS total_profit
+     FROM orders_filtered o
+     LEFT JOIN order_items oi ON oi.order_id = o.id
+     LEFT JOIN products p ON p.id = oi.product_id
+     LEFT JOIN returned_items ri ON ri.order_id = o.id AND ri.product_id = oi.product_id
+     ${profitGroupBy}
+   )
+   SELECT ${grouped ? 'r.location,' : ''}${previous ? 'r.period_key,' : ''}
+          r.total_revenue,
+          COALESCE(p.total_profit, 0)::numeric AS total_profit,
+          r.total_orders
+   FROM revenue_summary r
+   LEFT JOIN profit_summary p ON ${[
+     grouped ? 'p.location = r.location' : null,
+     previous ? 'p.period_key = r.period_key' : null,
+   ].filter(Boolean).join(' AND ') || 'TRUE'}`;
+};
+
+const loadRawSalesSummary = async (tenantPool, start, end, location, branchId) => {
+  const result = await tenantPool.query(rawSalesSummarySql(), [start, end, location, branchId]);
+  return result.rows[0] || {};
+};
+
+const loadRawSalesComparison = async (tenantPool, start, end, previousStart, previousEnd, location, branchId) => {
+  const result = await tenantPool.query(rawSalesSummarySql({ previous: true }), [start, end, previousStart, previousEnd, location, branchId]);
+  const byPeriod = new Map(result.rows.map((row) => [row.period_key, row]));
+  return {
+    current: byPeriod.get('current') || {},
+    previous: byPeriod.get('previous') || {},
+  };
+};
+
+const loadRawSalesSummaryByLocation = async (tenantPool, start, end, previousStart, previousEnd, location, branchId) => {
+  const result = await tenantPool.query(
+    `WITH orders_filtered AS (
+       SELECT o.id,
+              COALESCE(NULLIF(o.location, ''), NULLIF(b.location, ''), NULLIF(b.name, ''), o.branch_id::text) AS location,
+              o.total_price,
+              o.returned_amount,
+              CASE WHEN o.created_at BETWEEN $1 AND $2 THEN 'current' ELSE 'previous' END AS period_key
+       FROM orders o
+       LEFT JOIN branches b ON b.id = o.branch_id
+       WHERE ((o.created_at BETWEEN $1 AND $2) OR (o.created_at BETWEEN $3 AND $4))
+         AND o.transaction_type = 'sale'
+         AND o.order_status IN ${completedSaleStatusSql}
+         AND COALESCE(NULLIF(o.location, ''), NULLIF(b.location, ''), NULLIF(b.name, ''), o.branch_id::text) IS NOT NULL
+         AND ($5::text IS NULL OR COALESCE(NULLIF(o.location, ''), NULLIF(b.location, ''), NULLIF(b.name, ''), o.branch_id::text) = $5)
+         AND ($6::uuid IS NULL OR o.branch_id = $6)
+     ),
+     returned_items AS (
+       SELECT r.order_id,ori.product_id,SUM(ori.quantity) AS returned_qty
+       FROM order_returns r
+       JOIN order_return_items ori ON ori.return_id = r.id
+       JOIN orders_filtered o ON o.id = r.order_id
+       GROUP BY r.order_id,ori.product_id
+     ),
+     revenue_summary AS (
+       SELECT location,period_key,
+              COALESCE(SUM(total_price - COALESCE(returned_amount, 0)), 0)::numeric AS total_revenue,
+              COUNT(*)::int AS total_orders
+       FROM orders_filtered
+       GROUP BY location,period_key
+     ),
+     profit_summary AS (
+       SELECT o.location,o.period_key,
+              COALESCE(SUM(
+                GREATEST(oi.quantity - COALESCE(ri.returned_qty, 0), 0)
+                * (
+                  COALESCE(
+                    NULLIF(oi.profit, 0),
+                    (COALESCE(oi.selling_price, 0) - COALESCE(oi.purchase_price_snapshot, p.purchase_price, 0)) * oi.quantity
+                  ) / NULLIF(oi.quantity, 0)
+                )
+              ), 0)::numeric AS total_profit
+       FROM orders_filtered o
+       LEFT JOIN order_items oi ON oi.order_id = o.id
+       LEFT JOIN products p ON p.id = oi.product_id
+       LEFT JOIN returned_items ri ON ri.order_id = o.id AND ri.product_id = oi.product_id
+       GROUP BY o.location,o.period_key
+     )
+     SELECT r.location,r.period_key,r.total_revenue,COALESCE(p.total_profit, 0)::numeric AS total_profit,r.total_orders
+     FROM revenue_summary r
+     LEFT JOIN profit_summary p ON p.location = r.location AND p.period_key = r.period_key`,
+    [start, end, previousStart, previousEnd, location, branchId]
+  );
+  const grouped = new Map();
+  for (const row of result.rows) {
+    if (!grouped.has(row.location)) {
+      grouped.set(row.location, { location: row.location, current: {}, previous: {} });
+    }
+    grouped.get(row.location)[row.period_key === 'previous' ? 'previous' : 'current'] = row;
+  }
+  return Array.from(grouped.values());
+};
+
+const rawSummaryHasOrders = (summary) => Number(summary?.total_orders || 0) > 0;
+
+const summaryFromRow = (row, prefix = '') => ({
+  revenue: Number(row?.[`${prefix}revenue`] ?? row?.total_revenue ?? 0),
+  profit: Number(row?.[`${prefix}profit`] ?? row?.total_profit ?? 0),
+  orders: Number(row?.[`${prefix}orders`] ?? row?.total_orders ?? 0),
+});
+
 const getRevenueOverview = async (
   tenantPool,
   range,
@@ -28,22 +190,28 @@ const getRevenueOverview = async (
   const location = normalizeLocation(locationRaw);
   const branchId = normalizeBranchId(branchIdRaw);
 
-  const result = await tenantPool.query(
-    `SELECT
-       COALESCE(SUM(total_revenue), 0)::numeric AS total_revenue,
-       COALESCE(SUM(total_profit), 0)::numeric AS total_profit,
-       COALESCE(SUM(total_orders), 0)::int AS total_orders
-     FROM tenant_dashboard_metrics
-     WHERE day BETWEEN $1 AND $2
-       AND ($3::text IS NULL OR location = $3)
-       AND ($4::uuid IS NULL OR branch_id = $4)`,
-    [start, end, location, branchId]
-  );
+  const [metricsRes, rawRow] = await Promise.all([
+    tenantPool.query(
+      `SELECT
+         COALESCE(SUM(total_revenue), 0)::numeric AS total_revenue,
+         COALESCE(SUM(total_profit), 0)::numeric AS total_profit,
+         COALESCE(SUM(total_orders), 0)::int AS total_orders
+       FROM tenant_dashboard_metrics
+       WHERE day BETWEEN $1 AND $2
+         AND ($3::text IS NULL OR location = $3)
+         AND ($4::uuid IS NULL OR branch_id = $4)`,
+      [start, end, location, branchId]
+    ),
+    loadRawSalesSummary(tenantPool, start, end, location, branchId)
+  ]);
 
-  const row = result.rows[0] || {};
-  const totalRevenue = Number(row.total_revenue || 0);
-  const totalProfit = Number(row.total_profit || 0);
-  const totalOrders = Number(row.total_orders || 0);
+  const row = metricsRes.rows[0] || {};
+  const metricsOrders = Number(row.total_orders || 0);
+  const rawOrders = Number(rawRow.total_orders || 0);
+  const useRawOrdersFallback = metricsOrders === 0 && rawOrders > 0;
+  const totalRevenue = useRawOrdersFallback ? Number(rawRow.total_revenue || 0) : Number(row.total_revenue || 0);
+  const totalProfit = useRawOrdersFallback ? Number(rawRow.total_profit || 0) : Number(row.total_profit || 0);
+  const totalOrders = useRawOrdersFallback ? rawOrders : metricsOrders;
   const avgOrderValue = totalOrders > 0 ? Math.round((totalRevenue / totalOrders) * 100) / 100 : 0;
 
   return {
@@ -77,7 +245,8 @@ const getGrowthComparison = async (
   const previousStart = new Date(start.getTime() - windowDays * 24 * 60 * 60 * 1000);
 
   if (groupBy === 'location') {
-    const result = await tenantPool.query(
+    const [metricsRes, rawGroups] = await Promise.all([
+      tenantPool.query(
       `SELECT
          location,
          COALESCE(SUM(CASE WHEN day BETWEEN $1 AND $2 THEN total_revenue END), 0)::numeric AS current_revenue,
@@ -93,37 +262,47 @@ const getGrowthComparison = async (
          AND ($6::uuid IS NULL OR branch_id = $6)
        GROUP BY location
        ORDER BY location ASC`,
-      [start, end, previousStart, previousEnd, location, branchId]
-    );
+        [start, end, previousStart, previousEnd, location, branchId]
+      ),
+      loadRawSalesSummaryByLocation(tenantPool, start, end, previousStart, previousEnd, location, branchId)
+    ]);
 
-    const grouped = result.rows.map((row) => {
-      const currentRevenue = Number(row.current_revenue || 0);
-      const currentProfit = Number(row.current_profit || 0);
-      const currentOrders = Number(row.current_orders || 0);
-      const previousRevenue = Number(row.previous_revenue || 0);
-      const previousProfit = Number(row.previous_profit || 0);
-      const previousOrders = Number(row.previous_orders || 0);
+    const rawByLocation = new Map(rawGroups.map((row) => [row.location, row]));
+    const metricLocations = new Set(metricsRes.rows.map((row) => row.location));
+    const rows = [
+      ...metricsRes.rows,
+      ...rawGroups
+        .filter((row) => !metricLocations.has(row.location))
+        .map((row) => ({ location: row.location, current_orders: 0, previous_orders: 0 })),
+    ];
+
+    const grouped = rows.map((row) => {
+      const raw = rawByLocation.get(row.location);
+      const useRawCurrent = Number(row.current_orders || 0) === 0 && rawSummaryHasOrders(raw?.current);
+      const useRawPrevious = Number(row.previous_orders || 0) === 0 && rawSummaryHasOrders(raw?.previous);
+      const current = useRawCurrent ? summaryFromRow(raw.current) : summaryFromRow(row, 'current_');
+      const previous = useRawPrevious ? summaryFromRow(raw.previous) : summaryFromRow(row, 'previous_');
 
       return {
         location: row.location,
         current_period: {
           start_date: start,
           end_date: end,
-          revenue: currentRevenue,
-          profit: currentProfit,
-          orders: currentOrders
+          revenue: current.revenue,
+          profit: current.profit,
+          orders: current.orders
         },
         previous_period: {
           start_date: previousStart,
           end_date: previousEnd,
-          revenue: previousRevenue,
-          profit: previousProfit,
-          orders: previousOrders
+          revenue: previous.revenue,
+          profit: previous.profit,
+          orders: previous.orders
         },
         growth: {
-          revenue_growth_percent: percentGrowth(currentRevenue, previousRevenue),
-          profit_growth_percent: percentGrowth(currentProfit, previousProfit),
-          order_growth_percent: percentGrowth(currentOrders, previousOrders)
+          revenue_growth_percent: percentGrowth(current.revenue, previous.revenue),
+          profit_growth_percent: percentGrowth(current.profit, previous.profit),
+          order_growth_percent: percentGrowth(current.orders, previous.orders)
         }
       };
     });
@@ -131,48 +310,51 @@ const getGrowthComparison = async (
     return { grouped };
   }
 
-  const result = await tenantPool.query(
-    `SELECT
-       COALESCE(SUM(CASE WHEN day BETWEEN $1 AND $2 THEN total_revenue END), 0)::numeric AS current_revenue,
-       COALESCE(SUM(CASE WHEN day BETWEEN $1 AND $2 THEN total_profit END), 0)::numeric AS current_profit,
-       COALESCE(SUM(CASE WHEN day BETWEEN $1 AND $2 THEN total_orders END), 0)::int AS current_orders,
-       COALESCE(SUM(CASE WHEN day BETWEEN $3 AND $4 THEN total_revenue END), 0)::numeric AS previous_revenue,
-       COALESCE(SUM(CASE WHEN day BETWEEN $3 AND $4 THEN total_profit END), 0)::numeric AS previous_profit,
-       COALESCE(SUM(CASE WHEN day BETWEEN $3 AND $4 THEN total_orders END), 0)::int AS previous_orders
-     FROM tenant_dashboard_metrics
-     WHERE day BETWEEN $3 AND $2
-       AND ($5::text IS NULL OR location = $5)
-       AND ($6::uuid IS NULL OR branch_id = $6)`,
-    [start, end, previousStart, previousEnd, location, branchId]
-  );
+  const [metricsRes, raw] = await Promise.all([
+    tenantPool.query(
+      `SELECT
+         COALESCE(SUM(CASE WHEN day BETWEEN $1 AND $2 THEN total_revenue END), 0)::numeric AS current_revenue,
+         COALESCE(SUM(CASE WHEN day BETWEEN $1 AND $2 THEN total_profit END), 0)::numeric AS current_profit,
+         COALESCE(SUM(CASE WHEN day BETWEEN $1 AND $2 THEN total_orders END), 0)::int AS current_orders,
+         COALESCE(SUM(CASE WHEN day BETWEEN $3 AND $4 THEN total_revenue END), 0)::numeric AS previous_revenue,
+         COALESCE(SUM(CASE WHEN day BETWEEN $3 AND $4 THEN total_profit END), 0)::numeric AS previous_profit,
+         COALESCE(SUM(CASE WHEN day BETWEEN $3 AND $4 THEN total_orders END), 0)::int AS previous_orders
+       FROM tenant_dashboard_metrics
+       WHERE day BETWEEN $3 AND $2
+         AND ($5::text IS NULL OR location = $5)
+         AND ($6::uuid IS NULL OR branch_id = $6)`,
+      [start, end, previousStart, previousEnd, location, branchId]
+    ),
+    loadRawSalesComparison(tenantPool, start, end, previousStart, previousEnd, location, branchId)
+  ]);
 
-  const row = result.rows[0] || {};
-  const currentRevenue = Number(row.current_revenue || 0);
-  const currentProfit = Number(row.current_profit || 0);
-  const currentOrders = Number(row.current_orders || 0);
-  const previousRevenue = Number(row.previous_revenue || 0);
-  const previousProfit = Number(row.previous_profit || 0);
-  const previousOrders = Number(row.previous_orders || 0);
+  const row = metricsRes.rows[0] || {};
+  const current = Number(row.current_orders || 0) === 0 && rawSummaryHasOrders(raw.current)
+    ? summaryFromRow(raw.current)
+    : summaryFromRow(row, 'current_');
+  const previous = Number(row.previous_orders || 0) === 0 && rawSummaryHasOrders(raw.previous)
+    ? summaryFromRow(raw.previous)
+    : summaryFromRow(row, 'previous_');
 
   return {
     current_period: {
       start_date: start,
       end_date: end,
-      revenue: currentRevenue,
-      profit: currentProfit,
-      orders: currentOrders
+      revenue: current.revenue,
+      profit: current.profit,
+      orders: current.orders
     },
     previous_period: {
       start_date: previousStart,
       end_date: previousEnd,
-      revenue: previousRevenue,
-      profit: previousProfit,
-      orders: previousOrders
+      revenue: previous.revenue,
+      profit: previous.profit,
+      orders: previous.orders
     },
     growth: {
-      revenue_growth_percent: percentGrowth(currentRevenue, previousRevenue),
-      profit_growth_percent: percentGrowth(currentProfit, previousProfit),
-      order_growth_percent: percentGrowth(currentOrders, previousOrders)
+      revenue_growth_percent: percentGrowth(current.revenue, previous.revenue),
+      profit_growth_percent: percentGrowth(current.profit, previous.profit),
+      order_growth_percent: percentGrowth(current.orders, previous.orders)
     }
   };
 };
@@ -691,32 +873,52 @@ const getLocationSummary = async (
   const previousEnd = new Date(start.getTime() - 1);
   const previousStart = new Date(start.getTime() - windowDays * 24 * 60 * 60 * 1000);
 
-  const result = await tenantPool.query(
-    `SELECT
-       location,
-       COALESCE(SUM(CASE WHEN day BETWEEN $1 AND $2 THEN total_revenue END), 0)::numeric AS total_revenue,
-       COALESCE(SUM(CASE WHEN day BETWEEN $1 AND $2 THEN total_profit END), 0)::numeric AS total_profit,
-       COALESCE(SUM(CASE WHEN day BETWEEN $1 AND $2 THEN total_orders END), 0)::int AS total_orders,
-       COALESCE(SUM(CASE WHEN day BETWEEN $3 AND $4 THEN total_revenue END), 0)::numeric AS previous_revenue
-     FROM tenant_dashboard_metrics
-     WHERE day BETWEEN $3 AND $2
-       AND location IS NOT NULL
-       AND ($5::text IS NULL OR location = $5)
-       AND ($6::uuid IS NULL OR branch_id = $6)
-     GROUP BY location
-     ORDER BY location ASC`,
-    [start, end, previousStart, previousEnd, location, branchId]
-  );
+  const [metricsRes, rawGroups] = await Promise.all([
+    tenantPool.query(
+      `SELECT
+         location,
+         COALESCE(SUM(CASE WHEN day BETWEEN $1 AND $2 THEN total_revenue END), 0)::numeric AS total_revenue,
+         COALESCE(SUM(CASE WHEN day BETWEEN $1 AND $2 THEN total_profit END), 0)::numeric AS total_profit,
+         COALESCE(SUM(CASE WHEN day BETWEEN $1 AND $2 THEN total_orders END), 0)::int AS total_orders,
+         COALESCE(SUM(CASE WHEN day BETWEEN $3 AND $4 THEN total_revenue END), 0)::numeric AS previous_revenue
+       FROM tenant_dashboard_metrics
+       WHERE day BETWEEN $3 AND $2
+         AND location IS NOT NULL
+         AND ($5::text IS NULL OR location = $5)
+         AND ($6::uuid IS NULL OR branch_id = $6)
+       GROUP BY location
+       ORDER BY location ASC`,
+      [start, end, previousStart, previousEnd, location, branchId]
+    ),
+    loadRawSalesSummaryByLocation(tenantPool, start, end, previousStart, previousEnd, location, branchId)
+  ]);
 
-  return result.rows.map((row) => {
-    const totalRevenue = Number(row.total_revenue || 0);
-    const previousRevenue = Number(row.previous_revenue || 0);
+  const rawByLocation = new Map(rawGroups.map((row) => [row.location, row]));
+  const metricLocations = new Set(metricsRes.rows.map((row) => row.location));
+  const rows = [
+    ...metricsRes.rows,
+    ...rawGroups
+      .filter((row) => !metricLocations.has(row.location))
+      .map((row) => ({ location: row.location, total_orders: 0, previous_revenue: 0 })),
+  ];
+
+  return rows.map((row) => {
+    const raw = rawByLocation.get(row.location);
+    const useRawCurrent = Number(row.total_orders || 0) === 0 && rawSummaryHasOrders(raw?.current);
+    const current = useRawCurrent ? summaryFromRow(raw.current) : {
+      revenue: Number(row.total_revenue || 0),
+      profit: Number(row.total_profit || 0),
+      orders: Number(row.total_orders || 0),
+    };
+    const previousRevenue = rawSummaryHasOrders(raw?.previous)
+      ? Number(raw.previous.total_revenue || 0)
+      : Number(row.previous_revenue || 0);
     return {
       location: row.location,
-      total_revenue: totalRevenue,
-      total_profit: Number(row.total_profit || 0),
-      total_orders: Number(row.total_orders || 0),
-      growth_percentage: percentGrowth(totalRevenue, previousRevenue)
+      total_revenue: current.revenue,
+      total_profit: current.profit,
+      total_orders: current.orders,
+      growth_percentage: percentGrowth(current.revenue, previousRevenue)
     };
   });
 };
