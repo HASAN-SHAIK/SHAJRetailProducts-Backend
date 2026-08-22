@@ -1,7 +1,7 @@
 const { asyncHandler } = require('../../shared/errors/asyncHandler');
 const { sendSuccess, sendCreated, sendNoContent } = require('../../shared/dto/apiResponse');
 const { validateRequest } = require('../../shared/middleware/validateRequest');
-const { requireTenantUser } = require('../../shared/middleware/authorizeRoles');
+const { requireAdmin, requireTenantUser } = require('../../shared/middleware/authorizeRoles');
 const { createStaffService } = require('./staff.service');
 const {
   listStaffQuerySchema,
@@ -45,5 +45,6 @@ module.exports = {
   validateStaffId: validateRequest(staffIdParamSchema, 'params'),
   validateCreateStaff: validateRequest(staffBodySchema, 'body'),
   validateUpdateStaff: validateRequest(staffUpdateSchema, 'body'),
+  requireAdmin,
   requireTenantUser,
 };
