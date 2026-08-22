@@ -7,12 +7,13 @@ const walkJs = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((en
   return entry.isFile() && entry.name.endsWith('.js') ? [full] : [];
 });
 
-const BASELINE_INTERPOLATED_QUERY_COUNT = 79;
+const BASELINE_INTERPOLATED_QUERY_COUNT = 80;
 const readSource = (relativePath) => fs.readFileSync(path.join(__dirname, '..', relativePath), 'utf8');
 
 const REVIEWED_STRUCTURAL_EXPRESSION_PATTERNS = [
   /^(dedupeExpr|whereClause|where|branchClause|branchFilterClause|dateFilterOrders|returnedQuantityJoin)$/,
   /^(productNameSql|productIdentitySql|categoryIdSql|categoryNameSql|revenueSql|netQuantitySql|locationPredicate)$/,
+  /^(reportableSaleStatusSql|completedSaleStatusSql)$/,
   /^(barcodeSelect|sort|sortBy|sortColumn|sortOrder|resolvedSort|resolvedAt|whereSql|table|dbIdentifier|placeholders)$/,
   /^(branchA|branchB)$/,
   /^(params|values|shopValues|listParams|updateValues)\.length(?:\s*[+-]\s*\d+)?$/,
@@ -101,6 +102,8 @@ describe('V1 dynamic SQL inventory', () => {
     const orderController = readSource('src/controllers/orderController.js');
     const dataQualityService = readSource('src/services/dataQualityService.js');
     const tenantProvisionService = readSource('src/services/tenantProvisionService.js');
+    const categoryPerformanceController = readSource('src/controllers/tenant/categoryPerformanceV1Controller.js');
+    const dashboardMetrics = readSource('src/services/dashboardMetrics.js');
 
     expect(sharedSort).toContain("const order = sortOrderRaw === 'asc' ? 'ASC' : 'DESC';");
     expect(sharedSort).toContain('const column = allowed[sortKey] || fallback.column;');
@@ -124,5 +127,15 @@ describe('V1 dynamic SQL inventory', () => {
     expect(tenantProvisionService).toContain("const escaped = String(value).replace(/\"/g, '\"\"');");
     expect(tenantProvisionService).toContain('await adminPool.query(`CREATE DATABASE ${dbIdentifier}`);');
     expect(tenantProvisionService).toContain('await adminPool.query(`DROP DATABASE IF EXISTS ${dbIdentifier}`);');
+
+    // Reporting status fragments are fixed source-owned SQL tuples. They are
+    // deliberately not request-derived and changing the tuple forces this
+    // security acceptance to be reviewed again.
+    expect(categoryPerformanceController).toContain(
+      `const reportableSaleStatusSql = "('completed', 'partially_returned', 'fully_returned')";`
+    );
+    expect(dashboardMetrics).toContain(
+      `const completedSaleStatusSql = "('completed', 'partially_returned', 'fully_returned')";`
+    );
   });
 });
