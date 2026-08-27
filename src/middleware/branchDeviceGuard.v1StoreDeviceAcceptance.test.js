@@ -65,3 +65,16 @@ test('inactive device is rejected instead of being silently reactivated', async 
   expect(res.statusCode).toBe(403);
   expect(ensureDeviceRegistration).toHaveBeenCalledWith(expect.objectContaining({ mode: 'validate' }));
 });
+
+test.each([
+  '/api/branches/branch-a/devices',
+  '/api/branches/branch-a/devices/register',
+])('admin device management endpoint %s is not blocked before branchRoutes admin guard', async (originalUrl) => {
+  const next = jest.fn();
+  const res = {};
+
+  await branchDeviceGuard({ ...tenantRequest(), originalUrl }, res, next);
+
+  expect(next).toHaveBeenCalledTimes(1);
+  expect(ensureDeviceRegistration).not.toHaveBeenCalled();
+});

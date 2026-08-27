@@ -5,6 +5,12 @@ const shouldSkipBranchDeviceCheck = (req) => {
   if (!req?.user || req.user?.type !== 'tenant') return true;
   const branchHeader = req.headers['x-branch-id'];
   if (!branchHeader || branchHeader === 'all') return true;
+
+  const path = String(req.originalUrl || req.url || '');
+  if (/\/branches\/[^/]+\/devices(?:\/register)?(?:[?#].*)?$/.test(path)) {
+    return true;
+  }
+
   return false;
 };
 

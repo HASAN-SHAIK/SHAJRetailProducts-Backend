@@ -46,6 +46,7 @@ const supplierRoutes = require('../modules/suppliers/routes');
 const { listUsers, createUser, updateUserRole, updateUserAccess } = require('../controllers/tenant/userController');
 const {
   listRegistrationRequests,
+  createSetupCode,
   approveRegistrationRequest,
   rejectRegistrationRequest,
 } = require('../controllers/posRegistrationController');
@@ -127,6 +128,7 @@ router.get('/users', isAdmin, listUsers);
 router.post('/users', isAdmin, createUser);
 router.patch('/users/:id/role', isAdmin, updateUserRole);
 router.patch('/users/:id/access', isAdmin, updateUserAccess);
+router.post('/pos-registration/setup-codes', isAdmin, createSetupCode);
 router.get('/pos-registration/requests', isAdmin, listRegistrationRequests);
 router.post('/pos-registration/requests/:requestId/approve', isAdmin, approveRegistrationRequest);
 router.post('/pos-registration/requests/:requestId/reject', isAdmin, rejectRegistrationRequest);
