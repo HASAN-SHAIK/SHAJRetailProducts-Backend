@@ -2,6 +2,11 @@ const { ensureDeviceRegistration } = require('./branchDeviceLicensing');
 const { resolveDevice } = require('../configuration/targets');
 
 const poolWith = (handler) => ({ query: jest.fn(handler) });
+const businessIdentity = {
+  store_number: 'STORE-002',
+  pos_no: 'POS-01',
+  touchpoint_id: 'TP-01',
+};
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -10,7 +15,7 @@ beforeEach(() => {
 test('active device cannot be registered on a second branch until the old registration is deactivated', async () => {
   const pool = poolWith(async (sql, params) => {
     if (sql.includes('FROM branches')) {
-      return { rowCount: 1, rows: [{ id: 'branch-b', subscription_plan: 'enterprise', max_devices_allowed: null }] };
+      return { rowCount: 1, rows: [{ id: 'branch-b', store_number: 'STORE-002', subscription_plan: 'enterprise', max_devices_allowed: null, is_active: true }] };
     }
     if (sql.includes('branch_id <> $2') && sql.includes('is_active = TRUE')) {
       expect(params).toEqual(['device-1', 'branch-b']);
@@ -28,6 +33,7 @@ test('active device cannot be registered on a second branch until the old regist
     deviceId: 'device-1',
     userId: 'admin-1',
     mode: 'register',
+    businessIdentity,
   });
 
   expect(result).toEqual(expect.objectContaining({
@@ -42,10 +48,14 @@ test('active device cannot be registered on a second branch until the old regist
 test('device can be explicitly registered on a new branch after the old branch is inactive', async () => {
   const pool = poolWith(async (sql, params) => {
     if (sql.includes('FROM branches')) {
-      return { rowCount: 1, rows: [{ id: 'branch-b', subscription_plan: 'enterprise', max_devices_allowed: null }] };
+      return { rowCount: 1, rows: [{ id: 'branch-b', store_number: 'STORE-002', subscription_plan: 'enterprise', max_devices_allowed: null, is_active: true }] };
     }
     if (sql.includes('branch_id <> $2') && sql.includes('is_active = TRUE')) {
       expect(params).toEqual(['device-1', 'branch-b']);
+      return { rowCount: 0, rows: [] };
+    }
+    if (sql.includes('UPPER(store_number)=$1') && sql.includes('UPPER(pos_no)=$2')) {
+      expect(params).toEqual(['STORE-002', 'POS-01', 'TP-01', 'device-1']);
       return { rowCount: 0, rows: [] };
     }
     if (sql.includes('WHERE branch_id = $1 AND device_id = $2')) {
@@ -54,6 +64,7 @@ test('device can be explicitly registered on a new branch after the old branch i
     if (sql.includes('INSERT INTO branch_devices')) {
       expect(params[0]).toBe('branch-b');
       expect(params[2]).toBe('device-1');
+      expect(params.slice(8, 11)).toEqual(['STORE-002', 'POS-01', 'TP-01']);
       return { rowCount: 1, rows: [] };
     }
     if (sql.includes('INSERT INTO branch_device_logs')) {
@@ -68,9 +79,16 @@ test('device can be explicitly registered on a new branch after the old branch i
     deviceId: 'device-1',
     userId: 'admin-1',
     mode: 'register',
+    businessIdentity,
   });
 
-  expect(result).toEqual({ allowed: true, limit: null });
+  expect(result).toEqual({
+    allowed: true,
+    limit: null,
+    storeNumber: 'STORE-002',
+    posNo: 'POS-01',
+    touchpointId: 'TP-01',
+  });
   expect(pool.query.mock.calls.some(([sql]) => sql.includes('INSERT INTO branch_devices'))).toBe(true);
 });
 
@@ -80,7 +98,7 @@ test('device validation remains compatible before branches is_active migration i
   const pool = {
     query: jest.fn()
       .mockRejectedValueOnce(missingColumn)
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'branch-a', subscription_plan: 'basic', max_devices_allowed: 1, is_active: true }] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'branch-a', store_number: null, subscription_plan: 'basic', max_devices_allowed: 1, is_active: true }] })
       .mockResolvedValueOnce({ rowCount: 0, rows: [] })
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'device-row-1', is_active: true }] })
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }),
@@ -92,7 +110,13 @@ test('device validation remains compatible before branches is_active migration i
     deviceId: 'device-1',
     userId: 'user-1',
     mode: 'validate',
-  })).resolves.toEqual({ allowed: true, limit: 1 });
+  })).resolves.toEqual({
+    allowed: true,
+    limit: 1,
+    storeNumber: '',
+    posNo: '',
+    touchpointId: '',
+  });
   expect(pool.query).toHaveBeenCalledTimes(5);
   expect(pool.query.mock.calls[1][0]).toContain('TRUE AS is_active');
 });

@@ -23,7 +23,7 @@ beforeEach(() => {
 });
 
 test('admin device diagnostics expose licensing, last-seen, and revoked/inactive state', async () => {
-  const branch = { id: 'branch-a', subscription_plan: 'PRO', max_devices_allowed: 3 };
+  const branch = { id: 'branch-a', store_number: 'STORE-001', subscription_plan: 'PRO', max_devices_allowed: 3 };
   const devices = [
     {
       id: 11,
@@ -34,6 +34,9 @@ test('admin device diagnostics expose licensing, last-seen, and revoked/inactive
       ip_address: '10.0.0.10',
       last_login_at: new Date('2026-08-15T21:00:00Z'),
       is_active: true,
+      store_number: 'STORE-001',
+      pos_no: 'POS-01',
+      touchpoint_id: 'TP-01',
       created_at: new Date('2026-08-01T00:00:00Z'),
     },
     {
@@ -45,6 +48,9 @@ test('admin device diagnostics expose licensing, last-seen, and revoked/inactive
       ip_address: '10.0.0.11',
       last_login_at: new Date('2026-08-14T20:00:00Z'),
       is_active: false,
+      store_number: 'STORE-001',
+      pos_no: 'POS-02',
+      touchpoint_id: 'TP-02',
       created_at: new Date('2026-07-01T00:00:00Z'),
     },
   ];
@@ -69,14 +75,14 @@ test('admin device diagnostics expose licensing, last-seen, and revoked/inactive
       branch: expect.objectContaining({ id: 'branch-a', subscription_plan: 'PRO', resolved_limit: 3 }),
       active_count: 1,
       devices: expect.arrayContaining([
-        expect.objectContaining({ device_id: 'pos-active', is_active: true, last_login_at: devices[0].last_login_at }),
-        expect.objectContaining({ device_id: 'pos-revoked', is_active: false, last_login_at: devices[1].last_login_at }),
+        expect.objectContaining({ device_id: 'pos-active', store_number: 'STORE-001', pos_no: 'POS-01', touchpoint_id: 'TP-01', is_active: true, last_login_at: devices[0].last_login_at }),
+        expect.objectContaining({ device_id: 'pos-revoked', store_number: 'STORE-001', pos_no: 'POS-02', touchpoint_id: 'TP-02', is_active: false, last_login_at: devices[1].last_login_at }),
       ]),
     }),
   }));
 });
 
-test('admin registration diagnostics expose lifecycle, branch, terminal, reviewer, and claim timestamps', async () => {
+test('admin registration diagnostics expose lifecycle and full POS business identity', async () => {
   const registration = {
     request_id: 'posreg-1',
     device_id: 'replacement-pos',
@@ -85,7 +91,10 @@ test('admin registration diagnostics expose lifecycle, branch, terminal, reviewe
     os_info: 'linux',
     status: 'CLAIMED',
     branch_id: 'branch-a',
-    terminal_id: 'T-01',
+    store_number: 'STORE-001',
+    pos_no: 'POS-01',
+    touchpoint_id: 'TP-01',
+    terminal_id: 'POS-01',
     requested_at: new Date('2026-08-15T20:00:00Z'),
     reviewed_at: new Date('2026-08-15T20:05:00Z'),
     reviewed_by: 'admin-1',
@@ -94,8 +103,9 @@ test('admin registration diagnostics expose lifecycle, branch, terminal, reviewe
   const tenantPool = {
     query: jest.fn(async (sql) => {
       if (sql.includes('CREATE TABLE IF NOT EXISTS pos_registration_requests')) return { rows: [], rowCount: 0 };
+      if (sql.includes('ALTER TABLE pos_registration_requests ADD COLUMN IF NOT EXISTS')) return { rows: [], rowCount: 0 };
       if (sql.includes('CREATE INDEX IF NOT EXISTS')) return { rows: [], rowCount: 0 };
-      if (sql.includes('SELECT request_id, device_id, installation_id')) return { rows: [registration], rowCount: 1 };
+      if (sql.includes('SELECT request_id,device_id,installation_id')) return { rows: [registration], rowCount: 1 };
       throw new Error(`unexpected SQL: ${sql}`);
     }),
   };
@@ -105,7 +115,11 @@ test('admin registration diagnostics expose lifecycle, branch, terminal, reviewe
 
   expect(res.json).toHaveBeenCalledWith({ requests: [registration] });
   expect(tenantPool.query).toHaveBeenCalledWith(
-    expect.stringContaining('reviewed_by, claimed_at'),
+    expect.stringContaining('store_number,pos_no,touchpoint_id,terminal_id'),
+    []
+  );
+  expect(tenantPool.query).toHaveBeenCalledWith(
+    expect.stringContaining('reviewed_by,claimed_at'),
     []
   );
 });
