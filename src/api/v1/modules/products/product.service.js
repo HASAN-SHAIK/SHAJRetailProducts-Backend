@@ -18,6 +18,23 @@ class ProductService {
     this.branchId = resolveBranch(req);
   }
 
+  async attachInventory(rows) {
+    if (!Array.isArray(rows) || rows.length === 0) return [];
+    if (!this.branchId) return rows.map((row) => toProductDto(row));
+
+    const facts = await this.repo.findBranchInventoryFacts({
+      branchId: this.branchId,
+      productIds: rows.map((row) => row.id),
+    });
+    const factsByProductId = new Map(
+      facts.map((fact) => [String(fact.product_id), fact])
+    );
+
+    return rows.map((row) =>
+      toProductDto(row, factsByProductId.get(String(row.id)) || null, this.branchId)
+    );
+  }
+
   async list(query) {
     const { page, limit, offset } = parsePagination(query);
     const { column, order } = parseSort(query, SORTABLE);
@@ -31,7 +48,7 @@ class ProductService {
       sortOrder: order,
     });
     return {
-      items: rows.map(toProductDto),
+      items: await this.attachInventory(rows),
       page,
       limit,
       total,
@@ -41,13 +58,15 @@ class ProductService {
   async getById(id) {
     const row = await this.repo.findById(id);
     if (!row) throw AppError.notFound('Product not found');
-    return toProductDto(row);
+    const [product] = await this.attachInventory([row]);
+    return product;
   }
 
   async getByBarcode(barcode) {
     const row = await this.repo.findByBarcode(barcode, this.branchId);
     if (!row) throw AppError.notFound('Product not found for barcode');
-    return toProductDto(row);
+    const [product] = await this.attachInventory([row]);
+    return product;
   }
 
   async create(body) {
