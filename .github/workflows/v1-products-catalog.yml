@@ -8,10 +8,12 @@ on:
       - 'src/services/posSyncGateway.v1PricingTaxAcceptance.test.js'
       - 'src/services/productImport.service.js'
       - 'src/services/productImport.v1CatalogAcceptance.test.js'
+      - 'src/api/v1/modules/products/product.dto.js'
       - 'src/api/v1/modules/products/product.service.js'
       - 'src/api/v1/modules/products/product.repository.js'
       - 'src/api/v1/modules/products/product.routes.js'
       - 'src/api/v1/modules/products/product.v1CrudAcceptance.test.js'
+      - 'src/api/v1/modules/products/product.inventoryFactsAcceptance.test.js'
       - 'src/api/v1/modules/sync/posSync.routes.js'
       - 'src/api/v1/modules/sync/posCatalogDeviceContext.js'
       - 'src/api/v1/modules/sync/posCatalogDeviceContext.test.js'
@@ -31,4 +33,4 @@ jobs:
       - name: Install dependencies
         run: npm install --ignore-scripts --no-audit --no-fund
       - name: Run V1 Products/Catalog acceptance
-        run: npx jest src/services/posSyncGateway.v1CatalogAcceptance.test.js src/services/posSyncGateway.v1PricingTaxAcceptance.test.js src/services/productImport.v1CatalogAcceptance.test.js src/api/v1/modules/products/product.v1CrudAcceptance.test.js src/api/v1/modules/sync/posCatalogDeviceContext.test.js --runInBand
+        run: npx jest src/services/posSyncGateway.v1CatalogAcceptance.test.js src/services/posSyncGateway.v1PricingTaxAcceptance.test.js src/services/productImport.v1CatalogAcceptance.test.js src/api/v1/modules/products/product.v1CrudAcceptance.test.js src/api/v1/modules/products/product.inventoryFactsAcceptance.test.js src/api/v1/modules/sync/posCatalogDeviceContext.test.js --runInBand
