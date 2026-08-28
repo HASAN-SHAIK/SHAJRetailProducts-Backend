@@ -10,6 +10,7 @@ const categoryRoutes = require('./modules/categories/category.routes');
 const expenseRoutes = require('./modules/expenses/expense.routes');
 const staffRoutes = require('./modules/staff/staff.routes');
 const purchaseRoutes = require('./modules/purchases/purchase.routes');
+const purchaseReturnRoutes = require('./modules/purchaseReturns/purchaseReturn.routes');
 const saleRoutes = require('./modules/sales/sale.routes');
 const swaggerRoutes = require('./swagger/setup');
 
@@ -24,6 +25,7 @@ apiV1Router.use('/categories', categoryRoutes);
 apiV1Router.use('/expenses', expenseRoutes);
 apiV1Router.use('/staff', staffRoutes);
 apiV1Router.use('/purchases', purchaseRoutes);
+apiV1Router.use('/purchase-returns', purchaseReturnRoutes);
 apiV1Router.use('/sales', saleRoutes);
 apiV1Router.use(apiErrorHandler);
 
