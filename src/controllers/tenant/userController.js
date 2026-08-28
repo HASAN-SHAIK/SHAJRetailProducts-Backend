@@ -27,9 +27,18 @@ const assertBranch = async (pool, branchId) => {
 const listUsers = async (req, res) => {
   try {
     const result = await req.tenantPool.query(
-      `SELECT id, name, email, role, branch_id, all_branch_access, created_at
-       FROM users
-       ORDER BY created_at ASC, id ASC`
+      `SELECT u.id,
+              u.name,
+              u.email,
+              u.role,
+              u.branch_id,
+              u.all_branch_access,
+              b.name AS branch_name,
+              b.store_number,
+              u.created_at
+       FROM users u
+       LEFT JOIN branches b ON b.id = u.branch_id
+       ORDER BY u.created_at ASC, u.id ASC`
     );
     return jsonOk(res, { users: result.rows });
   } catch (error) {

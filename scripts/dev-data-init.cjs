@@ -24,7 +24,10 @@ const singlePosProfile = {
   device_id: 'SINGLE-POS-DTN-01',
   installation_id: 'SINGLE-INSTALL-DTN-01',
   branch_id: branchIds.downtown,
-  terminal_id: 'T01',
+  store_number: 'STORE-001',
+  terminal_id: 'POS-01',
+  pos_no: 'POS-01',
+  touchpoint_id: 'TP-01',
   device_name: 'Single POS Downtown Counter',
   store_name: 'Downtown Hub',
 };
@@ -237,7 +240,7 @@ const seedSystemLedgers = async (client, schema) => {
 
 const seedBranches = async (client, schema) => {
   const branches = [
-    { id: branchIds.downtown, name: 'Downtown Hub', location: 'MG Road', subscription_plan: 'premium', max_devices_allowed: 8, is_active: true },
+    { id: branchIds.downtown, store_number: 'STORE-001', name: 'Downtown Hub', location: 'MG Road', subscription_plan: 'premium', max_devices_allowed: 8, is_active: true },
   ];
 
   for (const branch of branches) await insertRow(client, schema, 'branches', branch);
@@ -252,6 +255,9 @@ const seedBranches = async (client, schema) => {
     ip_address: '127.0.0.1',
     last_login_at: new Date(),
     is_active: true,
+    store_number: profile.store_number,
+    pos_no: profile.pos_no || profile.terminal_id,
+    touchpoint_id: profile.touchpoint_id,
   }));
 
   for (const device of devices) await insertRow(client, schema, 'branch_devices', device);
@@ -265,6 +271,9 @@ const seedBranches = async (client, schema) => {
       device_name: profile.device_name,
       os_info: 'Windows 11',
       terminal_id: profile.terminal_id,
+      store_number: profile.store_number,
+      pos_no: profile.pos_no || profile.terminal_id,
+      touchpoint_id: profile.touchpoint_id,
       status: 'CLAIMED',
       claimed_at: new Date(),
       reviewed_at: new Date(),
@@ -287,8 +296,8 @@ const seedUsers = async (client, schema) => {
   const email = (name) => `${name}@${DEV_TENANT_DOMAIN}`;
   const users = [
     { name: 'Demo Owner', email: email('owner'), password, role: 'admin', branch_id: null, all_branch_access: true },
-    { name: 'Store Manager', email: email('manager'), password, role: 'staff', branch_id: branchIds.downtown, all_branch_access: false },
-    { name: 'Cashier One', email: email('cashier'), password, role: 'staff', branch_id: branchIds.downtown, all_branch_access: false },
+    { name: 'Store Manager', email: email('manager'), password, role: 'manager', branch_id: branchIds.downtown, all_branch_access: false },
+    { name: 'Cashier One', email: email('cashier'), password, role: 'cashier', branch_id: branchIds.downtown, all_branch_access: false },
     { name: 'Inventory Clerk', email: email('inventory'), password, role: 'staff', branch_id: branchIds.downtown, all_branch_access: false },
     { name: 'Returns Desk', email: email('returns'), password, role: 'staff', branch_id: branchIds.downtown, all_branch_access: false },
     { name: 'Purchase Clerk', email: email('purchase'), password, role: 'staff', branch_id: branchIds.downtown, all_branch_access: false },
@@ -338,6 +347,7 @@ const seedPeople = async (client, schema) => {
     { id: '50505050-5050-4050-8050-505050505050', staff_id: staffIds.vikram, month, base_salary: 32000, bonus: 2000, deductions: 0, net_salary: 34000, paid_amount: 17000, pending_amount: 17000, payment_status: 'partial', branch_id: branchIds.downtown },
     { id: '60606060-6060-4060-8060-606060606060', staff_id: staffIds.sana, month, base_salary: 41000, bonus: 1000, deductions: 0, net_salary: 42000, paid_amount: 42000, pending_amount: 0, payment_status: 'paid', branch_id: branchIds.downtown },
     { id: '70707070-7070-4070-8070-707070707070', staff_id: staffIds.joseph, month, base_salary: 26500, bonus: 500, deductions: 0, net_salary: 27000, paid_amount: 0, pending_amount: 27000, payment_status: 'pending', branch_id: branchIds.downtown },
+    { id: '80808080-8080-4080-8080-808080808080', staff_id: staffIds.imran, month, base_salary: 24000, bonus: 0, deductions: 1000, net_salary: 23000, paid_amount: 0, pending_amount: 23000, payment_status: 'pending', branch_id: branchIds.downtown },
   ];
 
   for (const salary of salaries) await insertRow(client, schema, 'salaries', salary);
@@ -583,6 +593,8 @@ const seedExpensesAndAccounting = async (client, schema) => {
     { type: 'operating', name: 'Downtown Store Rent', amount: 45000, description: 'Monthly rent for Downtown branch', category: 'Rent', staff_id: staffIds.anita, payment_method: 'bank', notes: 'Auto debit', date: new Date(), branch_id: branchIds.downtown },
     { type: 'operating', name: 'Electricity Bill', amount: 8200, description: 'Power usage across Downtown counters', category: 'Utilities', staff_id: staffIds.rahul, payment_method: 'online', notes: 'Includes POS counters', date: new Date(Date.now() - 2 * 24 * 3600_000), branch_id: branchIds.downtown },
     { type: 'staff', name: 'Cashier Sales Incentive', amount: 3000, description: 'Weekly sales incentive', category: 'Staff', staff_id: staffIds.meera, payment_method: 'cash', notes: 'Approved by owner', date: new Date(Date.now() - 5 * 24 * 3600_000), branch_id: branchIds.downtown },
+    { type: 'staff', name: 'Rahul Counter Incentive', amount: 2500, description: 'POS counter sales incentive', category: 'Incentive', staff_id: staffIds.rahul, payment_method: 'cash', notes: 'Downtown Hub weekly target', date: new Date(Date.now() - 4 * 24 * 3600_000), branch_id: branchIds.downtown },
+    { type: 'staff', name: 'Anita Travel Reimbursement', amount: 1800, description: 'Store operations travel claim', category: 'Reimbursement', staff_id: staffIds.anita, payment_method: 'online', notes: 'Branch audit visit', date: new Date(Date.now() - 7 * 24 * 3600_000), branch_id: branchIds.downtown },
     { type: 'procurement', name: 'Downtown Packaging Material', amount: 5600, description: 'Carry bags and labels', category: 'Supplies', payment_method: 'cash', notes: 'Single POS store stock', date: new Date(Date.now() - 9 * 24 * 3600_000), branch_id: branchIds.downtown },
     { type: 'operating', name: 'Downtown License Fee', amount: 36000, description: 'Monthly retail counter operating fee', category: 'Rent', staff_id: staffIds.vikram, payment_method: 'bank', notes: 'Retail operating charge', date: new Date(Date.now() - 1 * 24 * 3600_000), branch_id: branchIds.downtown },
     { type: 'operating', name: 'Loading Labour', amount: 12800, description: 'Temporary loading support for bulk dispatch', category: 'Labour', staff_id: staffIds.sana, payment_method: 'cash', notes: 'Two-day dispatch support', date: new Date(Date.now() - 3 * 24 * 3600_000), branch_id: branchIds.downtown },
@@ -590,6 +602,7 @@ const seedExpensesAndAccounting = async (client, schema) => {
     { type: 'operating', name: 'Generator Diesel', amount: 7400, description: 'Backup power fuel', category: 'Utilities', staff_id: staffIds.meera, payment_method: 'cash', notes: 'Monsoon outage buffer', date: new Date(Date.now() - 8 * 24 * 3600_000), branch_id: branchIds.downtown },
     { type: 'procurement', name: 'Barcode Labels', amount: 9200, description: 'Label stock for inbound batches', category: 'Inventory', staff_id: staffIds.joseph, payment_method: 'bank', notes: 'Bulk label roll refill', date: new Date(Date.now() - 11 * 24 * 3600_000), branch_id: branchIds.downtown },
     { type: 'staff', name: 'Late Shift Allowance', amount: 4500, description: 'Late shift allowance', category: 'Staff', staff_id: staffIds.vikram, payment_method: 'cash', notes: 'Holiday weekend shift', date: new Date(Date.now() - 13 * 24 * 3600_000), branch_id: branchIds.downtown },
+    { type: 'staff', name: 'Dispatch Meal Allowance', amount: 1200, description: 'Late dispatch meal allowance', category: 'Allowance', staff_id: staffIds.joseph, payment_method: 'cash', notes: 'Bulk dispatch support', date: new Date(Date.now() - 15 * 24 * 3600_000), branch_id: branchIds.downtown },
   ];
 
   for (const expense of expenses) await insertRow(client, schema, 'expenses', expense);
@@ -694,7 +707,7 @@ const main = async () => {
 
     console.log(`Development data initialized for tenant "${tenant.shop_name}" (${tenant.database_name}).`);
     console.log(`Logins: owner@demo.test, finance@demo.test, manager@demo.test, cashier@demo.test, inventory@demo.test, returns@demo.test, purchase@demo.test / ${DEFAULT_PASSWORD}`);
-    console.log(`Single POS: ${singlePosProfile.name}=localhost:${singlePosProfile.frontendPort}->${singlePosProfile.store_name}/${singlePosProfile.terminal_id} (${singlePosProfile.device_id})`);
+    console.log(`Single POS: ${singlePosProfile.name}=localhost:${singlePosProfile.frontendPort}->${singlePosProfile.store_number}/${singlePosProfile.terminal_id}/${singlePosProfile.touchpoint_id} (${singlePosProfile.device_id})`);
     console.log(`Reset ${tables.length} tenant tables and inserted 1 branch, 1 POS device, 1 claimed POS registration, 7 users, 10 customers, 8 staff, 5 suppliers, 16 products, 12 sales orders, 5 purchase orders, payments, expenses, settings, and compliance seeds.`);
   } catch (error) {
     await client.query('ROLLBACK');

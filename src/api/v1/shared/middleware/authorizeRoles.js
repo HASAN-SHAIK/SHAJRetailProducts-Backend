@@ -12,7 +12,7 @@ const authorizeRoles = (...roles) => (req, res, next) => {
 };
 
 const requireAdmin = authorizeRoles('admin');
-const requireTenantUser = authorizeRoles('admin', 'staff');
+const requireTenantUser = authorizeRoles('admin', 'manager', 'staff');
 
 module.exports = {
   authorizeRoles,

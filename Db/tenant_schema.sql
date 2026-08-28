@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS users (
   name VARCHAR(255) NOT NULL,
   email VARCHAR(255) UNIQUE NOT NULL,
   password TEXT NOT NULL,
-  role VARCHAR(50) CHECK (role IN ('admin', 'staff')),
+  role VARCHAR(50) CHECK (role IN ('admin', 'manager', 'cashier', 'staff')),
   branch_id UUID,
   all_branch_access BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC')
@@ -1302,6 +1302,7 @@ CREATE INDEX IF NOT EXISTS idx_billing_order_items_order_id
 -- Branches (multi-store)
 CREATE TABLE IF NOT EXISTS branches (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  store_number TEXT,
   name TEXT NOT NULL,
   location TEXT,
   subscription_plan TEXT DEFAULT 'basic',
@@ -1311,9 +1312,14 @@ CREATE TABLE IF NOT EXISTS branches (
 );
 
 ALTER TABLE branches
+  ADD COLUMN IF NOT EXISTS store_number TEXT,
   ADD COLUMN IF NOT EXISTS subscription_plan TEXT DEFAULT 'basic',
   ADD COLUMN IF NOT EXISTS max_devices_allowed INTEGER DEFAULT 1,
   ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_branches_store_number
+  ON branches (UPPER(store_number))
+  WHERE store_number IS NOT NULL AND BTRIM(store_number) <> '';
 
 CREATE TABLE IF NOT EXISTS branch_devices (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1326,8 +1332,23 @@ CREATE TABLE IF NOT EXISTS branch_devices (
   ip_address TEXT,
   last_login_at TIMESTAMP,
   is_active BOOLEAN DEFAULT TRUE,
+  store_number TEXT,
+  pos_no TEXT,
+  touchpoint_id TEXT,
   created_at TIMESTAMP DEFAULT NOW()
 );
+
+ALTER TABLE branch_devices
+  ADD COLUMN IF NOT EXISTS store_number TEXT,
+  ADD COLUMN IF NOT EXISTS pos_no TEXT,
+  ADD COLUMN IF NOT EXISTS touchpoint_id TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_branch_devices_business_identity_active
+  ON branch_devices (UPPER(store_number), UPPER(pos_no), UPPER(touchpoint_id))
+  WHERE is_active = TRUE
+    AND store_number IS NOT NULL
+    AND pos_no IS NOT NULL
+    AND touchpoint_id IS NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_branch_devices_branch_device
   ON branch_devices (branch_id, device_id);

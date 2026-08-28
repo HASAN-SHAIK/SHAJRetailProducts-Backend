@@ -4,10 +4,19 @@ const listStaffQuerySchema = Joi.object({
   search: Joi.string().trim().allow(''),
   status: Joi.string().valid('active', 'inactive').allow(''),
   branch_id: Joi.string().uuid().allow(''),
+  staff_id: Joi.string().allow(''),
+  staffId: Joi.string().allow(''),
+  month: Joi.string().pattern(/^\d{4}-\d{2}$/).allow(''),
+  from: Joi.date().iso().allow(''),
+  to: Joi.date().iso().allow(''),
 });
 
 const staffIdParamSchema = Joi.object({
   id: Joi.string().required(),
+});
+
+const salaryIdParamSchema = Joi.object({
+  salaryId: Joi.string().required(),
 });
 
 const staffBodySchema = Joi.object({
@@ -26,6 +35,7 @@ const staffUpdateSchema = staffBodySchema.fork(['staffId', 'name'], (s) => s.opt
 module.exports = {
   listStaffQuerySchema,
   staffIdParamSchema,
+  salaryIdParamSchema,
   staffBodySchema,
   staffUpdateSchema,
 };

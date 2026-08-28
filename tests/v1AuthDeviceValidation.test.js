@@ -25,6 +25,17 @@ describe('V1 tenant auth device authority', () => {
     expect(controller).not.toContain("mode: 'register'");
   });
 
+  test('login refuses a POS branch outside the restricted user scope before issuing a session', () => {
+    const controller = source('src/controllers/authController.js');
+    const forbiddenCheck = controller.indexOf("'POS_DEVICE_BRANCH_FORBIDDEN'");
+    const sessionIssue = controller.indexOf('const session = await issueAuthSession({');
+
+    expect(controller).toContain('const hasAllBranchAccess = (user)');
+    expect(controller).toContain('normalizeBranchScope(user.branch_id) !== normalizeBranchScope(branchId)');
+    expect(forbiddenCheck).toBeGreaterThan(-1);
+    expect(sessionIssue).toBeGreaterThan(forbiddenCheck);
+  });
+
   test('validation mode rejects an unknown device without creating authority', async () => {
     const pool = fakePool([
       { rowCount: 1, rows: [{ id: 'branch-1', subscription_plan: 'enterprise', max_devices_allowed: null, is_active: true }] },

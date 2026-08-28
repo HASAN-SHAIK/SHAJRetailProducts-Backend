@@ -19,6 +19,7 @@ const {
 const response = () => {
   const res = {};
   res.status = jest.fn(() => res);
+  res.set = jest.fn(() => res);
   res.json = jest.fn(() => res);
   return res;
 };
@@ -118,6 +119,10 @@ test('registration status requires the exact token-bound request', async () => {
   mockResolveTenantContext.mockResolvedValue({ tenant: { is_active: true }, tenantPool: pool });
   const res = response();
   await registrationStatus(request({ params: { requestId: 'posreg-1' }, headers: { 'x-pos-tenant-id': 'tenant-a', 'x-pos-registration-token': 'wrong-token' } }), res, jest.fn());
+  expect(res.set).toHaveBeenCalledWith('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  expect(res.set).toHaveBeenCalledWith('Pragma', 'no-cache');
+  expect(res.set).toHaveBeenCalledWith('Expires', '0');
+  expect(res.set).toHaveBeenCalledWith('Surrogate-Control', 'no-store');
   expect(res.status).toHaveBeenCalledWith(404);
   expect(res.json).toHaveBeenCalledWith({ code: 'REGISTRATION_REQUEST_NOT_FOUND' });
 });

@@ -79,6 +79,16 @@ const buildVerifiedSessionUser = (verified) => ({
   store_permissions: verified.store_permissions || getStorePermissions(verified),
 });
 
+const normalizeBranchScope = (value) => {
+  if (value === null || value === undefined || value === '') return null;
+  return String(value).trim() || null;
+};
+
+const hasAllBranchAccess = (user) =>
+  user?.all_branch_access === true ||
+  user?.all_branch_access === 1 ||
+  String(user?.all_branch_access).toLowerCase() === 'true';
+
 const setAccessAuthCookies = (res, accessToken) => {
   setAuthCookie(res, accessToken, DEFAULT_TENANT_COOKIE, getAccessTtlMs());
 };
@@ -191,6 +201,9 @@ const login = async (req, res) => {
     const branchIdRaw = req.body?.branch_id || req.headers['x-branch-id'] || null;
     const branchId = branchIdRaw && branchIdRaw !== 'all' ? branchIdRaw : null;
     const { deviceId, deviceInfo } = sanitizeDeviceContext(req);
+    if (branchId && !hasAllBranchAccess(user) && normalizeBranchScope(user.branch_id) !== normalizeBranchScope(branchId)) {
+      return jsonError(res, 403, 'POS_DEVICE_BRANCH_FORBIDDEN', 'POS device is outside the user branch scope');
+    }
     if (branchId && deviceId) {
       const deviceResult = await ensureDeviceRegistration({
         tenantPool,
