@@ -54,6 +54,98 @@ class ProductRepository {
     return { rows: listRes.rows, total };
   }
 
+  async findBranchInventoryFacts({ branchId, productIds }) {
+    if (!branchId || !Array.isArray(productIds) || productIds.length === 0) return [];
+
+    const normalizedIds = [...new Set(productIds.map((id) => Number(id)).filter(Number.isSafeInteger))];
+    if (normalizedIds.length === 0) return [];
+
+    const res = await this.pool.query(
+      `WITH batch_truth AS (
+         SELECT b.product_id,
+                COALESCE(SUM(COALESCE(b.quantity_remaining, b.quantity)), 0)::numeric AS physical_quantity,
+                COALESCE(SUM(CASE
+                  WHEN b.expiry_date IS NULL OR b.expiry_date >= CURRENT_DATE
+                    THEN COALESCE(b.quantity_remaining, b.quantity)
+                  ELSE 0
+                END), 0)::numeric AS sellable_quantity,
+                COALESCE(SUM(CASE
+                  WHEN b.expiry_date < CURRENT_DATE
+                    THEN COALESCE(b.quantity_remaining, b.quantity)
+                  ELSE 0
+                END), 0)::numeric AS expired_quantity
+         FROM batches b
+         WHERE b.branch_id = $1::uuid
+           AND b.is_deleted = FALSE
+           AND b.product_id = ANY($2::bigint[])
+         GROUP BY b.product_id
+       ),
+       provisional_deficit AS (
+         SELECT a.product_id,
+                (SUM(CASE
+                   WHEN a.source_movement_type = 'sale_issue' THEN a.quantity_milli
+                   WHEN a.source_movement_type = 'sale_return' THEN -a.quantity_milli
+                   ELSE 0
+                 END)::numeric / 1000.0) AS deficit_quantity
+         FROM pos_inventory_batch_allocations a
+         WHERE a.branch_id = $1::uuid
+           AND a.product_id = ANY($2::bigint[])
+           AND a.allocation_kind = 'unallocated'
+         GROUP BY a.product_id
+         HAVING SUM(CASE
+           WHEN a.source_movement_type = 'sale_issue' THEN a.quantity_milli
+           WHEN a.source_movement_type = 'sale_return' THEN -a.quantity_milli
+           ELSE 0
+         END) > 0
+       ),
+       scoped_products AS (
+         SELECT p.id AS product_id,
+                CASE
+                  WHEN COALESCE(p.is_batch_enabled, FALSE) = TRUE THEN COALESCE(bt.physical_quantity, 0)
+                  ELSE COALESCE(p.stock_quantity, 0)
+                END::numeric AS physical_quantity,
+                CASE
+                  WHEN COALESCE(p.is_batch_enabled, FALSE) = TRUE THEN COALESCE(bt.sellable_quantity, 0)
+                  WHEN p.expiry_date IS NOT NULL AND p.expiry_date < CURRENT_DATE THEN 0
+                  ELSE COALESCE(p.stock_quantity, 0)
+                END::numeric AS sellable_quantity,
+                CASE
+                  WHEN COALESCE(p.is_batch_enabled, FALSE) = TRUE THEN COALESCE(bt.expired_quantity, 0)
+                  WHEN p.expiry_date IS NOT NULL AND p.expiry_date < CURRENT_DATE THEN COALESCE(p.stock_quantity, 0)
+                  ELSE 0
+                END::numeric AS expired_quantity,
+                CASE
+                  WHEN COALESCE(p.is_batch_enabled, FALSE) = TRUE THEN COALESCE(pd.deficit_quantity, 0)
+                  ELSE 0
+                END::numeric AS provisional_deficit
+         FROM products p
+         LEFT JOIN batch_truth bt ON bt.product_id = p.id
+         LEFT JOIN provisional_deficit pd ON pd.product_id = p.id
+         WHERE p.is_deleted = FALSE
+           AND p.id = ANY($2::bigint[])
+           AND (
+             (COALESCE(p.is_batch_enabled, FALSE) = FALSE AND p.branch_id = $1::uuid)
+             OR
+             (COALESCE(p.is_batch_enabled, FALSE) = TRUE AND (
+               p.branch_id = $1::uuid
+               OR bt.product_id IS NOT NULL
+               OR pd.product_id IS NOT NULL
+             ))
+           )
+       )
+       SELECT product_id,
+              physical_quantity,
+              sellable_quantity,
+              expired_quantity,
+              provisional_deficit,
+              (sellable_quantity - provisional_deficit)::numeric AS projected_net_quantity
+       FROM scoped_products`,
+      [branchId, normalizedIds]
+    );
+
+    return res.rows;
+  }
+
   async findById(id) {
     const res = await this.pool.query(
       `SELECT * FROM products WHERE id = $1 AND is_deleted = FALSE`,
