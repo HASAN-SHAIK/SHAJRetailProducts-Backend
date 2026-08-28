@@ -5,6 +5,7 @@ const listProductsQuerySchema = Joi.object({
   limit: Joi.number().integer().min(1).max(100).default(20),
   search: Joi.string().trim().allow('').default(''),
   category: Joi.string().trim().allow('').default(''),
+  branch_id: Joi.string().uuid().allow('', null),
   sort_by: Joi.string().valid('name', 'selling_price', 'stock_quantity', 'created_at').default('created_at'),
   sort_order: Joi.string().valid('asc', 'desc').default('desc'),
 });
