@@ -1403,8 +1403,8 @@ const getOrderById = async (req, res) => {
                         o.customer_id,
                         o.customer_phone,
                       u.name AS user_name,
-                      c.name AS customer_name,
-                      c.mobile AS customer_mobile,
+                      COALESCE(c.name, o.customer_name_snapshot) AS customer_name,
+                      COALESCE(c.mobile, o.customer_mobile_snapshot) AS customer_mobile,
                       c.address AS customer_address,
                       COALESCE(t.total_paid, 0)::numeric AS total_paid
                FROM orders o
@@ -1500,13 +1500,13 @@ const getOrderById = async (req, res) => {
               paymentStatus = 'paid';
           }
 
-        const customerDetailsEnabled = Boolean(req.planFeatures?.customer_details_enabled);
+        const hasCustomerDetails = Boolean(orderRow.customer_id || orderRow.customer_name || orderRow.customer_mobile || orderRow.customer_phone);
           res.json({
               order: {
                   id: orderRow.id,
                   order_status: orderRow.order_status,
                   returned_amount: returnedAmount,
-                  customer: customerDetailsEnabled && orderRow.customer_id
+                  customer: hasCustomerDetails
                       ? {
                             id: orderRow.customer_id,
                             name: orderRow.customer_name,
@@ -1545,7 +1545,7 @@ const getOrderById = async (req, res) => {
                 is_gst_enabled: orderRow.is_gst_enabled === true,
                 created_at: orderRow.created_at
             },
-            customer_details_enabled: customerDetailsEnabled
+            customer_details_enabled: hasCustomerDetails
         });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -1583,8 +1583,8 @@ const getAllOrders = async (req, res) => {
                       o.payment_mode,
                       o.is_gst_enabled,
                       o.returned_amount,
-                          c.name AS customer_name,
-                          COALESCE(o.customer_phone, c.mobile) AS customer_phone,
+                          COALESCE(c.name, o.customer_name_snapshot) AS customer_name,
+                          COALESCE(o.customer_phone, c.mobile, o.customer_mobile_snapshot) AS customer_phone,
                           COALESCE(o.product_count, 0)::int AS product_count,
                           COALESCE(o.product_summary, '') AS product_names,
                           COALESCE(t.total_paid, 0)::numeric AS total_paid
@@ -1604,7 +1604,6 @@ const getAllOrders = async (req, res) => {
                   [sinceDate, branchId, resolvedLimit, transactionTypeFilter]
               );
 
-            const customerDetailsEnabled = Boolean(req.planFeatures?.customer_details_enabled);
             const orders = ordersRes.rows.map((order) => {
                 const totalAmount = Number(order.total_amount || 0);
                 const totalPaid = Number(order.total_paid || 0);
@@ -1638,7 +1637,7 @@ const getAllOrders = async (req, res) => {
                       products_summary: productsSummary || `${order.product_count || 0} items`,
                       product_names: productList,
                       product_count: Number(order.product_count || 0),
-                      customer_name: customerDetailsEnabled ? order.customer_name : null,
+                      customer_name: order.customer_name || null,
                       customer_phone: order.customer_phone || null,
                       total_amount: totalAmount,
                       total_paid: totalPaid,
@@ -1658,7 +1657,7 @@ const getAllOrders = async (req, res) => {
             const lastCreatedAt = orders.length ? orders[orders.length - 1].created_at : sinceDate;
             return res.json({
                 orders,
-                customer_details_enabled: customerDetailsEnabled,
+                customer_details_enabled: true,
                 sync: {
                     next_since: lastCreatedAt,
                     received: orders.length
@@ -1760,6 +1759,8 @@ const getAllOrders = async (req, res) => {
                         o.returned_amount,
                         o.customer_id,
                         o.customer_phone,
+                        o.customer_name_snapshot,
+                        o.customer_mobile_snapshot,
                         COALESCE(o.product_count, 0)::int AS product_count,
                         COALESCE(o.product_summary, '') AS product_names,
                         COALESCE(t.total_paid, 0)::numeric AS total_paid
@@ -1777,6 +1778,9 @@ const getAllOrders = async (req, res) => {
                      $6::text IS NULL
                      OR o.id::text ILIKE $6
                      OR c.name ILIKE $6
+                     OR o.customer_name_snapshot ILIKE $6
+                     OR o.customer_phone ILIKE $6
+                     OR o.customer_mobile_snapshot ILIKE $6
                      OR o.product_summary ILIKE $6
                    )
                    AND ($8::text IS NULL OR LOWER(COALESCE(o.transaction_type, '')) = $8)
@@ -1799,8 +1803,8 @@ const getAllOrders = async (req, res) => {
                       b.payment_mode,
                       b.is_gst_enabled,
                       b.returned_amount,
-                      c.name AS customer_name,
-                      COALESCE(b.customer_phone, c.mobile) AS customer_phone,
+                      COALESCE(c.name, b.customer_name_snapshot) AS customer_name,
+                      COALESCE(b.customer_phone, c.mobile, b.customer_mobile_snapshot) AS customer_phone,
                       b.product_count,
                       b.product_names,
                       b.total_paid
@@ -1820,7 +1824,6 @@ const getAllOrders = async (req, res) => {
             return res.status(200).json({ error: "No orders found" });
         }
 
-          const customerDetailsEnabled = Boolean(req.planFeatures?.customer_details_enabled);
         const orders = ordersRes.rows.map((order) => {
             const totalAmount = Number(order.total_amount || 0);
             const totalPaid = Number(order.total_paid || 0);
@@ -1854,7 +1857,7 @@ const getAllOrders = async (req, res) => {
                 products_summary: productsSummary || `${order.product_count || 0} items`,
                 product_names: productList,
                 product_count: Number(order.product_count || 0),
-                    customer_name: customerDetailsEnabled ? order.customer_name : null,
+                    customer_name: order.customer_name || null,
                     customer_phone: order.customer_phone || null,
                     total_amount: totalAmount,
                     total_paid: totalPaid,
@@ -1881,6 +1884,9 @@ const getAllOrders = async (req, res) => {
                    AND (
                      o.id::text ILIKE $3
                      OR c.name ILIKE $3
+                     OR o.customer_name_snapshot ILIKE $3
+                     OR o.customer_phone ILIKE $3
+                     OR o.customer_mobile_snapshot ILIKE $3
                      OR o.product_summary ILIKE $3
                    )`,
                 [start, end, searchValue, branchId, transactionTypeFilter]
@@ -1898,7 +1904,7 @@ const getAllOrders = async (req, res) => {
 
         const response = {
             orders,
-            customer_details_enabled: customerDetailsEnabled,
+            customer_details_enabled: true,
             pagination: {
                 page: resolvedPage,
                 limit: resolvedLimit,

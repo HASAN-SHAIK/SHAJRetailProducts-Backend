@@ -32,27 +32,39 @@ const syncProducts = async (req, res) => {
   let idx = 1;
   const conditions = [];
   if (updatedAfter) {
-    conditions.push(`updated_at > $${idx}`);
+    conditions.push(`p.updated_at > $${idx}`);
     params.push(updatedAfter);
     idx += 1;
   }
   if (branchId) {
-    conditions.push(`(branch_id = $${idx} OR branch_id IS NULL)`);
+    conditions.push(`(p.branch_id = $${idx} OR p.branch_id IS NULL)`);
     params.push(branchId);
     idx += 1;
   }
   const whereBase = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const dataQuery = `
-    SELECT *
-    FROM products
-    ${whereBase}${whereBase ? ' AND ' : ' WHERE '}is_deleted = FALSE
-    ORDER BY updated_at ASC
+    WITH active_batch_expiry AS (
+      SELECT product_id,
+             MIN(expiry_date) FILTER (WHERE expiry_date IS NOT NULL) AS nearest_expiry_date
+      FROM batches
+      WHERE is_deleted = FALSE
+        AND (expiry_date IS NULL OR expiry_date >= CURRENT_DATE)
+        ${branchId ? `AND (branch_id = $${idx - 1} OR branch_id IS NULL)` : ''}
+      GROUP BY product_id
+    )
+    SELECT p.*,
+           COALESCE(abe.nearest_expiry_date, p.expiry_date) AS expiry_date,
+           abe.nearest_expiry_date
+    FROM products p
+    LEFT JOIN active_batch_expiry abe ON abe.product_id = p.id
+    ${whereBase}${whereBase ? ' AND ' : ' WHERE '}p.is_deleted = FALSE
+    ORDER BY p.updated_at ASC
   `;
   const deletedQuery = `
-    SELECT id
-    FROM products
-    ${whereBase}${whereBase ? ' AND ' : ' WHERE '}is_deleted = TRUE
-    ORDER BY updated_at ASC
+    SELECT p.id
+    FROM products p
+    ${whereBase}${whereBase ? ' AND ' : ' WHERE '}p.is_deleted = TRUE
+    ORDER BY p.updated_at ASC
   `;
   const client = await requestPool.connect();
   try {

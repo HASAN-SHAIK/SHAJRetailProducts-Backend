@@ -132,7 +132,9 @@ const getProducts = async (req, res) => {
         if (branchId) {
             productsRes = await requestPool.query(
                 `WITH branch_stock AS (
-                    SELECT bt.product_id, COALESCE(SUM(COALESCE(bt.quantity_remaining, bt.quantity)), 0)::numeric AS stock_quantity
+                    SELECT bt.product_id,
+                           COALESCE(SUM(COALESCE(bt.quantity_remaining, bt.quantity)), 0)::numeric AS stock_quantity,
+                           MIN(bt.expiry_date) FILTER (WHERE bt.expiry_date IS NOT NULL) AS nearest_expiry_date
                     FROM batches bt
                       WHERE bt.branch_id = $1
                         AND bt.is_deleted = FALSE
@@ -149,7 +151,8 @@ const getProducts = async (req, res) => {
                        p.hsn_code,
                        p.gst_percentage,
                        COALESCE(bs.stock_quantity, p.stock_quantity) AS stock_quantity,
-                       p.expiry_date,
+                       COALESCE(bs.nearest_expiry_date, p.expiry_date) AS expiry_date,
+                       bs.nearest_expiry_date,
                        ${barcodeSelect},
                        NULL::int AS min_stock_level,
                        p.created_at
@@ -191,29 +194,39 @@ const getProducts = async (req, res) => {
             );
         } else {
             productsRes = await requestPool.query(
-                `SELECT id,
+                `WITH active_batch_expiry AS (
+                    SELECT product_id,
+                           MIN(expiry_date) FILTER (WHERE expiry_date IS NOT NULL) AS nearest_expiry_date
+                    FROM batches
+                    WHERE is_deleted = FALSE
+                      AND (expiry_date IS NULL OR expiry_date >= CURRENT_DATE)
+                    GROUP BY product_id
+                 )
+                 SELECT p.id,
                         name,
-                        company AS company_name,
-                        category AS category_name,
-                         selling_price,
-                         purchase_price,
-                         mrp,
-                        hsn_code,
-                        gst_percentage,
-                        stock_quantity,
-                        expiry_date,
+                        p.company AS company_name,
+                        p.category AS category_name,
+                         p.selling_price,
+                         p.purchase_price,
+                         p.mrp,
+                        p.hsn_code,
+                        p.gst_percentage,
+                        p.stock_quantity,
+                        COALESCE(abe.nearest_expiry_date, p.expiry_date) AS expiry_date,
+                        abe.nearest_expiry_date,
                         ${barcodeSelect},
                         NULL::int AS min_stock_level,
-                        created_at
-                 FROM products
-                 WHERE is_deleted = FALSE
-                   AND ($1::text IS NULL OR category = $1)
+                        p.created_at
+                 FROM products p
+                 LEFT JOIN active_batch_expiry abe ON abe.product_id = p.id
+                 WHERE p.is_deleted = FALSE
+                   AND ($1::text IS NULL OR p.category = $1)
                    AND (
                      $2::text IS NULL
-                     OR name ILIKE $2
-                     OR company ILIKE $2
+                     OR p.name ILIKE $2
+                     OR p.company ILIKE $2
                    )
-                 ORDER BY ${resolvedSort} ${sortOrder}, created_at DESC
+                 ORDER BY ${resolvedSort} ${sortOrder}, p.created_at DESC
                  LIMIT $3 OFFSET $4`,
                 [categoryValue, searchValue, resolvedLimit, offset]
             );
