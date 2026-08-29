@@ -150,16 +150,24 @@ const getProducts = async (req, res) => {
                        p.mrp,
                        p.hsn_code,
                        p.gst_percentage,
-                       COALESCE(bs.stock_quantity, p.stock_quantity) AS stock_quantity,
+                       CASE
+                         WHEN COALESCE(p.is_batch_enabled, FALSE) = TRUE THEN COALESCE(bs.stock_quantity, 0)
+                         ELSE p.stock_quantity
+                       END AS stock_quantity,
                        COALESCE(bs.nearest_expiry_date, p.expiry_date) AS expiry_date,
                        bs.nearest_expiry_date,
                        ${barcodeSelect},
                        NULL::int AS min_stock_level,
+                       p.is_batch_enabled,
                        p.created_at
                 FROM products p
                 LEFT JOIN branch_stock bs ON bs.product_id = p.id
                 WHERE p.is_deleted = FALSE
-                  AND (bs.product_id IS NOT NULL OR p.branch_id = $1)
+                  AND (
+                    (COALESCE(p.is_batch_enabled, FALSE) = TRUE AND (bs.product_id IS NOT NULL OR p.branch_id = $1))
+                    OR
+                    (COALESCE(p.is_batch_enabled, FALSE) = FALSE AND p.branch_id = $1)
+                  )
                   AND ($2::text IS NULL OR p.category = $2)
                   AND (
                     $3::text IS NULL
@@ -183,7 +191,11 @@ const getProducts = async (req, res) => {
                 FROM products p
                 LEFT JOIN branch_stock bs ON bs.product_id = p.id
                 WHERE p.is_deleted = FALSE
-                  AND (bs.product_id IS NOT NULL OR p.branch_id = $1)
+                  AND (
+                    (COALESCE(p.is_batch_enabled, FALSE) = TRUE AND (bs.product_id IS NOT NULL OR p.branch_id = $1))
+                    OR
+                    (COALESCE(p.is_batch_enabled, FALSE) = FALSE AND p.branch_id = $1)
+                  )
                   AND ($2::text IS NULL OR p.category = $2)
                   AND (
                     $3::text IS NULL
@@ -1180,7 +1192,10 @@ const getProductsCacheDB = async (req, res) => {
                        p.hsn_code,
                        p.gst_percentage,
                        p.is_batch_enabled,
-                       COALESCE(bs.stock_quantity, p.stock_quantity) AS stock_quantity,
+                       CASE
+                         WHEN COALESCE(p.is_batch_enabled, FALSE) = TRUE THEN COALESCE(bs.stock_quantity, 0)
+                         ELSE p.stock_quantity
+                       END AS stock_quantity,
                        p.is_weight_based,
                        p.time_for_delivery,
                        p.expiry_date,
@@ -1189,7 +1204,11 @@ const getProductsCacheDB = async (req, res) => {
                 FROM products p
                 LEFT JOIN branch_stock bs ON bs.product_id = p.id
                 WHERE p.is_deleted = FALSE
-                  AND (bs.product_id IS NOT NULL OR p.branch_id = $1)`,
+                  AND (
+                    (COALESCE(p.is_batch_enabled, FALSE) = TRUE AND (bs.product_id IS NOT NULL OR p.branch_id = $1))
+                    OR
+                    (COALESCE(p.is_batch_enabled, FALSE) = FALSE AND p.branch_id = $1)
+                  )`,
                 [branchId]
               )
             : await requestPool.query(
