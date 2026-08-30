@@ -1,0 +1,56 @@
+name: Test Backend Runtime Health Smoke
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/test-backend-runtime-health-smoke.yml'
+      - 'src/App.js'
+      - 'src/services/readiness.js'
+      - 'src/App.v1ObservabilityAcceptance.test.js'
+      - 'src/middleware/errorHandler.v1ObservabilityAcceptance.test.js'
+      - 'src/middleware/requestCorrelation.v1ObservabilityAcceptance.test.js'
+
+permissions:
+  contents: read
+
+jobs:
+  backend-runtime-health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+      NODE_ENV: test
+      APP_ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Run focused observability acceptance suite
+        run: npx jest src/App.v1ObservabilityAcceptance.test.js src/middleware/errorHandler.v1ObservabilityAcceptance.test.js src/middleware/requestCorrelation.v1ObservabilityAcceptance.test.js --runInBand
+      - name: Start real Express app in isolated runtime
+        run: |
+          node - <<'NODE' > /tmp/backend-runtime.log 2>&1 &
+          process.env.NODE_ENV = 'test';
+          process.env.APP_ENVIRONMENT = 'test';
+          const app = require('./src/App');
+          const server = app.listen(5055, '127.0.0.1', () => {
+            console.log('runtime-smoke-listening http://127.0.0.1:5055');
+          });
+          const shutdown = () => server.close(() => process.exit(0));
+          process.on('SIGTERM', shutdown);
+          process.on('SIGINT', shutdown);
+          NODE
+          echo $! > /tmp/backend-runtime.pid
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:5055/health >/tmp/health.json; then break; fi
+            sleep 1
+          done
+          cat /tmp/backend-runtime.log
+          cat /tmp/health.json
+          node -e "const fs=require('fs'); const b=JSON.parse(fs.readFileSync('/tmp/health.json','utf8')); if(b.status!=='ok'||b.db?.reason!=='not_requested') process.exit(1)"
+          curl -fsS http://127.0.0.1:5055/ | tee /tmp/root.txt
+          grep -F 'SHAJ NextGen Technologies API is running...' /tmp/root.txt
+          kill $(cat /tmp/backend-runtime.pid)
