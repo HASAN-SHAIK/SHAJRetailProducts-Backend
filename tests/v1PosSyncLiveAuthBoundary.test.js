@@ -4,6 +4,12 @@ process.env.NODE_ENV = 'test';
 process.env.APP_ENVIRONMENT = 'test';
 process.env.PUPPETEER_SKIP_DOWNLOAD = 'true';
 
+jest.mock('../src/db', () => ({
+  query: jest.fn(),
+  connect: jest.fn(),
+  end: jest.fn(async () => {}),
+}));
+
 const closeLoadedPool = async (modulePath) => {
   const resolved = require.resolve(modulePath);
   const loaded = require.cache[resolved]?.exports;
@@ -23,7 +29,6 @@ describe('V1 POS sync live machine-auth boundary', () => {
   });
 
   afterAll(async () => {
-    await closeLoadedPool('../src/db');
     await closeLoadedPool('../src/db/masterPool');
     const adminResolved = require.resolve('../src/db/adminPool');
     if (require.cache[adminResolved]) await closeLoadedPool('../src/db/adminPool');
