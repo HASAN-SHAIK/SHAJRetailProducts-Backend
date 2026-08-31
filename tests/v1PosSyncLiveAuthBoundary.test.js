@@ -4,6 +4,14 @@ process.env.NODE_ENV = 'test';
 process.env.APP_ENVIRONMENT = 'test';
 process.env.PUPPETEER_SKIP_DOWNLOAD = 'true';
 
+const closeLoadedPool = async (modulePath) => {
+  const resolved = require.resolve(modulePath);
+  const loaded = require.cache[resolved]?.exports;
+  if (loaded && typeof loaded.end === 'function') {
+    await loaded.end();
+  }
+};
+
 describe('V1 POS sync live machine-auth boundary', () => {
   let server;
 
@@ -12,6 +20,13 @@ describe('V1 POS sync live machine-auth boundary', () => {
       await new Promise((resolve) => server.close(resolve));
       server = null;
     }
+  });
+
+  afterAll(async () => {
+    await closeLoadedPool('../src/db');
+    await closeLoadedPool('../src/db/masterPool');
+    const adminResolved = require.resolve('../src/db/adminPool');
+    if (require.cache[adminResolved]) await closeLoadedPool('../src/db/adminPool');
   });
 
   test('real app listener rejects an unauthenticated POS sync event before request validation', async () => {
