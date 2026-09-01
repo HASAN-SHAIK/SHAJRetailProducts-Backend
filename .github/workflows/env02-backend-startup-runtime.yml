@@ -1,0 +1,80 @@
+name: ENV-02 Backend startup runtime verification
+
+on:
+  push:
+    branches:
+      - test-env02-backend-startup-runtime
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  env02-backend-startup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+      NODE_ENV: test
+      APP_ENVIRONMENT: test
+      APP_PORT: '43102'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Run focused health/readiness acceptance
+        id: focused
+        continue-on-error: true
+        run: npx jest src/App.v1ObservabilityAcceptance.test.js src/middleware/errorHandler.v1ObservabilityAcceptance.test.js src/middleware/requestCorrelation.v1ObservabilityAcceptance.test.js --runInBand
+
+      - name: Run backend test suite
+        id: suite
+        continue-on-error: true
+        run: npm test -- --runInBand
+
+      - name: Start real Express app and verify live HTTP
+        id: runtime
+        if: always()
+        run: |
+          set -euo pipefail
+          node -e "const app=require('./src/App'); const server=app.listen(Number(process.env.APP_PORT),'127.0.0.1',()=>console.log('ENV02_SERVER_LISTENING='+process.env.APP_PORT)); const stop=()=>server.close(()=>process.exit(0)); process.on('SIGTERM',stop); process.on('SIGINT',stop);" > /tmp/env02-server.log 2>&1 &
+          SERVER_PID=$!
+          echo "$SERVER_PID" > /tmp/env02.pid
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+
+          HTTP_CODE=''
+          for attempt in $(seq 1 30); do
+            HTTP_CODE=$(curl -sS -o /tmp/env02-health.json -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/health" || true)
+            if [ "$HTTP_CODE" = '200' ]; then
+              break
+            fi
+            sleep 1
+          done
+
+          echo '--- server log ---'
+          cat /tmp/env02-server.log
+          echo '--- health response ---'
+          cat /tmp/env02-health.json 2>/dev/null || true
+          echo
+          echo "ENV02_HTTP_CODE=$HTTP_CODE"
+
+          test "$HTTP_CODE" = '200'
+          grep -q 'ENV02_SERVER_LISTENING=43102' /tmp/env02-server.log
+          node -e "const fs=require('fs'); const body=JSON.parse(fs.readFileSync('/tmp/env02-health.json','utf8')); if(body.status!=='ok') throw new Error('Expected health status ok'); if(body.db?.reason!=='not_requested') throw new Error('Expected no DB warmup in isolated startup smoke'); console.log('ENV02_HEALTH_STATUS='+body.status); console.log('ENV02_DB_REASON='+body.db.reason);"
+          echo 'ENV02_RUNTIME_PASS=true'
+
+      - name: Record ENV-02 verdict
+        if: always()
+        run: |
+          echo 'ENV02_FOCUSED_OUTCOME=${{ steps.focused.outcome }}'
+          echo 'ENV02_SUITE_OUTCOME=${{ steps.suite.outcome }}'
+          echo 'ENV02_RUNTIME_OUTCOME=${{ steps.runtime.outcome }}'
+          if [ '${{ steps.focused.outcome }}' != 'success' ] || [ '${{ steps.suite.outcome }}' != 'success' ] || [ '${{ steps.runtime.outcome }}' != 'success' ]; then
+            echo 'ENV02_FINAL=FAIL_OR_PARTIAL'
+            exit 1
+          fi
+          echo 'ENV02_FINAL=PASS'
