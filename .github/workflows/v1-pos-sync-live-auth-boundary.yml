@@ -1,0 +1,90 @@
+name: V1 POS sync live auth boundary
+
+on:
+  pull_request:
+    paths:
+      - 'tests/v1PosSyncLiveAuthBoundary.test.js'
+      - 'src/App.js'
+      - 'src/api/v1/modules/sync/posSync.routes.js'
+      - 'src/api/v1/modules/sync/posSyncAuth.js'
+      - '.github/workflows/v1-pos-sync-live-auth-boundary.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: shaj_v1_runtime
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d shaj_v1_runtime"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      NODE_ENV: test
+      APP_ENVIRONMENT: test
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/shaj_v1_runtime
+      MASTER_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/shaj_v1_runtime
+      ADMIN_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/shaj_v1_runtime
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Focused live-listener acceptance
+        run: npx jest tests/v1PosSyncLiveAuthBoundary.test.js --runInBand
+      - name: Relevant POS sync route regression
+        run: npx jest src/api/v1/modules/sync/posSync.routes.test.js --runInBand
+      - name: Independent real runtime HTTP verification
+        shell: bash
+        run: |
+          node <<'NODE'
+          const http = require('http');
+          process.env.NODE_ENV = 'test';
+          process.env.APP_ENVIRONMENT = 'test';
+          const app = require('./src/App');
+          const server = app.listen(0, '127.0.0.1', async () => {
+            try {
+              const { port } = server.address();
+              const body = '{}';
+              const result = await new Promise((resolve, reject) => {
+                const req = http.request({
+                  hostname: '127.0.0.1', port,
+                  path: '/api/v1/sync/events', method: 'POST',
+                  headers: {'content-type':'application/json','content-length':Buffer.byteLength(body)}
+                }, (res) => {
+                  let raw = '';
+                  res.setEncoding('utf8');
+                  res.on('data', (chunk) => raw += chunk);
+                  res.on('end', () => resolve({status: res.statusCode, raw}));
+                });
+                req.on('error', reject);
+                req.end(body);
+              });
+              const parsed = JSON.parse(result.raw);
+              console.log(JSON.stringify({listener:`127.0.0.1:${port}`,status:result.status,body:parsed}));
+              if (result.status !== 401 || parsed.code !== 'POS_SYNC_UNAUTHORIZED' || parsed.message !== 'Missing POS sync credentials') {
+                throw new Error(`unexpected runtime response: ${result.status} ${result.raw}`);
+              }
+              server.close(() => process.exit(0));
+            } catch (error) {
+              console.error(error);
+              server.close(() => process.exit(1));
+            }
+          });
+          NODE
