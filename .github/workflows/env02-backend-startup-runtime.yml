@@ -29,12 +29,18 @@ jobs:
       - name: Run focused health/readiness acceptance
         id: focused
         continue-on-error: true
-        run: npx jest src/App.v1ObservabilityAcceptance.test.js src/middleware/errorHandler.v1ObservabilityAcceptance.test.js src/middleware/requestCorrelation.v1ObservabilityAcceptance.test.js --runInBand
+        run: |
+          set -euo pipefail
+          npx jest src/App.v1ObservabilityAcceptance.test.js src/middleware/errorHandler.v1ObservabilityAcceptance.test.js src/middleware/requestCorrelation.v1ObservabilityAcceptance.test.js --runInBand
+          touch /tmp/env02-focused-pass
 
       - name: Run backend test suite
         id: suite
         continue-on-error: true
-        run: npm test -- --runInBand
+        run: |
+          set -euo pipefail
+          npm test -- --runInBand
+          touch /tmp/env02-suite-pass
 
       - name: Start real Express app and verify live HTTP
         id: runtime
@@ -65,16 +71,17 @@ jobs:
           test "$HTTP_CODE" = '200'
           grep -q 'ENV02_SERVER_LISTENING=43102' /tmp/env02-server.log
           node -e "const fs=require('fs'); const body=JSON.parse(fs.readFileSync('/tmp/env02-health.json','utf8')); if(body.status!=='ok') throw new Error('Expected health status ok'); if(body.db?.reason!=='not_requested') throw new Error('Expected no DB warmup in isolated startup smoke'); console.log('ENV02_HEALTH_STATUS='+body.status); console.log('ENV02_DB_REASON='+body.db.reason);"
+          touch /tmp/env02-runtime-pass
           echo 'ENV02_RUNTIME_PASS=true'
 
       - name: Record ENV-02 verdict
         if: always()
         run: |
+          set -euo pipefail
           echo 'ENV02_FOCUSED_OUTCOME=${{ steps.focused.outcome }}'
           echo 'ENV02_SUITE_OUTCOME=${{ steps.suite.outcome }}'
           echo 'ENV02_RUNTIME_OUTCOME=${{ steps.runtime.outcome }}'
-          if [ '${{ steps.focused.outcome }}' != 'success' ] || [ '${{ steps.suite.outcome }}' != 'success' ] || [ '${{ steps.runtime.outcome }}' != 'success' ]; then
-            echo 'ENV02_FINAL=FAIL_OR_PARTIAL'
-            exit 1
-          fi
+          test -f /tmp/env02-focused-pass
+          test -f /tmp/env02-suite-pass
+          test -f /tmp/env02-runtime-pass
           echo 'ENV02_FINAL=PASS'
