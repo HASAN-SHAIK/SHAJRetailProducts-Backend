@@ -1,0 +1,98 @@
+name: V1 Backend CORS Runtime Cycle A
+
+on:
+  push:
+    branches:
+      - test/v1-backend-cors-runtime-cycle-a
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend-cors-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+      NODE_ENV: test
+      APP_ENVIRONMENT: production
+      APP_PORT: '43121'
+      CORS_ORIGINS: 'https://pos.shajtech.in,https://admin.shajtech.in'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Run focused CORS policy acceptance
+        id: focused
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          npx jest tests/v1SecurityCorsPolicy.test.js --runInBand
+          touch /tmp/cors-focused-pass
+
+      - name: Run relevant Backend security suite
+        id: suite
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          npm test -- --runInBand
+          touch /tmp/cors-suite-pass
+
+      - name: Start real Express app and verify live CORS boundary
+        id: runtime
+        if: always()
+        run: |
+          set -euo pipefail
+          node -e "const app=require('./src/App'); const server=app.listen(Number(process.env.APP_PORT),'127.0.0.1',()=>console.log('CORS_SERVER_LISTENING='+process.env.APP_PORT)); const stop=()=>server.close(()=>process.exit(0)); process.on('SIGTERM',stop); process.on('SIGINT',stop);" > /tmp/cors-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+
+          READY=''
+          for attempt in $(seq 1 30); do
+            READY=$(curl -sS -o /tmp/cors-ready.json -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/health" || true)
+            if [ "$READY" = '200' ]; then break; fi
+            sleep 1
+          done
+          test "$READY" = '200'
+
+          TRUSTED_STATUS=$(curl -sS -D /tmp/cors-trusted.headers -o /tmp/cors-trusted.body -w '%{http_code}' -H 'Origin: https://pos.shajtech.in' "http://127.0.0.1:${APP_PORT}/health")
+          UNTRUSTED_STATUS=$(curl -sS -D /tmp/cors-untrusted.headers -o /tmp/cors-untrusted.body -w '%{http_code}' -H 'Origin: https://evil.example' "http://127.0.0.1:${APP_PORT}/health" || true)
+          MACHINE_STATUS=$(curl -sS -D /tmp/cors-machine.headers -o /tmp/cors-machine.body -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/health")
+
+          TRUSTED_ACAO=$(awk 'BEGIN{IGNORECASE=1} /^access-control-allow-origin:/ {gsub("\r",""); sub(/^[^:]*:[[:space:]]*/,""); print; exit}' /tmp/cors-trusted.headers)
+          UNTRUSTED_ACAO=$(awk 'BEGIN{IGNORECASE=1} /^access-control-allow-origin:/ {gsub("\r",""); sub(/^[^:]*:[[:space:]]*/,""); print; exit}' /tmp/cors-untrusted.headers)
+
+          echo '--- server log ---'
+          cat /tmp/cors-server.log
+          echo "CORS_TRUSTED_STATUS=$TRUSTED_STATUS"
+          echo "CORS_TRUSTED_ACAO=${TRUSTED_ACAO:-absent}"
+          echo "CORS_UNTRUSTED_STATUS=$UNTRUSTED_STATUS"
+          echo "CORS_UNTRUSTED_ACAO=${UNTRUSTED_ACAO:-absent}"
+          echo "CORS_MACHINE_STATUS=$MACHINE_STATUS"
+
+          test "$TRUSTED_STATUS" = '200'
+          test "$TRUSTED_ACAO" = 'https://pos.shajtech.in'
+          test -z "$UNTRUSTED_ACAO"
+          test "$UNTRUSTED_STATUS" != '200'
+          test "$MACHINE_STATUS" = '200'
+          kill -0 "$SERVER_PID"
+          touch /tmp/cors-runtime-pass
+          echo 'CORS_PROCESS_ALIVE_AFTER_REJECTION=true'
+          echo 'CORS_RUNTIME_PASS=true'
+
+      - name: Record scenario verdict gate
+        if: always()
+        run: |
+          set -euo pipefail
+          echo 'CORS_FOCUSED_OUTCOME=${{ steps.focused.outcome }}'
+          echo 'CORS_SUITE_OUTCOME=${{ steps.suite.outcome }}'
+          echo 'CORS_RUNTIME_OUTCOME=${{ steps.runtime.outcome }}'
+          test -f /tmp/cors-focused-pass
+          test -f /tmp/cors-suite-pass
+          test -f /tmp/cors-runtime-pass
+          echo 'CORS_FINAL=PASS'
