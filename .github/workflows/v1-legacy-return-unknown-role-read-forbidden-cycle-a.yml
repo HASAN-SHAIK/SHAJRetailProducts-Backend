@@ -1,0 +1,146 @@
+name: V1 Backend legacy return unknown-role read forbidden Cycle A
+
+on:
+  push:
+    branches:
+      - test-v1/cycle-a-return-unknown-role-read-forbidden-runtime
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: shaj
+          POSTGRES_PASSWORD: shaj
+          POSTGRES_DB: masterdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U shaj -d masterdb"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NODE_ENV: test
+      APP_ENVIRONMENT: test
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+      APP_PORT: '43130'
+      JWT_SECRET: cycle-a-unknown-role-runtime-secret
+      MASTER_DATABASE_URL: postgresql://shaj:shaj@127.0.0.1:5432/masterdb
+      TENANT_DATABASE_URL_TEMPLATE: postgresql://shaj:shaj@127.0.0.1:5432/{db}
+      DB_SSL: 'false'
+      PGPASSWORD: shaj
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert exact source head
+        run: |
+          set -euo pipefail
+          EXPECTED='${{ github.event.pull_request.head.sha || github.sha }}'
+          echo "RETURN_UNKNOWN_ROLE_EXPECTED_HEAD=$EXPECTED"
+          echo "RETURN_UNKNOWN_ROLE_ACTUAL_HEAD=$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Run focused unknown-role permission test
+        run: npx jest tests/v1LegacyReturnUnknownRoleRead.test.js --runInBand
+      - name: Start real Express listener and verify unknown tenant role cannot read return history
+        run: |
+          set -euo pipefail
+          psql -h 127.0.0.1 -U shaj -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE tenant_cycle_a_unknown_role;'
+          psql -h 127.0.0.1 -U shaj -d masterdb -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE TABLE tenants (
+            id text PRIMARY KEY,
+            shop_name text,
+            owner_name text,
+            email text,
+            mobile text,
+            plan_type text,
+            is_active boolean NOT NULL DEFAULT true,
+            addons jsonb NOT NULL DEFAULT '{}'::jsonb,
+            gst_mode text,
+            database_name text NOT NULL
+          );
+          CREATE TABLE plans (id integer PRIMARY KEY, name text NOT NULL);
+          CREATE TABLE subscriptions (
+            id integer PRIMARY KEY,
+            tenant_id text NOT NULL,
+            payment_status text NOT NULL,
+            end_date timestamptz,
+            start_date timestamptz,
+            plan_id integer
+          );
+          INSERT INTO tenants (id, shop_name, owner_name, email, mobile, plan_type, is_active, addons, gst_mode, database_name)
+          VALUES ('tenant-cycle-a-unknown', 'Cycle A Unknown Role Shop', 'Cycle A Owner', 'unknown-role@example.test', '9000000001', 'basic', true, '{}'::jsonb, 'exclusive', 'tenant_cycle_a_unknown_role');
+          INSERT INTO plans (id, name) VALUES (1, 'Basic');
+          INSERT INTO subscriptions (id, tenant_id, payment_status, end_date, start_date, plan_id)
+          VALUES (1, 'tenant-cycle-a-unknown', 'paid', now() + interval '30 days', now() - interval '1 day', 1);
+          SQL
+          psql -h 127.0.0.1 -U shaj -d tenant_cycle_a_unknown_role -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE TABLE cycle_a_return_read_guard (id integer PRIMARY KEY, value text NOT NULL);
+          INSERT INTO cycle_a_return_read_guard (id, value) VALUES (1, 'unknown-role-before-read');
+          SQL
+          BEFORE=$(psql -h 127.0.0.1 -U shaj -d tenant_cycle_a_unknown_role -Atc "SELECT id || '|' || value FROM cycle_a_return_read_guard ORDER BY id")
+          TOKEN=$(node - <<'NODE'
+          const { signTenantToken } = require('./src/utils/jwt');
+          process.stdout.write(signTenantToken({
+            type: 'tenant',
+            tenant_id: 'tenant-cycle-a-unknown',
+            user_id: 'auditor-cycle-a',
+            id: 'auditor-cycle-a',
+            role: 'auditor',
+            name: 'Cycle A Auditor'
+          }, { expiresIn: '10m' }));
+          NODE
+          )
+          node -e "const app=require('./src/App'); const server=app.listen(Number(process.env.APP_PORT),'127.0.0.1',()=>console.log('RETURN_UNKNOWN_ROLE_SERVER_LISTENING='+process.env.APP_PORT)); const stop=()=>server.close(()=>process.exit(0)); process.on('SIGTERM',stop); process.on('SIGINT',stop);" > /tmp/return-unknown-role-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          READY=''
+          for attempt in $(seq 1 30); do
+            READY=$(curl -sS -o /tmp/return-unknown-role-ready.json -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/health" || true)
+            if [ "$READY" = '200' ]; then break; fi
+            sleep 1
+          done
+          test "$READY" = '200'
+          STATUS=$(curl -sS -D /tmp/return-unknown-role.headers -o /tmp/return-unknown-role.body -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/api/returns" \
+            -H "authorization: Bearer $TOKEN" || true)
+          AFTER=$(psql -h 127.0.0.1 -U shaj -d tenant_cycle_a_unknown_role -Atc "SELECT id || '|' || value FROM cycle_a_return_read_guard ORDER BY id")
+          AFTER_STATUS=$(curl -sS -o /tmp/return-unknown-role-after.json -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/health" || true)
+          REQUEST_ID=$(awk 'BEGIN{IGNORECASE=1} /^x-request-id:/ {gsub("\r",""); sub(/^[^:]*:[[:space:]]*/,""); print; exit}' /tmp/return-unknown-role.headers)
+          echo '--- server log ---'
+          cat /tmp/return-unknown-role-server.log
+          echo '--- read response ---'
+          cat /tmp/return-unknown-role.body
+          echo
+          echo "RETURN_UNKNOWN_ROLE_STATUS=$STATUS"
+          echo "RETURN_UNKNOWN_ROLE_REQUEST_ID_PRESENT=$([ -n "$REQUEST_ID" ] && echo true || echo false)"
+          echo "RETURN_UNKNOWN_ROLE_GUARD_BEFORE=$BEFORE"
+          echo "RETURN_UNKNOWN_ROLE_GUARD_AFTER=$AFTER"
+          echo "RETURN_UNKNOWN_ROLE_PROCESS_ALIVE=$(kill -0 "$SERVER_PID" 2>/dev/null && echo true || echo false)"
+          echo "RETURN_UNKNOWN_ROLE_HEALTH_AFTER_STATUS=$AFTER_STATUS"
+          test "$STATUS" = '403'
+          test -n "$REQUEST_ID"
+          test "$BEFORE" = '1|unknown-role-before-read'
+          test "$AFTER" = "$BEFORE"
+          node -e "const fs=require('fs'); const body=JSON.parse(fs.readFileSync('/tmp/return-unknown-role.body','utf8')); if(body.code!=='FORBIDDEN'||body.message!=='Missing required permission: orders:read') throw new Error('unexpected response '+JSON.stringify(body)); console.log('RETURN_UNKNOWN_ROLE_CODE='+body.code);"
+          kill -0 "$SERVER_PID"
+          test "$AFTER_STATUS" = '200'
+          echo 'RETURN_UNKNOWN_ROLE_RUNTIME_PASS=true'
+      - name: Run complete Backend suite
+        run: npm test -- --runInBand
