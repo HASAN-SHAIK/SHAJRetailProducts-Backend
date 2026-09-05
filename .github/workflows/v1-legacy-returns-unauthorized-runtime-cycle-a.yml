@@ -63,7 +63,7 @@ jobs:
           echo "RETURNS_HEALTH_AFTER_STATUS=$AFTER_STATUS"
           test "$RETURNS_STATUS" = '401'
           test -n "$REQUEST_ID"
-          node -e "const fs=require('fs'); const body=JSON.parse(fs.readFileSync('/tmp/returns.body','utf8')); if(body.code!=='UNAUTHORIZED'||body.error!=='Unauthorized') throw new Error('unexpected response '+JSON.stringify(body)); console.log('RETURNS_UNAUTH_CODE='+body.code);"
+          node -e "const fs=require('fs'); const body=JSON.parse(fs.readFileSync('/tmp/returns.body','utf8')); if(body.code!=='UNAUTHORIZED'||body.message!=='Unauthorized') throw new Error('unexpected response '+JSON.stringify(body)); console.log('RETURNS_UNAUTH_CODE='+body.code);"
           kill -0 "$SERVER_PID"
           test "$AFTER_STATUS" = '200'
           echo 'RETURNS_RUNTIME_PASS=true'
