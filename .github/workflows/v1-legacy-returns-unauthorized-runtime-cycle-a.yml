@@ -13,11 +13,27 @@ jobs:
   certify:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: shaj
+          POSTGRES_PASSWORD: shaj
+          POSTGRES_DB: shaj_cycle_a
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U shaj -d shaj_cycle_a"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       NODE_ENV: test
       APP_ENVIRONMENT: test
       PUPPETEER_SKIP_DOWNLOAD: 'true'
       APP_PORT: '43127'
+      DATABASE_URL: postgresql://shaj:shaj@127.0.0.1:5432/shaj_cycle_a
+      DB_SSL: 'false'
     steps:
       - uses: actions/checkout@v4
         with:
