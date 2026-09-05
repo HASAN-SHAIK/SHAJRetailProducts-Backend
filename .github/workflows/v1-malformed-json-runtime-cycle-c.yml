@@ -35,20 +35,10 @@ jobs:
       - name: Install locked dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Run focused malformed JSON acceptance
-        id: focused
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          npx jest tests/v1MalformedJsonRuntime.test.js --runInBand
+        run: npx jest tests/v1MalformedJsonRuntime.test.js --runInBand
       - name: Run complete Backend suite
-        id: suite
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          npm test -- --runInBand
+        run: npm test -- --runInBand
       - name: Start real Express listener and verify malformed JSON recovery
-        id: runtime
-        if: always()
         run: |
           set -euo pipefail
           node -e "const app=require('./src/App'); const server=app.listen(Number(process.env.APP_PORT),'127.0.0.1',()=>console.log('MALFORMED_JSON_SERVER_LISTENING='+process.env.APP_PORT)); const stop=()=>server.close(()=>process.exit(0)); process.on('SIGTERM',stop); process.on('SIGINT',stop);" > /tmp/malformed-json-server.log 2>&1 &
@@ -84,14 +74,5 @@ jobs:
           kill -0 "$SERVER_PID"
           test "$AFTER_STATUS" = '200'
           echo 'MALFORMED_JSON_RUNTIME_PASS=true'
-      - name: Record scenario verdict gate
-        if: always()
-        run: |
-          set -euo pipefail
-          echo 'MALFORMED_JSON_FOCUSED_OUTCOME=${{ steps.focused.outcome }}'
-          echo 'MALFORMED_JSON_SUITE_OUTCOME=${{ steps.suite.outcome }}'
-          echo 'MALFORMED_JSON_RUNTIME_OUTCOME=${{ steps.runtime.outcome }}'
-          test '${{ steps.focused.outcome }}' = 'success'
-          test '${{ steps.suite.outcome }}' = 'success'
-          test '${{ steps.runtime.outcome }}' = 'success'
-          echo 'MALFORMED_JSON_FINAL=PASS'
+      - name: Record scenario verdict
+        run: echo 'MALFORMED_JSON_FINAL=PASS'
