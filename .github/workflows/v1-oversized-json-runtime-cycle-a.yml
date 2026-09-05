@@ -43,6 +43,7 @@ jobs:
       - name: Run complete Backend suite
         run: npm test -- --runInBand
       - name: Start real Express listener and verify oversized JSON recovery
+        if: always()
         run: |
           set -euo pipefail
           node -e "const app=require('./src/App'); const server=app.listen(Number(process.env.APP_PORT),'127.0.0.1',()=>console.log('OVERSIZED_JSON_SERVER_LISTENING='+process.env.APP_PORT)); const stop=()=>server.close(()=>process.exit(0)); process.on('SIGTERM',stop); process.on('SIGINT',stop);" > /tmp/oversized-json-server.log 2>&1 &
@@ -100,5 +101,3 @@ jobs:
           kill -0 "$SERVER_PID"
           test "$AFTER_STATUS" = '200'
           echo 'OVERSIZED_JSON_RUNTIME_PASS=true'
-      - name: Record scenario verdict
-        run: echo 'OVERSIZED_JSON_FINAL=PASS'
