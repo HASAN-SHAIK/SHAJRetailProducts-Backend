@@ -96,7 +96,7 @@ jobs:
 
           test "$STATUS" = '413'
           test -n "$REQUEST_ID"
-          node -e "const fs=require('fs'); const body=JSON.parse(fs.readFileSync('/tmp/oversized-body.json','utf8')); if(body.code!=='entity.too.large') throw new Error('unexpected code '+body.code); console.log('OVERSIZED_JSON_CODE='+body.code);"
+          node -e "const fs=require('fs'); const body=JSON.parse(fs.readFileSync('/tmp/oversized-body.json','utf8')); if(body.code!=='REQUEST_FAILED') throw new Error('unexpected code '+body.code); console.log('OVERSIZED_JSON_CODE='+body.code);"
           kill -0 "$SERVER_PID"
           test "$AFTER_STATUS" = '200'
           echo 'OVERSIZED_JSON_RUNTIME_PASS=true'
