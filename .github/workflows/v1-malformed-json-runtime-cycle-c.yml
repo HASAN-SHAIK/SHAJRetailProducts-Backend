@@ -40,14 +40,12 @@ jobs:
         run: |
           set -euo pipefail
           npx jest tests/v1MalformedJsonRuntime.test.js --runInBand
-          touch /tmp/malformed-json-focused-pass
       - name: Run complete Backend suite
         id: suite
         continue-on-error: true
         run: |
           set -euo pipefail
           npm test -- --runInBand
-          touch /tmp/malformed-json-suite-pass
       - name: Start real Express listener and verify malformed JSON recovery
         id: runtime
         if: always()
@@ -85,7 +83,6 @@ jobs:
           node -e "const fs=require('fs'); const body=JSON.parse(fs.readFileSync('/tmp/malformed-json.body','utf8')); if(body.code!=='REQUEST_FAILED') throw new Error('unexpected code '+body.code); console.log('MALFORMED_JSON_CODE='+body.code);"
           kill -0 "$SERVER_PID"
           test "$AFTER_STATUS" = '200'
-          touch /tmp/malformed-json-runtime-pass
           echo 'MALFORMED_JSON_RUNTIME_PASS=true'
       - name: Record scenario verdict gate
         if: always()
@@ -94,7 +91,7 @@ jobs:
           echo 'MALFORMED_JSON_FOCUSED_OUTCOME=${{ steps.focused.outcome }}'
           echo 'MALFORMED_JSON_SUITE_OUTCOME=${{ steps.suite.outcome }}'
           echo 'MALFORMED_JSON_RUNTIME_OUTCOME=${{ steps.runtime.outcome }}'
-          test -f /tmp/malformed-json-focused-pass
-          test -f /tmp/malformed-json-suite-pass
-          test -f /tmp/malformed-json-runtime-pass
+          test '${{ steps.focused.outcome }}' = 'success'
+          test '${{ steps.suite.outcome }}' = 'success'
+          test '${{ steps.runtime.outcome }}' = 'success'
           echo 'MALFORMED_JSON_FINAL=PASS'
