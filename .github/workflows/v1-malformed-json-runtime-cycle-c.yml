@@ -1,0 +1,100 @@
+name: V1 Backend malformed JSON runtime Cycle C
+
+on:
+  push:
+    branches:
+      - test/v1-malformed-json-runtime-cycle-c
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NODE_ENV: test
+      APP_ENVIRONMENT: test
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+      APP_PORT: '43124'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Assert exact source head
+        run: |
+          set -euo pipefail
+          echo "MALFORMED_JSON_EXPECTED_HEAD=${GITHUB_SHA}"
+          echo "MALFORMED_JSON_ACTUAL_HEAD=$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Run focused malformed JSON acceptance
+        id: focused
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          npx jest tests/v1MalformedJsonRuntime.test.js --runInBand
+          touch /tmp/malformed-json-focused-pass
+      - name: Run complete Backend suite
+        id: suite
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          npm test -- --runInBand
+          touch /tmp/malformed-json-suite-pass
+      - name: Start real Express listener and verify malformed JSON recovery
+        id: runtime
+        if: always()
+        run: |
+          set -euo pipefail
+          node -e "const app=require('./src/App'); const server=app.listen(Number(process.env.APP_PORT),'127.0.0.1',()=>console.log('MALFORMED_JSON_SERVER_LISTENING='+process.env.APP_PORT)); const stop=()=>server.close(()=>process.exit(0)); process.on('SIGTERM',stop); process.on('SIGINT',stop);" > /tmp/malformed-json-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+
+          READY=''
+          for attempt in $(seq 1 30); do
+            READY=$(curl -sS -o /tmp/malformed-json-ready.json -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/health" || true)
+            if [ "$READY" = '200' ]; then break; fi
+            sleep 1
+          done
+          test "$READY" = '200'
+
+          MALFORMED='{"event":'
+          MALFORMED_STATUS=$(curl -sS -D /tmp/malformed-json.headers -o /tmp/malformed-json.body -w '%{http_code}' -X POST -H 'Content-Type: application/json' --data-binary "$MALFORMED" "http://127.0.0.1:${APP_PORT}/api/v1/sync/events" || true)
+          AFTER_STATUS=$(curl -sS -o /tmp/malformed-json-after.json -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/health" || true)
+          REQUEST_ID=$(awk 'BEGIN{IGNORECASE=1} /^x-request-id:/ {gsub("\r",""); sub(/^[^:]*:[[:space:]]*/,""); print; exit}' /tmp/malformed-json.headers)
+
+          echo '--- server log ---'
+          cat /tmp/malformed-json-server.log
+          echo '--- malformed response ---'
+          cat /tmp/malformed-json.body
+          echo
+          echo "MALFORMED_JSON_STATUS=$MALFORMED_STATUS"
+          echo "MALFORMED_JSON_REQUEST_ID_PRESENT=$([ -n "$REQUEST_ID" ] && echo true || echo false)"
+          echo "MALFORMED_JSON_PROCESS_ALIVE=$(kill -0 "$SERVER_PID" 2>/dev/null && echo true || echo false)"
+          echo "MALFORMED_JSON_HEALTH_AFTER_STATUS=$AFTER_STATUS"
+
+          test "$MALFORMED_STATUS" = '400'
+          test -n "$REQUEST_ID"
+          node -e "const fs=require('fs'); const body=JSON.parse(fs.readFileSync('/tmp/malformed-json.body','utf8')); if(body.code!=='REQUEST_FAILED') throw new Error('unexpected code '+body.code); console.log('MALFORMED_JSON_CODE='+body.code);"
+          kill -0 "$SERVER_PID"
+          test "$AFTER_STATUS" = '200'
+          touch /tmp/malformed-json-runtime-pass
+          echo 'MALFORMED_JSON_RUNTIME_PASS=true'
+      - name: Record scenario verdict gate
+        if: always()
+        run: |
+          set -euo pipefail
+          echo 'MALFORMED_JSON_FOCUSED_OUTCOME=${{ steps.focused.outcome }}'
+          echo 'MALFORMED_JSON_SUITE_OUTCOME=${{ steps.suite.outcome }}'
+          echo 'MALFORMED_JSON_RUNTIME_OUTCOME=${{ steps.runtime.outcome }}'
+          test -f /tmp/malformed-json-focused-pass
+          test -f /tmp/malformed-json-suite-pass
+          test -f /tmp/malformed-json-runtime-pass
+          echo 'MALFORMED_JSON_FINAL=PASS'
