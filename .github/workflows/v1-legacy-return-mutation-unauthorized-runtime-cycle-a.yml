@@ -1,0 +1,98 @@
+name: V1 Backend legacy return mutation unauthorized runtime Cycle A
+
+on:
+  push:
+    branches:
+      - test/v1-legacy-return-mutation-unauthorized-runtime-cycle-a
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: shaj
+          POSTGRES_PASSWORD: shaj
+          POSTGRES_DB: shaj_cycle_a
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U shaj -d shaj_cycle_a"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NODE_ENV: test
+      APP_ENVIRONMENT: test
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+      APP_PORT: '43128'
+      DATABASE_URL: postgresql://shaj:shaj@127.0.0.1:5432/shaj_cycle_a
+      DB_SSL: 'false'
+      PGPASSWORD: shaj
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Assert exact source head
+        run: |
+          set -euo pipefail
+          echo "RETURN_MUTATION_EXPECTED_HEAD=${GITHUB_SHA}"
+          echo "RETURN_MUTATION_ACTUAL_HEAD=$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Run focused legacy return permission tests
+        run: npx jest tests/v1LegacyReturnPermissions.test.js --runInBand
+      - name: Start real Express listener and verify unauthenticated mutation fails before data work
+        run: |
+          set -euo pipefail
+          psql -h 127.0.0.1 -U shaj -d shaj_cycle_a -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE TABLE cycle_a_mutation_guard (id integer PRIMARY KEY, value text NOT NULL);
+          INSERT INTO cycle_a_mutation_guard (id, value) VALUES (1, 'before-return-mutation');
+          SQL
+          BEFORE=$(psql -h 127.0.0.1 -U shaj -d shaj_cycle_a -Atc "SELECT id || '|' || value FROM cycle_a_mutation_guard ORDER BY id")
+          node -e "const app=require('./src/App'); const server=app.listen(Number(process.env.APP_PORT),'127.0.0.1',()=>console.log('RETURN_MUTATION_SERVER_LISTENING='+process.env.APP_PORT)); const stop=()=>server.close(()=>process.exit(0)); process.on('SIGTERM',stop); process.on('SIGINT',stop);" > /tmp/return-mutation-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          READY=''
+          for attempt in $(seq 1 30); do
+            READY=$(curl -sS -o /tmp/return-mutation-ready.json -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/health" || true)
+            if [ "$READY" = '200' ]; then break; fi
+            sleep 1
+          done
+          test "$READY" = '200'
+          MUTATION_STATUS=$(curl -sS -D /tmp/return-mutation.headers -o /tmp/return-mutation.body -w '%{http_code}' -X POST "http://127.0.0.1:${APP_PORT}/api/returns" -H 'content-type: application/json' --data '{"order_id":999,"items":[{"order_item_id":999,"quantity":1}],"reason":"cycle-a-unauthorized-probe"}' || true)
+          AFTER=$(psql -h 127.0.0.1 -U shaj -d shaj_cycle_a -Atc "SELECT id || '|' || value FROM cycle_a_mutation_guard ORDER BY id")
+          AFTER_STATUS=$(curl -sS -o /tmp/return-mutation-after.json -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/health" || true)
+          REQUEST_ID=$(awk 'BEGIN{IGNORECASE=1} /^x-request-id:/ {gsub("\r",""); sub(/^[^:]*:[[:space:]]*/,""); print; exit}' /tmp/return-mutation.headers)
+          echo '--- server log ---'
+          cat /tmp/return-mutation-server.log
+          echo '--- mutation response ---'
+          cat /tmp/return-mutation.body
+          echo
+          echo "RETURN_MUTATION_UNAUTH_STATUS=$MUTATION_STATUS"
+          echo "RETURN_MUTATION_REQUEST_ID_PRESENT=$([ -n "$REQUEST_ID" ] && echo true || echo false)"
+          echo "RETURN_MUTATION_GUARD_BEFORE=$BEFORE"
+          echo "RETURN_MUTATION_GUARD_AFTER=$AFTER"
+          echo "RETURN_MUTATION_PROCESS_ALIVE=$(kill -0 "$SERVER_PID" 2>/dev/null && echo true || echo false)"
+          echo "RETURN_MUTATION_HEALTH_AFTER_STATUS=$AFTER_STATUS"
+          test "$MUTATION_STATUS" = '401'
+          test -n "$REQUEST_ID"
+          test "$BEFORE" = '1|before-return-mutation'
+          test "$AFTER" = "$BEFORE"
+          node -e "const fs=require('fs'); const body=JSON.parse(fs.readFileSync('/tmp/return-mutation.body','utf8')); if(body.code!=='UNAUTHORIZED'||body.message!=='Unauthorized') throw new Error('unexpected response '+JSON.stringify(body)); console.log('RETURN_MUTATION_UNAUTH_CODE='+body.code);"
+          kill -0 "$SERVER_PID"
+          test "$AFTER_STATUS" = '200'
+          echo 'RETURN_MUTATION_RUNTIME_PASS=true'
+      - name: Run complete Backend suite
+        run: npm test -- --runInBand
