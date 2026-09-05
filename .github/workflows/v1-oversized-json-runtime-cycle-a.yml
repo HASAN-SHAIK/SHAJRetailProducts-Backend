@@ -1,0 +1,103 @@
+name: V1 Backend oversized JSON runtime Cycle A
+
+on:
+  push:
+    branches:
+      - test/v1-oversized-json-runtime-cycle-a
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NODE_ENV: test
+      APP_ENVIRONMENT: test
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+      APP_PORT: '43125'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert exact source head
+        run: |
+          set -euo pipefail
+          EXPECTED='${{ github.event.pull_request.head.sha || github.sha }}'
+          echo "OVERSIZED_JSON_EXPECTED_HEAD=$EXPECTED"
+          echo "OVERSIZED_JSON_ACTUAL_HEAD=$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Run focused oversized JSON acceptance
+        run: npx jest tests/v1OversizedJsonRuntime.test.js --runInBand
+      - name: Run complete Backend suite
+        run: npm test -- --runInBand
+      - name: Start real Express listener and verify oversized JSON recovery
+        if: always()
+        run: |
+          set -euo pipefail
+          node -e "const app=require('./src/App'); const server=app.listen(Number(process.env.APP_PORT),'127.0.0.1',()=>console.log('OVERSIZED_JSON_SERVER_LISTENING='+process.env.APP_PORT)); const stop=()=>server.close(()=>process.exit(0)); process.on('SIGTERM',stop); process.on('SIGINT',stop);" > /tmp/oversized-json-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+
+          READY=''
+          for attempt in $(seq 1 30); do
+            READY=$(curl -sS -o /tmp/oversized-ready.json -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/health" || true)
+            if [ "$READY" = '200' ]; then break; fi
+            sleep 1
+          done
+          test "$READY" = '200'
+
+          node - <<'NODE'
+          const http = require('http');
+          const fs = require('fs');
+          const body = JSON.stringify({ payload: 'x'.repeat(5 * 1024 * 1024 + 1024) });
+          const req = http.request({ hostname: '127.0.0.1', port: Number(process.env.APP_PORT), path: '/api/v1/sync/events', method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } }, (res) => {
+            let raw = '';
+            res.setEncoding('utf8');
+            res.on('data', c => raw += c);
+            res.on('end', () => {
+              fs.writeFileSync('/tmp/oversized-status.txt', String(res.statusCode));
+              fs.writeFileSync('/tmp/oversized-request-id.txt', String(res.headers['x-request-id'] || ''));
+              fs.writeFileSync('/tmp/oversized-body.json', raw);
+            });
+          });
+          req.on('error', e => { console.error(e); process.exitCode = 1; });
+          req.end(body);
+          NODE
+
+          for attempt in $(seq 1 30); do
+            if [ -f /tmp/oversized-status.txt ]; then break; fi
+            sleep 1
+          done
+          test -f /tmp/oversized-status.txt
+          STATUS=$(cat /tmp/oversized-status.txt)
+          REQUEST_ID=$(cat /tmp/oversized-request-id.txt)
+          AFTER_STATUS=$(curl -sS -o /tmp/oversized-after.json -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/health" || true)
+
+          echo '--- server log ---'
+          cat /tmp/oversized-json-server.log
+          echo '--- oversized response ---'
+          cat /tmp/oversized-body.json
+          echo
+          echo "OVERSIZED_JSON_STATUS=$STATUS"
+          echo "OVERSIZED_JSON_REQUEST_ID_PRESENT=$([ -n "$REQUEST_ID" ] && echo true || echo false)"
+          echo "OVERSIZED_JSON_PROCESS_ALIVE=$(kill -0 "$SERVER_PID" 2>/dev/null && echo true || echo false)"
+          echo "OVERSIZED_JSON_HEALTH_AFTER_STATUS=$AFTER_STATUS"
+
+          test "$STATUS" = '413'
+          test -n "$REQUEST_ID"
+          node -e "const fs=require('fs'); const body=JSON.parse(fs.readFileSync('/tmp/oversized-body.json','utf8')); if(body.code!=='REQUEST_FAILED') throw new Error('unexpected code '+body.code); console.log('OVERSIZED_JSON_CODE='+body.code);"
+          kill -0 "$SERVER_PID"
+          test "$AFTER_STATUS" = '200'
+          echo 'OVERSIZED_JSON_RUNTIME_PASS=true'
