@@ -138,7 +138,7 @@ jobs:
           test -n "$REQUEST_ID"
           test "$BEFORE" = '1|unknown-role-before-read'
           test "$AFTER" = "$BEFORE"
-          node -e "const fs=require('fs'); const body=JSON.parse(fs.readFileSync('/tmp/return-unknown-role.body','utf8')); if(body.code!=='FORBIDDEN'||body.message!=='Missing required permission: orders:read') throw new Error('unexpected response '+JSON.stringify(body)); console.log('RETURN_UNKNOWN_ROLE_CODE='+body.code);"
+          node -e "const fs=require('fs'); const body=JSON.parse(fs.readFileSync('/tmp/return-unknown-role.body','utf8')); if(body.code!=='FORBIDDEN'||body.message!=='Invalid tenant role') throw new Error('unexpected response '+JSON.stringify(body)); console.log('RETURN_UNKNOWN_ROLE_CODE='+body.code);"
           kill -0 "$SERVER_PID"
           test "$AFTER_STATUS" = '200'
           echo 'RETURN_UNKNOWN_ROLE_RUNTIME_PASS=true'
