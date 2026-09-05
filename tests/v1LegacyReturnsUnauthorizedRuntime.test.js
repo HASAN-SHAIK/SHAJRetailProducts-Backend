@@ -58,7 +58,7 @@ describe('V1 legacy returns unauthorized runtime boundary', () => {
     expect(JSON.parse(rejected.raw)).toMatchObject({
       success: false,
       code: 'UNAUTHORIZED',
-      error: 'Unauthorized',
+      message: 'Unauthorized',
     });
 
     const health = await request({ port, path: '/health' });
