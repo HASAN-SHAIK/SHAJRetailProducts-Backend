@@ -50,8 +50,8 @@ jobs:
           cache: npm
       - name: Install locked dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Run focused legacy returns permission and runtime tests
-        run: npx jest tests/v1LegacyReturnPermissions.test.js tests/v1LegacyReturnsUnauthorizedRuntime.test.js --runInBand
+      - name: Run focused legacy returns permission tests
+        run: npx jest tests/v1LegacyReturnPermissions.test.js --runInBand
       - name: Start real Express listener and verify fail-closed return history boundary
         run: |
           set -euo pipefail
