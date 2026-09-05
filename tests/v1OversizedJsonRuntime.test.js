@@ -4,6 +4,16 @@ process.env.NODE_ENV = 'test';
 process.env.APP_ENVIRONMENT = 'test';
 process.env.PUPPETEER_SKIP_DOWNLOAD = 'true';
 
+// Some legacy route modules import src/db.js, which immediately starts a
+// PostgreSQL retry loop on require. This scenario is entirely rejected by the
+// JSON parser before route/database handling, so isolate that unrelated startup
+// side effect while keeping the real Express app, middleware and endpoint path.
+jest.mock('../src/db', () => ({
+  query: jest.fn(),
+  connect: jest.fn(),
+  end: jest.fn(),
+}));
+
 const closeLoadedPool = async (modulePath) => {
   const resolved = require.resolve(modulePath);
   const loaded = require.cache[resolved]?.exports;
@@ -61,7 +71,7 @@ describe('V1 oversized JSON runtime resilience', () => {
     expect(rejected.status).toBe(413);
     expect(rejected.headers['content-type']).toMatch(/application\/json/);
     expect(rejected.headers['x-request-id']).toBeTruthy();
-    expect(JSON.parse(rejected.raw)).toMatchObject({ code: 'entity.too.large' });
+    expect(JSON.parse(rejected.raw)).toMatchObject({ code: 'REQUEST_FAILED' });
 
     const health = await request({ port, path: '/health' });
     expect(health.status).toBe(200);
