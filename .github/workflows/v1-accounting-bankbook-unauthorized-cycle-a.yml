@@ -1,0 +1,75 @@
+name: V1 Backend accounting bankbook unauthorized Cycle A
+
+on:
+  push:
+    branches:
+      - test-v1/cycle-a-accounting-bankbook-unauthorized-runtime
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NODE_ENV: test
+      APP_ENVIRONMENT: test
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+      APP_PORT: '43132'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert exact source head
+        run: |
+          set -euo pipefail
+          EXPECTED='${{ github.event.pull_request.head.sha || github.sha }}'
+          echo "ACCOUNTING_BANKBOOK_EXPECTED_HEAD=$EXPECTED"
+          echo "ACCOUNTING_BANKBOOK_ACTUAL_HEAD=$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Run focused accounting bank-book authorization test
+        run: npx jest tests/v1AccountingBankbookUnauthorized.test.js --runInBand
+      - name: Start real Express listener and verify unauthenticated bank-book read fails closed
+        run: |
+          set -euo pipefail
+          node -e "const app=require('./src/App'); const server=app.listen(Number(process.env.APP_PORT),'127.0.0.1',()=>console.log('ACCOUNTING_BANKBOOK_SERVER_LISTENING='+process.env.APP_PORT)); const stop=()=>server.close(()=>process.exit(0)); process.on('SIGTERM',stop); process.on('SIGINT',stop);" > /tmp/accounting-bankbook-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          READY=''
+          for attempt in $(seq 1 30); do
+            READY=$(curl -sS -o /tmp/accounting-bankbook-ready.json -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/health" || true)
+            if [ "$READY" = '200' ]; then break; fi
+            sleep 1
+          done
+          test "$READY" = '200'
+          STATUS=$(curl -sS -D /tmp/accounting-bankbook.headers -o /tmp/accounting-bankbook.body -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/api/accounts/bank-book" || true)
+          AFTER_STATUS=$(curl -sS -o /tmp/accounting-bankbook-after.json -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/health" || true)
+          REQUEST_ID=$(awk 'BEGIN{IGNORECASE=1} /^x-request-id:/ {gsub("\r",""); sub(/^[^:]*:[[:space:]]*/,""); print; exit}' /tmp/accounting-bankbook.headers)
+          echo '--- server log ---'
+          cat /tmp/accounting-bankbook-server.log
+          echo '--- bank-book response ---'
+          cat /tmp/accounting-bankbook.body
+          echo
+          echo "ACCOUNTING_BANKBOOK_STATUS=$STATUS"
+          echo "ACCOUNTING_BANKBOOK_REQUEST_ID_PRESENT=$([ -n "$REQUEST_ID" ] && echo true || echo false)"
+          echo "ACCOUNTING_BANKBOOK_PROCESS_ALIVE=$(kill -0 "$SERVER_PID" 2>/dev/null && echo true || echo false)"
+          echo "ACCOUNTING_BANKBOOK_HEALTH_AFTER_STATUS=$AFTER_STATUS"
+          test "$STATUS" = '401'
+          test -n "$REQUEST_ID"
+          node -e "const fs=require('fs'); const body=JSON.parse(fs.readFileSync('/tmp/accounting-bankbook.body','utf8')); if(body.code!=='UNAUTHORIZED'||body.message!=='Unauthorized') throw new Error('unexpected response '+JSON.stringify(body)); console.log('ACCOUNTING_BANKBOOK_CODE='+body.code);"
+          kill -0 "$SERVER_PID"
+          test "$AFTER_STATUS" = '200'
+          echo 'ACCOUNTING_BANKBOOK_RUNTIME_PASS=true'
+      - name: Run complete Backend suite
+        run: npm test -- --runInBand
