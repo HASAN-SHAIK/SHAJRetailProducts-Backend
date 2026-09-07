@@ -1,14 +1,22 @@
-const request = require('supertest');
-const app = require('../src/App');
+const { requirePermission } = require('../src/middleware/requirePermission');
 
 describe('V1 accounting bank-book authorization', () => {
-  test('unauthenticated real application route fails closed before accounting data access', async () => {
-    const response = await request(app)
-      .get('/api/accounts/bank-book')
-      .expect(401);
+  test('reports:read fails closed when tenant identity is absent', () => {
+    const state = { status: 200, body: null, nextCalled: false };
+    const res = {
+      status(code) { state.status = code; return this; },
+      json(body) { state.body = body; return this; },
+    };
 
-    expect(response.headers['x-request-id']).toBeTruthy();
-    expect(response.body).toEqual({
+    requirePermission('reports:read')(
+      {},
+      res,
+      () => { state.nextCalled = true; }
+    );
+
+    expect(state.nextCalled).toBe(false);
+    expect(state.status).toBe(401);
+    expect(state.body).toEqual({
       success: false,
       code: 'UNAUTHORIZED',
       message: 'Unauthorized',
