@@ -4,6 +4,17 @@ process.env.NODE_ENV = 'test';
 process.env.APP_ENVIRONMENT = 'test';
 process.env.PUPPETEER_SKIP_DOWNLOAD = 'true';
 
+// Some legacy route modules import src/db.js, which immediately starts a
+// PostgreSQL retry loop on require. Malformed JSON is rejected by Express's
+// JSON parser before route/database handling, so isolate that unrelated startup
+// side effect in the focused Jest harness. The workflow's separate runtime
+// probe starts the actual exported app unmocked and exercises the real endpoint.
+jest.mock('../src/db', () => ({
+  query: jest.fn(),
+  connect: jest.fn(),
+  end: jest.fn(),
+}));
+
 const closeLoadedPool = async (modulePath) => {
   const resolved = require.resolve(modulePath);
   const loaded = require.cache[resolved]?.exports;
