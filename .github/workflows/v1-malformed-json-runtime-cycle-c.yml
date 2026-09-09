@@ -37,6 +37,8 @@ jobs:
       - name: Run focused malformed JSON acceptance
         run: npx jest tests/v1MalformedJsonRuntime.test.js --runInBand
       - name: Run complete Backend suite
+        id: full_suite
+        continue-on-error: true
         run: npm test -- --runInBand
       - name: Start real Express listener and verify malformed JSON recovery
         run: |
@@ -75,4 +77,10 @@ jobs:
           test "$AFTER_STATUS" = '200'
           echo 'MALFORMED_JSON_RUNTIME_PASS=true'
       - name: Record scenario verdict
-        run: echo 'MALFORMED_JSON_FINAL=PASS'
+        run: |
+          if [ "${{ steps.full_suite.outcome }}" != "success" ]; then
+            echo 'MALFORMED_JSON_FINAL=PARTIALLY_VERIFIED'
+            echo 'Complete Backend suite is not green on this exact head.'
+            exit 1
+          fi
+          echo 'MALFORMED_JSON_FINAL=PASS'
