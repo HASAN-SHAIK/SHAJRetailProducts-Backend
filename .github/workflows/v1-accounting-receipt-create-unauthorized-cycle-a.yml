@@ -72,7 +72,7 @@ jobs:
           test "$READY" = '200'
           test "$STATUS" = '401'
           test -n "$REQUEST_ID"
-          node -e "const fs=require('fs'); const body=JSON.parse(fs.readFileSync('/tmp/accounting-receipt-create.body','utf8')); if(body.error!=='Access Denied. No token provided.') throw new Error('unexpected response '+JSON.stringify(body)); console.log('ACCOUNTING_RECEIPT_CREATE_ERROR='+body.error);"
+          node -e "const fs=require('fs'); const body=JSON.parse(fs.readFileSync('/tmp/accounting-receipt-create.body','utf8')); if(body.code!=='UNAUTHORIZED'||body.message!=='Unauthorized') throw new Error('unexpected response '+JSON.stringify(body)); console.log('ACCOUNTING_RECEIPT_CREATE_CODE='+body.code);"
           kill -0 "$SERVER_PID"
           test "$AFTER_STATUS" = '200'
           echo 'ACCOUNTING_RECEIPT_CREATE_RUNTIME_PASS=true' | tee -a /tmp/accounting-receipt-create-evidence.txt
