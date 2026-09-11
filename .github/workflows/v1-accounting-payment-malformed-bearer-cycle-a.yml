@@ -44,8 +44,6 @@ jobs:
       - name: Run existing accounting authorization suite
         run: npx jest tests/v1AccountingPermissions.test.js --runInBand
       - name: Start real Express listener and verify malformed bearer payment fails closed
-        id: runtime
-        continue-on-error: true
         run: |
           set -euo pipefail
           node -e "const app=require('./src/App'); const server=app.listen(Number(process.env.APP_PORT),'127.0.0.1',()=>console.log('ACCOUNTING_PAYMENT_MALFORMED_SERVER_LISTENING='+process.env.APP_PORT)); const stop=()=>server.close(()=>process.exit(0)); process.on('SIGTERM',stop); process.on('SIGINT',stop);" > /tmp/accounting-payment-malformed-server.log 2>&1 &
@@ -87,8 +85,6 @@ jobs:
           test "$AFTER_STATUS" = '200'
           echo 'ACCOUNTING_PAYMENT_MALFORMED_RUNTIME_PASS=true' | tee -a /tmp/accounting-payment-malformed-evidence.txt
       - name: Run complete Backend suite
-        id: suite
-        continue-on-error: true
         run: npm test -- --runInBand
       - name: Upload malformed bearer evidence
         if: always()
@@ -101,10 +97,3 @@ jobs:
             /tmp/accounting-payment-malformed.headers
             /tmp/accounting-payment-malformed.body
           if-no-files-found: warn
-      - name: Fail closed on required gates
-        if: always()
-        run: |
-          echo "ACCOUNTING_PAYMENT_MALFORMED_RUNTIME_OUTCOME=${{ steps.runtime.outcome }}"
-          echo "ACCOUNTING_PAYMENT_MALFORMED_SUITE_OUTCOME=${{ steps.suite.outcome }}"
-          test '${{ steps.runtime.outcome }}' = 'success'
-          test '${{ steps.suite.outcome }}' = 'success'
