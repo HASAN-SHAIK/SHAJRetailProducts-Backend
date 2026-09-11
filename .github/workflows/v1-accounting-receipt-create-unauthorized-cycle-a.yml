@@ -1,0 +1,100 @@
+name: V1 Backend accounting receipt create unauthorized Cycle A
+
+on:
+  push:
+    branches:
+      - test-v1/cycle-a-accounting-receipt-create-unauthorized-runtime
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NODE_ENV: test
+      APP_ENVIRONMENT: test
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+      APP_PORT: '43143'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert exact source head
+        run: |
+          set -euo pipefail
+          EXPECTED='${{ github.event.pull_request.head.sha || github.sha }}'
+          echo "ACCOUNTING_RECEIPT_CREATE_EXPECTED_HEAD=$EXPECTED"
+          echo "ACCOUNTING_RECEIPT_CREATE_ACTUAL_HEAD=$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Run focused accounting receipt creation authorization test
+        run: npx jest tests/v1AccountingReceiptCreateUnauthorized.test.js --runInBand
+      - name: Start real Express listener and verify unauthenticated receipt creation fails closed
+        id: runtime
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          node -e "const app=require('./src/App'); const server=app.listen(Number(process.env.APP_PORT),'127.0.0.1',()=>console.log('ACCOUNTING_RECEIPT_CREATE_SERVER_LISTENING='+process.env.APP_PORT)); const stop=()=>server.close(()=>process.exit(0)); process.on('SIGTERM',stop); process.on('SIGINT',stop);" > /tmp/accounting-receipt-create-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          READY=''
+          for attempt in $(seq 1 30); do
+            READY=$(curl -sS -o /tmp/accounting-receipt-create-ready.json -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/health" || true)
+            if [ "$READY" = '200' ]; then break; fi
+            sleep 1
+          done
+          STATUS=$(curl -sS -X POST -H 'content-type: application/json' --data '{"customer_id":"cycle-a-probe","amount":1,"payment_method":"cash"}' -D /tmp/accounting-receipt-create.headers -o /tmp/accounting-receipt-create.body -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/api/accounts/receipt" || true)
+          AFTER_STATUS=$(curl -sS -o /tmp/accounting-receipt-create-after.json -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/health" || true)
+          REQUEST_ID=$(awk 'BEGIN{IGNORECASE=1} /^x-request-id:/ {gsub("\r",""); sub(/^[^:]*:[[:space:]]*/,""); print; exit}' /tmp/accounting-receipt-create.headers || true)
+          PROCESS_ALIVE=$(kill -0 "$SERVER_PID" 2>/dev/null && echo true || echo false)
+          {
+            echo "HEAD=$(git rev-parse HEAD)"
+            echo "ACCOUNTING_RECEIPT_CREATE_READY=$READY"
+            echo "ACCOUNTING_RECEIPT_CREATE_STATUS=$STATUS"
+            echo "ACCOUNTING_RECEIPT_CREATE_REQUEST_ID_PRESENT=$([ -n "$REQUEST_ID" ] && echo true || echo false)"
+            echo "ACCOUNTING_RECEIPT_CREATE_PROCESS_ALIVE=$PROCESS_ALIVE"
+            echo "ACCOUNTING_RECEIPT_CREATE_HEALTH_AFTER_STATUS=$AFTER_STATUS"
+            echo "ACCOUNTING_RECEIPT_CREATE_BODY=$(cat /tmp/accounting-receipt-create.body 2>/dev/null || true)"
+          } | tee /tmp/accounting-receipt-create-evidence.txt
+          echo '--- server log ---'
+          cat /tmp/accounting-receipt-create-server.log
+          test "$READY" = '200'
+          test "$STATUS" = '401'
+          test -n "$REQUEST_ID"
+          node -e "const fs=require('fs'); const body=JSON.parse(fs.readFileSync('/tmp/accounting-receipt-create.body','utf8')); if(body.code!=='UNAUTHORIZED'||body.message!=='Unauthorized') throw new Error('unexpected response '+JSON.stringify(body)); console.log('ACCOUNTING_RECEIPT_CREATE_CODE='+body.code);"
+          kill -0 "$SERVER_PID"
+          test "$AFTER_STATUS" = '200'
+          echo 'ACCOUNTING_RECEIPT_CREATE_RUNTIME_PASS=true' | tee -a /tmp/accounting-receipt-create-evidence.txt
+      - name: Run complete Backend suite
+        id: suite
+        continue-on-error: true
+        run: npm test -- --runInBand
+      - name: Upload receipt creation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cycle-a-accounting-receipt-create-evidence
+          path: |
+            /tmp/accounting-receipt-create-evidence.txt
+            /tmp/accounting-receipt-create-server.log
+            /tmp/accounting-receipt-create.headers
+            /tmp/accounting-receipt-create.body
+          if-no-files-found: warn
+      - name: Fail closed on required gates
+        if: always()
+        run: |
+          echo "ACCOUNTING_RECEIPT_CREATE_RUNTIME_OUTCOME=${{ steps.runtime.outcome }}"
+          echo "ACCOUNTING_RECEIPT_CREATE_SUITE_OUTCOME=${{ steps.suite.outcome }}"
+          test '${{ steps.runtime.outcome }}' = 'success'
+          test '${{ steps.suite.outcome }}' = 'success'
