@@ -1,0 +1,75 @@
+name: V1 Backend accounting receipt unauthorized Cycle A
+
+on:
+  push:
+    branches:
+      - test-v1/cycle-a-accounting-receipt-unauthorized-runtime
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NODE_ENV: test
+      APP_ENVIRONMENT: test
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+      APP_PORT: '43141'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert exact source head
+        run: |
+          set -euo pipefail
+          EXPECTED='${{ github.event.pull_request.head.sha || github.sha }}'
+          echo "ACCOUNTING_RECEIPT_EXPECTED_HEAD=$EXPECTED"
+          echo "ACCOUNTING_RECEIPT_ACTUAL_HEAD=$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Run focused accounting receipt authorization test
+        run: npx jest tests/v1AccountingReceiptUnauthorized.test.js --runInBand
+      - name: Start real Express listener and verify unauthenticated receipt history fails closed
+        run: |
+          set -euo pipefail
+          node -e "const app=require('./src/App'); const server=app.listen(Number(process.env.APP_PORT),'127.0.0.1',()=>console.log('ACCOUNTING_RECEIPT_SERVER_LISTENING='+process.env.APP_PORT)); const stop=()=>server.close(()=>process.exit(0)); process.on('SIGTERM',stop); process.on('SIGINT',stop);" > /tmp/accounting-receipt-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          READY=''
+          for attempt in $(seq 1 30); do
+            READY=$(curl -sS -o /tmp/accounting-receipt-ready.json -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/health" || true)
+            if [ "$READY" = '200' ]; then break; fi
+            sleep 1
+          done
+          test "$READY" = '200'
+          STATUS=$(curl -sS -D /tmp/accounting-receipt.headers -o /tmp/accounting-receipt.body -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/api/accounts/receipt" || true)
+          AFTER_STATUS=$(curl -sS -o /tmp/accounting-receipt-after.json -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/health" || true)
+          REQUEST_ID=$(awk 'BEGIN{IGNORECASE=1} /^x-request-id:/ {gsub("\r",""); sub(/^[^:]*:[[:space:]]*/,""); print; exit}' /tmp/accounting-receipt.headers)
+          echo '--- server log ---'
+          cat /tmp/accounting-receipt-server.log
+          echo '--- receipt response ---'
+          cat /tmp/accounting-receipt.body
+          echo
+          echo "ACCOUNTING_RECEIPT_STATUS=$STATUS"
+          echo "ACCOUNTING_RECEIPT_REQUEST_ID_PRESENT=$([ -n "$REQUEST_ID" ] && echo true || echo false)"
+          echo "ACCOUNTING_RECEIPT_PROCESS_ALIVE=$(kill -0 "$SERVER_PID" 2>/dev/null && echo true || echo false)"
+          echo "ACCOUNTING_RECEIPT_HEALTH_AFTER_STATUS=$AFTER_STATUS"
+          test "$STATUS" = '401'
+          test -n "$REQUEST_ID"
+          node -e "const fs=require('fs'); const body=JSON.parse(fs.readFileSync('/tmp/accounting-receipt.body','utf8')); if(body.code!=='UNAUTHORIZED'||body.message!=='Unauthorized') throw new Error('unexpected response '+JSON.stringify(body)); console.log('ACCOUNTING_RECEIPT_CODE='+body.code);"
+          kill -0 "$SERVER_PID"
+          test "$AFTER_STATUS" = '200'
+          echo 'ACCOUNTING_RECEIPT_RUNTIME_PASS=true'
+      - name: Run complete Backend suite
+        run: npm test -- --runInBand
