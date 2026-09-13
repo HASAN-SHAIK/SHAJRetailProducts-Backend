@@ -1,0 +1,99 @@
+name: V1 Backend accounting payment malformed bearer Cycle A
+
+on:
+  push:
+    branches:
+      - test-v1/cycle-a-accounting-payment-malformed-bearer-runtime
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NODE_ENV: test
+      APP_ENVIRONMENT: test
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+      APP_PORT: '43145'
+      JWT_SECRET: 'cycle-a-accounting-payment-test-secret'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert exact source head
+        run: |
+          set -euo pipefail
+          EXPECTED='${{ github.event.pull_request.head.sha || github.sha }}'
+          echo "ACCOUNTING_PAYMENT_MALFORMED_EXPECTED_HEAD=$EXPECTED"
+          echo "ACCOUNTING_PAYMENT_MALFORMED_ACTUAL_HEAD=$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Run focused malformed bearer authorization test
+        run: npx jest tests/v1AccountingPaymentMalformedBearer.test.js --runInBand
+      - name: Run existing accounting authorization suite
+        run: npx jest tests/v1AccountingPermissions.test.js --runInBand
+      - name: Start real Express listener and verify malformed bearer payment fails closed
+        run: |
+          set -euo pipefail
+          node -e "const app=require('./src/App'); const server=app.listen(Number(process.env.APP_PORT),'127.0.0.1',()=>console.log('ACCOUNTING_PAYMENT_MALFORMED_SERVER_LISTENING='+process.env.APP_PORT)); const stop=()=>server.close(()=>process.exit(0)); process.on('SIGTERM',stop); process.on('SIGINT',stop);" > /tmp/accounting-payment-malformed-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          READY=''
+          for attempt in $(seq 1 30); do
+            READY=$(curl -sS -o /tmp/accounting-payment-malformed-ready.json -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/health" || true)
+            if [ "$READY" = '200' ]; then break; fi
+            sleep 1
+          done
+          STATUS=$(curl -sS -X POST \
+            -H 'content-type: application/json' \
+            -H 'authorization: Bearer definitely-not-a-jwt' \
+            --data '{"type":"supplier","supplier_id":1,"amount":1,"payment_mode":"cash","client_txn_id":"cycle-a-payment-malformed-bearer"}' \
+            -D /tmp/accounting-payment-malformed.headers \
+            -o /tmp/accounting-payment-malformed.body \
+            -w '%{http_code}' \
+            "http://127.0.0.1:${APP_PORT}/api/accounts/payment" || true)
+          AFTER_STATUS=$(curl -sS -o /tmp/accounting-payment-malformed-after.json -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/health" || true)
+          REQUEST_ID=$(awk 'BEGIN{IGNORECASE=1} /^x-request-id:/ {gsub("\r",""); sub(/^[^:]*:[[:space:]]*/,""); print; exit}' /tmp/accounting-payment-malformed.headers || true)
+          PROCESS_ALIVE=$(kill -0 "$SERVER_PID" 2>/dev/null && echo true || echo false)
+          {
+            echo "HEAD=$(git rev-parse HEAD)"
+            echo "ACCOUNTING_PAYMENT_MALFORMED_READY=$READY"
+            echo "ACCOUNTING_PAYMENT_MALFORMED_STATUS=$STATUS"
+            echo "ACCOUNTING_PAYMENT_MALFORMED_REQUEST_ID_PRESENT=$([ -n "$REQUEST_ID" ] && echo true || echo false)"
+            echo "ACCOUNTING_PAYMENT_MALFORMED_PROCESS_ALIVE=$PROCESS_ALIVE"
+            echo "ACCOUNTING_PAYMENT_MALFORMED_HEALTH_AFTER_STATUS=$AFTER_STATUS"
+            echo "ACCOUNTING_PAYMENT_MALFORMED_BODY=$(cat /tmp/accounting-payment-malformed.body 2>/dev/null || true)"
+          } | tee /tmp/accounting-payment-malformed-evidence.txt
+          echo '--- server log ---'
+          cat /tmp/accounting-payment-malformed-server.log
+          test "$READY" = '200'
+          test "$STATUS" = '401'
+          test -n "$REQUEST_ID"
+          node -e "const fs=require('fs'); const body=JSON.parse(fs.readFileSync('/tmp/accounting-payment-malformed.body','utf8')); if(body.code!=='UNAUTHORIZED'||body.message!=='Invalid token') throw new Error('unexpected response '+JSON.stringify(body)); console.log('ACCOUNTING_PAYMENT_MALFORMED_CODE='+body.code);"
+          kill -0 "$SERVER_PID"
+          test "$AFTER_STATUS" = '200'
+          echo 'ACCOUNTING_PAYMENT_MALFORMED_RUNTIME_PASS=true' | tee -a /tmp/accounting-payment-malformed-evidence.txt
+      - name: Run complete Backend suite
+        run: npm test -- --runInBand
+      - name: Upload malformed bearer evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cycle-a-accounting-payment-malformed-bearer-evidence
+          path: |
+            /tmp/accounting-payment-malformed-evidence.txt
+            /tmp/accounting-payment-malformed-server.log
+            /tmp/accounting-payment-malformed.headers
+            /tmp/accounting-payment-malformed.body
+          if-no-files-found: warn
