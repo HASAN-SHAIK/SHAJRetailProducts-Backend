@@ -7,7 +7,7 @@ const walkJs = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((en
   return entry.isFile() && entry.name.endsWith('.js') ? [full] : [];
 });
 
-const BASELINE_INTERPOLATED_QUERY_COUNT = 80;
+const BASELINE_INTERPOLATED_QUERY_COUNT = 82;
 const readSource = (relativePath) => fs.readFileSync(path.join(__dirname, '..', relativePath), 'utf8');
 
 const REVIEWED_STRUCTURAL_EXPRESSION_PATTERNS = [
@@ -17,6 +17,9 @@ const REVIEWED_STRUCTURAL_EXPRESSION_PATTERNS = [
   /^(barcodeSelect|sort|sortBy|sortColumn|sortOrder|resolvedSort|resolvedAt|whereSql|table|dbIdentifier|placeholders)$/,
   /^(branchA|branchB)$/,
   /^(params|values|shopValues|listParams|updateValues)\.length(?:\s*[+-]\s*\d+)?$/,
+  /^staffParams\.length(?:\s*[+-]\s*\d+)?$/,
+  /^(branchFilter|orderBranchParam|orderFromParam|orderToParam)$/,
+  /^userConditions\.join\(' AND '\)$/,
   /^idx(?:\s*\+\s*\d+)?$/,
   /^(updates|shopUpdates|insertColumns|columns|updateFields|fields)\.join\(', '\)$/,
   /^(where|conditions)\.join\(' AND '\)$/,
@@ -137,5 +140,21 @@ describe('V1 dynamic SQL inventory', () => {
     expect(dashboardMetrics).toContain(
       `const completedSaleStatusSql = "('completed', 'partially_returned', 'fully_returned')";`
     );
+  });
+
+  test('staff performance dynamic structure stays source-owned and caller values stay parameterized', () => {
+    const staffService = readSource('src/services/staffService.js');
+
+    expect(staffService).toContain("const branchFilter = branchId ? 'AND s.branch_id = $1' : '';");
+    expect(staffService).toContain('const staffParams = branchId ? [branchId] : [];');
+    expect(staffService).toContain("const userConditions = [`u.role IN ('cashier', 'manager', 'staff')`];");
+    expect(staffService).toContain("userConditions.push(`(u.all_branch_access = TRUE OR u.branch_id = $${userParams.length})`);");
+    expect(staffService).toContain('const orderBranchParam = userParams.length + 1;');
+    expect(staffService).toContain('const orderFromParam = userParams.length + 2;');
+    expect(staffService).toContain('const orderToParam = userParams.length + 3;');
+    expect(staffService).toContain('WHERE ($${staffParams.length + 1}::text IS NULL OR month = $${staffParams.length + 1})');
+    expect(staffService).toContain("WHERE ${userConditions.join(' AND ')}");
+    expect(staffService).toContain('[...staffParams, month || null, from, to]');
+    expect(staffService).toContain('[...userParams, branchId || null, from, to]');
   });
 });
