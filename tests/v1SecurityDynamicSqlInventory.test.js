@@ -7,7 +7,7 @@ const walkJs = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((en
   return entry.isFile() && entry.name.endsWith('.js') ? [full] : [];
 });
 
-const BASELINE_INTERPOLATED_QUERY_COUNT = 80;
+const BASELINE_INTERPOLATED_QUERY_COUNT = 82;
 const readSource = (relativePath) => fs.readFileSync(path.join(__dirname, '..', relativePath), 'utf8');
 
 const REVIEWED_STRUCTURAL_EXPRESSION_PATTERNS = [
@@ -17,6 +17,9 @@ const REVIEWED_STRUCTURAL_EXPRESSION_PATTERNS = [
   /^(barcodeSelect|sort|sortBy|sortColumn|sortOrder|resolvedSort|resolvedAt|whereSql|table|dbIdentifier|placeholders)$/,
   /^(branchA|branchB)$/,
   /^(params|values|shopValues|listParams|updateValues)\.length(?:\s*[+-]\s*\d+)?$/,
+  /^staffParams\.length(?:\s*[+-]\s*\d+)?$/,
+  /^(branchFilter|orderBranchParam|orderFromParam|orderToParam)$/,
+  /^userConditions\.join\(' AND '\)$/,
   /^idx(?:\s*\+\s*\d+)?$/,
   /^(updates|shopUpdates|insertColumns|columns|updateFields|fields)\.join\(', '\)$/,
   /^(where|conditions)\.join\(' AND '\)$/,
@@ -58,38 +61,21 @@ const collectDynamicQueryInventory = () => {
 describe('V1 dynamic SQL inventory', () => {
   test('template-interpolated query inventory cannot grow silently', () => {
     const { sites, directRequestSites, expressionsBySite } = collectDynamicQueryInventory();
-
     if (sites.length !== BASELINE_INTERPOLATED_QUERY_COUNT) {
-      throw new Error(
-        `Dynamic SQL inventory changed from ${BASELINE_INTERPOLATED_QUERY_COUNT} sites to ${sites.length}.\n` +
-        `Current sites:\n${sites.sort().join('\n')}`
-      );
+      throw new Error(`Dynamic SQL inventory changed from ${BASELINE_INTERPOLATED_QUERY_COUNT} sites to ${sites.length}.\nCurrent sites:\n${sites.sort().join('\n')}`);
     }
-
     console.log('V1_DYNAMIC_SQL_EXPRESSIONS', JSON.stringify(expressionsBySite));
-
-    // Direct HTTP request-object interpolation is never an acceptable V1 query
-    // structure. Request values must remain PostgreSQL parameters.
     expect(directRequestSites).toEqual([]);
   });
 
   test('all existing structural interpolation expressions have an explicit V1 disposition', () => {
     const { expressionsBySite } = collectDynamicQueryInventory();
     const unreviewed = [];
-
     for (const { site, expressions } of expressionsBySite) {
       for (const expression of expressions) {
-        if (!REVIEWED_STRUCTURAL_EXPRESSION_PATTERNS.some((pattern) => pattern.test(expression))) {
-          unreviewed.push({ site, expression });
-        }
+        if (!REVIEWED_STRUCTURAL_EXPRESSION_PATTERNS.some((pattern) => pattern.test(expression))) unreviewed.push({ site, expression });
       }
     }
-
-    // The reviewed families are source-owned WHERE/JOIN/SELECT fragments,
-    // parameter-position arithmetic, fixed update-field lists, schema-capability
-    // fragments, or the separately certified identifier families below. This
-    // gate prevents a new interpolation shape from hiding behind the same site
-    // count and forces a fresh Security disposition.
     expect(unreviewed).toEqual([]);
   });
 
@@ -104,12 +90,10 @@ describe('V1 dynamic SQL inventory', () => {
     const tenantProvisionService = readSource('src/services/tenantProvisionService.js');
     const categoryPerformanceController = readSource('src/controllers/tenant/categoryPerformanceV1Controller.js');
     const dashboardMetrics = readSource('src/services/dashboardMetrics.js');
-
     expect(sharedSort).toContain("const order = sortOrderRaw === 'asc' ? 'ASC' : 'DESC';");
     expect(sharedSort).toContain('const column = allowed[sortKey] || fallback.column;');
     expect(customerService).toContain('parseSort(query, SORTABLE');
     expect(productService).toContain('parseSort(query, SORTABLE');
-
     expect(tenantProductController).toContain('const allowedSorts = new Set([');
     expect(tenantProductController).toContain("sort = allowedSorts.has(normalized) ? normalized : 'name';");
     expect(productController).toContain('const allowedSorts = {');
@@ -118,24 +102,29 @@ describe('V1 dynamic SQL inventory', () => {
     expect(orderController).toContain("const allowedSorts = new Set(['id', 'created_at', 'total_amount', 'total_paid', 'balance']);");
     expect(orderController).toContain("const resolvedSort = allowedSorts.has(sortKey) ? sortKey : 'created_at';");
     expect(orderController).toContain("const sortOrder = (sortOrderRaw || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';");
-
     expect(dataQualityService).toContain("const tables = ['products', 'batches', 'customers', 'orders', 'order_items', 'transactions', 'suppliers', 'expenses'];");
     expect(dataQualityService).toContain('pool.query(`SELECT * FROM ${table} ORDER BY 1 ASC`)');
-
     expect(tenantProvisionService).toContain('const dbName = `shaj_tenant_${Date.now()}`;');
     expect(tenantProvisionService).toContain('const dbIdentifier = quoteIdentifier(dbName);');
     expect(tenantProvisionService).toContain("const escaped = String(value).replace(/\"/g, '\"\"');");
     expect(tenantProvisionService).toContain('await adminPool.query(`CREATE DATABASE ${dbIdentifier}`);');
     expect(tenantProvisionService).toContain('await adminPool.query(`DROP DATABASE IF EXISTS ${dbIdentifier}`);');
+    expect(categoryPerformanceController).toContain(`const reportableSaleStatusSql = "('completed', 'partially_returned', 'fully_returned')";`);
+    expect(dashboardMetrics).toContain(`const completedSaleStatusSql = "('completed', 'partially_returned', 'fully_returned')";`);
+  });
 
-    // Reporting status fragments are fixed source-owned SQL tuples. They are
-    // deliberately not request-derived and changing the tuple forces this
-    // security acceptance to be reviewed again.
-    expect(categoryPerformanceController).toContain(
-      `const reportableSaleStatusSql = "('completed', 'partially_returned', 'fully_returned')";`
-    );
-    expect(dashboardMetrics).toContain(
-      `const completedSaleStatusSql = "('completed', 'partially_returned', 'fully_returned')";`
-    );
+  test('staff performance dynamic structure stays source-owned and caller values stay parameterized', () => {
+    const staffService = readSource('src/services/staffService.js');
+    expect(staffService).toContain("const branchFilter = branchId ? 'AND s.branch_id = $1' : '';");
+    expect(staffService).toContain('const staffParams = branchId ? [branchId] : [];');
+    expect(staffService).toContain("const userConditions = [`u.role IN ('cashier', 'manager', 'staff')`];");
+    expect(staffService).toContain("userConditions.push(`(u.all_branch_access = TRUE OR u.branch_id = $${userParams.length})`);");
+    expect(staffService).toContain('const orderBranchParam = userParams.length + 1;');
+    expect(staffService).toContain('const orderFromParam = userParams.length + 2;');
+    expect(staffService).toContain('const orderToParam = userParams.length + 3;');
+    expect(staffService).toContain('WHERE ($${staffParams.length + 1}::text IS NULL OR month = $${staffParams.length + 1})');
+    expect(staffService).toContain("WHERE ${userConditions.join(' AND ')}");
+    expect(staffService).toContain('[...staffParams, month || null, from, to]');
+    expect(staffService).toContain('[...userParams, branchId || null, from, to]');
   });
 });
