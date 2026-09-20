@@ -1,0 +1,170 @@
+name: V1 Backend staff dynamic SQL disposition Cycle A
+
+on:
+  pull_request:
+    paths:
+      - 'tests/v1SecurityDynamicSqlInventory.test.js'
+      - 'src/services/staffService.js'
+      - '.github/workflows/v1-backend-staff-dynamic-sql-cycle-a.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: shaj_cycle_a
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d shaj_cycle_a"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NODE_ENV: test
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_HOST: 127.0.0.1
+      DB_PORT: 5432
+      DB_NAME: shaj_cycle_a
+      DB_SSL: 'false'
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/shaj_cycle_a
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Assert exact head
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED="${{ github.event.pull_request.head.sha || github.sha }}"
+          ACTUAL="$(git rev-parse HEAD)"
+          echo "EXPECTED_HEAD=$EXPECTED"
+          echo "ACTUAL_HEAD=$ACTUAL"
+          test "$ACTUAL" = "$EXPECTED"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Locked dependency install
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Focused dynamic SQL security inventory
+        run: npx jest tests/v1SecurityDynamicSqlInventory.test.js --runInBand
+
+      - name: Real PostgreSQL staff-performance runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const assert = require('assert');
+          const { Pool } = require('pg');
+          const primaryPool = require('./src/db');
+          const { getStaffPerformance } = require('./src/services/staffService');
+
+          (async () => {
+            const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+            try {
+              await pool.query(`
+                DROP TABLE IF EXISTS orders, users, expenses, salaries, staff, branches CASCADE;
+                CREATE TABLE branches (
+                  id uuid PRIMARY KEY,
+                  name text,
+                  store_number text
+                );
+                CREATE TABLE staff (
+                  id text PRIMARY KEY,
+                  name text NOT NULL,
+                  phone text,
+                  role text,
+                  salary numeric,
+                  join_date date,
+                  status text,
+                  branch_id uuid,
+                  created_at timestamptz DEFAULT NOW(),
+                  updated_at timestamptz DEFAULT NOW()
+                );
+                CREATE TABLE salaries (
+                  staff_id text,
+                  net_salary numeric,
+                  paid_amount numeric,
+                  pending_amount numeric,
+                  month text
+                );
+                CREATE TABLE expenses (
+                  staff_id text,
+                  type text,
+                  amount numeric,
+                  date date
+                );
+                CREATE TABLE users (
+                  id bigint PRIMARY KEY,
+                  name text,
+                  email text,
+                  role text,
+                  branch_id uuid,
+                  all_branch_access boolean DEFAULT false
+                );
+                CREATE TABLE orders (
+                  id bigint PRIMARY KEY,
+                  user_id bigint,
+                  transaction_type text,
+                  total_price numeric,
+                  is_deleted boolean DEFAULT false,
+                  branch_id uuid,
+                  created_at timestamptz DEFAULT NOW()
+                );
+                INSERT INTO staff (id, name, role, salary, status)
+                VALUES ('staff-1', 'Cycle A Staff', 'cashier', 100, 'active');
+                INSERT INTO salaries (staff_id, net_salary, paid_amount, pending_amount, month)
+                VALUES ('staff-1', 100, 40, 60, '2026-09');
+              `);
+
+              const req = { tenantPool: pool };
+              const injectionProbe = "2026-09' OR '1'='1";
+              const injected = await getStaffPerformance(req, { month: injectionProbe });
+              const injectedStaff = injected.rows.find((row) => row.staffId === 'staff-1');
+              assert(injectedStaff, 'staff profile must remain readable');
+              assert.strictEqual(injectedStaff.netSalary, 0, 'caller month must stay a bound value, not alter SQL structure');
+              assert.strictEqual(injectedStaff.paidAmount, 0);
+              assert.strictEqual(injectedStaff.pendingAmount, 0);
+
+              const legitimate = await getStaffPerformance(req, { month: '2026-09' });
+              const legitimateStaff = legitimate.rows.find((row) => row.staffId === 'staff-1');
+              assert(legitimateStaff, 'legitimate staff profile must be returned');
+              assert.strictEqual(legitimateStaff.netSalary, 100);
+              assert.strictEqual(legitimateStaff.paidAmount, 40);
+              assert.strictEqual(legitimateStaff.pendingAmount, 60);
+
+              const salaryTable = await pool.query("SELECT to_regclass('public.salaries') AS table_name, COUNT(*)::int AS row_count FROM salaries");
+              assert.strictEqual(salaryTable.rows[0].table_name, 'salaries');
+              assert.strictEqual(salaryTable.rows[0].row_count, 1);
+
+              console.log('STAFF_DYNAMIC_SQL_INJECTION_PROBE=' + injectionProbe);
+              console.log('STAFF_DYNAMIC_SQL_PROBE_NET_SALARY=' + injectedStaff.netSalary);
+              console.log('STAFF_DYNAMIC_SQL_LEGIT_NET_SALARY=' + legitimateStaff.netSalary);
+              console.log('STAFF_DYNAMIC_SQL_SALARY_TABLE_INTACT=true');
+              console.log('STAFF_DYNAMIC_SQL_RUNTIME_PASS=true');
+            } finally {
+              await pool.end();
+              await primaryPool.end();
+            }
+          })().catch((error) => {
+            console.error(error);
+            process.exitCode = 1;
+          });
+          NODE
+
+      - name: Complete Backend Jest suite
+        run: npm test -- --runInBand
