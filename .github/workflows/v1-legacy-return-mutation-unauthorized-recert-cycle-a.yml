@@ -1,3 +1,4 @@
+# Cycle A exact-head recertification gate
 name: V1 Backend legacy return mutation unauthorized recert Cycle A
 
 on:
