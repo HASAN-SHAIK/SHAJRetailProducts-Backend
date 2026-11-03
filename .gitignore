@@ -2,11 +2,14 @@
 node_modules/
 yarn.lock
 
-# Environment variables
+# Environment variables and secrets
 .env
 .env.local
 .env.*.local
 .env.*
+!.env.example
+*.pem
+*.key
 
 # Logs
 logs/

@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 describe('V1 purchase receiving inventory acceptance', () => {
-  const purchaseSource = fs.readFileSync(path.join(__dirname, 'purchaseService.js'), 'utf8');
+  const purchaseSource = fs.readFileSync(path.join(__dirname, 'purchaseService.js'), 'utf8').replace(/\r\n/g, '\n');
   const auditSource = fs.readFileSync(path.join(__dirname, 'stockAuditService.js'), 'utf8');
 
   test('receiving is atomic and establishes purchase stock-audit context before stock mutation', () => {
