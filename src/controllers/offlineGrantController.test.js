@@ -208,4 +208,27 @@ describe('offline POS grant issuer', () => {
     expect(mockResolveDevice).not.toHaveBeenCalled();
     expect(res.json.mock.calls[0][0].code).toBe('OFFLINE_GRANT_DISABLED');
   });
+
+  test('embeds rotated key id (pos-offline-v2) and rejects attacker verification', async () => {
+    process.env.POS_OFFLINE_GRANT_KEY_ID = 'pos-offline-v2';
+    const res = responseMock();
+    await issueOfflineGrant(baseRequest(), res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    const grant = res.json.mock.calls[0][0].offline_grant;
+    const decoded = jwt.decode(grant, { complete: true });
+    expect(decoded.header.kid).toBe('pos-offline-v2');
+
+    // Verifies with matching public key
+    const claims = jwt.verify(grant, publicKey, { algorithms: ['RS256'] });
+    expect(claims.type).toBe('pos_offline_grant');
+
+    // Rejects with unrelated attacker key
+    const attacker = crypto.generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    });
+    expect(() => jwt.verify(grant, attacker.publicKey, { algorithms: ['RS256'] })).toThrow();
+  });
 });

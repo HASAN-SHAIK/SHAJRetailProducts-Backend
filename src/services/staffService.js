@@ -206,8 +206,6 @@ const getStaffPerformance = async (req, query = {}) => {
   const to = toDateOnlyString(query.to);
   const month = String(query.month || '').trim();
 
-  const branchFilter = branchId ? 'AND s.branch_id = $1' : '';
-  const staffParams = branchId ? [branchId] : [];
   const staffResult = await requestPool.query(
     `SELECT s.id AS "staffId",
             s.name,
@@ -229,7 +227,7 @@ const getStaffPerformance = async (req, query = {}) => {
               SUM(paid_amount) AS paid_amount,
               SUM(pending_amount) AS pending_amount
        FROM salaries
-       WHERE ($${staffParams.length + 1}::text IS NULL OR month = $${staffParams.length + 1})
+       WHERE ($2::text IS NULL OR month = $2)
        GROUP BY staff_id
      ) sa ON sa.staff_id = s.id
      LEFT JOIN (
@@ -238,24 +236,14 @@ const getStaffPerformance = async (req, query = {}) => {
               COUNT(*) AS expense_count
        FROM expenses
        WHERE type = 'staff'
-         AND ($${staffParams.length + 2}::date IS NULL OR date >= $${staffParams.length + 2})
-         AND ($${staffParams.length + 3}::date IS NULL OR date <= $${staffParams.length + 3})
+         AND ($3::date IS NULL OR date >= $3)
+         AND ($4::date IS NULL OR date <= $4)
        GROUP BY staff_id
      ) ex ON ex.staff_id = s.id
-     WHERE 1 = 1 ${branchFilter}
+     WHERE ($1::uuid IS NULL OR s.branch_id = $1)
      ORDER BY s.name ASC`,
-    [...staffParams, month || null, from, to]
+    [branchId || null, month || null, from, to]
   );
-
-  const userParams = [];
-  const userConditions = [`u.role IN ('cashier', 'manager', 'staff')`];
-  if (branchId) {
-    userParams.push(branchId);
-    userConditions.push(`(u.all_branch_access = TRUE OR u.branch_id = $${userParams.length})`);
-  }
-  const orderBranchParam = userParams.length + 1;
-  const orderFromParam = userParams.length + 2;
-  const orderToParam = userParams.length + 3;
 
   const userResult = await requestPool.query(
     `SELECT u.id AS "userId",
@@ -272,13 +260,14 @@ const getStaffPerformance = async (req, query = {}) => {
      LEFT JOIN orders o ON o.user_id = u.id
        AND o.transaction_type = 'sale'
        AND o.is_deleted = FALSE
-       AND ($${orderBranchParam}::uuid IS NULL OR o.branch_id = $${orderBranchParam})
-       AND ($${orderFromParam}::date IS NULL OR o.created_at::date >= $${orderFromParam})
-       AND ($${orderToParam}::date IS NULL OR o.created_at::date <= $${orderToParam})
-     WHERE ${userConditions.join(' AND ')}
+       AND ($1::uuid IS NULL OR o.branch_id = $1)
+       AND ($2::date IS NULL OR o.created_at::date >= $2)
+       AND ($3::date IS NULL OR o.created_at::date <= $3)
+     WHERE u.role IN ('cashier', 'manager', 'staff')
+       AND ($1::uuid IS NULL OR u.all_branch_access = TRUE OR u.branch_id = $1)
      GROUP BY u.id, u.name, u.email, u.role, u.branch_id, u.all_branch_access, b.name
      ORDER BY "salesTotal" DESC, "orderCount" DESC, u.name ASC`,
-    [...userParams, branchId || null, from, to]
+    [branchId || null, from, to]
   );
 
   const profiles = staffResult.rows.map((row) => ({

@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 describe('V1 manual inventory adjustment acceptance', () => {
-  const serviceSource = fs.readFileSync(path.join(__dirname, 'stockService.js'), 'utf8');
+  const serviceSource = fs.readFileSync(path.join(__dirname, 'stockService.js'), 'utf8').replace(/\r\n/g, '\n');
   const routeSource = fs.readFileSync(path.join(__dirname, '..', 'routes', 'stockRoutes.js'), 'utf8');
 
   test('manual adjustment is Central admin-only and not a direct product edit', () => {

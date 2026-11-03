@@ -59,7 +59,7 @@ const resolveCanonicalCustomer = async (client, customer, event, localVersion) =
     const created = await client.query(
       `INSERT INTO customers(
          name,mobile,phone,type,email,gst_number,credit_limit,current_balance,is_active,updated_at
-       ) VALUES($1,$2,$2,'retail',$3,$4,0,0,$5,NOW())
+       ) VALUES($1,$2::text,$2::text,'retail',$3,$4,0,0,$5,NOW())
        RETURNING id`,
       [
         requiredString(customer.name, 'customer.name'),

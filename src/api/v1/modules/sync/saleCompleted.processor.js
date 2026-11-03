@@ -63,7 +63,7 @@ const resolveCanonicalCustomerId = async (client, sourceCustomerId) => {
   const mapping = await client.query(
     `SELECT canonical_customer_id
        FROM pos_customer_mappings
-      WHERE source_customer_id=$1
+      WHERE pos_customer_id=$1
       LIMIT 1`,
     [sourceId]
   );

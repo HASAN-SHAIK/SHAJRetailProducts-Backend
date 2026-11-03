@@ -299,7 +299,7 @@ const importProducts = async (req, file) => {
        FROM products
        WHERE barcode = ANY($1::text[])
          AND is_deleted = FALSE
-         AND ($2::uuid IS NULL OR branch_id = $2)`,
+         AND ($2::uuid IS NULL OR branch_id = $2 OR branch_id IS NULL)`,
       [barcodes, branchId]
     );
     existingRes.rows.forEach((row) => existingSet.add(row.barcode));
@@ -555,7 +555,7 @@ const importProductsFromRows = async (req, rows = []) => {
        FROM products
        WHERE barcode = ANY($1::text[])
          AND is_deleted = FALSE
-         AND ($2::uuid IS NULL OR branch_id = $2)`,
+         AND ($2::uuid IS NULL OR branch_id = $2 OR branch_id IS NULL)`,
       [barcodes, branchId]
     );
     existingRes.rows.forEach((row) => existingSet.add(row.barcode));
@@ -631,10 +631,11 @@ const importProductsFromRows = async (req, rows = []) => {
                  is_batch_enabled = CASE WHEN $12 THEN TRUE ELSE p.is_batch_enabled END,
                  branch_id = COALESCE(p.branch_id, $14),
                  is_weight_based = COALESCE($15, p.is_weight_based),
-                 time_for_delivery = COALESCE($16, p.time_for_delivery)
+                 time_for_delivery = COALESCE($16, p.time_for_delivery),
+                 updated_at = NOW()
              WHERE p.barcode = $9
                AND p.is_deleted = FALSE
-               AND ($14::uuid IS NULL OR p.branch_id = $14)
+               AND ($14::uuid IS NULL OR p.branch_id = $14 OR p.branch_id IS NULL)
              RETURNING p.id`,
             [
               name,
