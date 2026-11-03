@@ -7,6 +7,22 @@ const {
   addPayment,
   getLedger
 } = require('./service');
+const { canManageCustomerFinancials, listIgnoredFinancialFields } = require('./financialPolicy');
+
+const writeOptions = (req) => ({ canManageFinancials: canManageCustomerFinancials(req.user) });
+
+const writeFailure = (res, error, fallbackCode, fallbackMessage) => {
+  const status = error.status || error.statusCode || 500;
+  if (status === 409) {
+    return jsonError(res, 409, error.code || 'DUPLICATE_CUSTOMER', error.message, error.details);
+  }
+  return jsonError(res, 500, fallbackCode, error.message || fallbackMessage);
+};
+
+const withIgnored = (req, body) => {
+  const ignored = listIgnoredFinancialFields(req.body, canManageCustomerFinancials(req.user));
+  return ignored.length ? { ...body, ignored_fields: ignored } : body;
+};
 
 const requireNamePhone = (payload) => {
   const name = String(payload?.name || payload?.customer_name || '').trim();
@@ -22,21 +38,21 @@ const handleCreateCustomer = async (req, res) => {
     if (validation) {
       return jsonError(res, 400, 'VALIDATION_ERROR', validation);
     }
-    const customer = await createCustomer(req.tenantPool, req.body);
-    return jsonOk(res, { customer });
+    const customer = await createCustomer(req.tenantPool, req.body, writeOptions(req));
+    return jsonOk(res, withIgnored(req, { customer }));
   } catch (error) {
-    return jsonError(res, 500, 'CUSTOMER_CREATE_FAILED', error.message || 'Failed to create customer');
+    return writeFailure(res, error, 'CUSTOMER_CREATE_FAILED', 'Failed to create customer');
   }
 };
 
 const handleUpdateCustomer = async (req, res) => {
   try {
     const { id } = req.params;
-    const customer = await updateCustomer(req.tenantPool, id, req.body);
+    const customer = await updateCustomer(req.tenantPool, id, req.body, writeOptions(req));
     if (!customer) return jsonError(res, 404, 'NOT_FOUND', 'Customer not found');
-    return jsonOk(res, { customer });
+    return jsonOk(res, withIgnored(req, { customer }));
   } catch (error) {
-    return jsonError(res, 500, 'CUSTOMER_UPDATE_FAILED', error.message || 'Failed to update customer');
+    return writeFailure(res, error, 'CUSTOMER_UPDATE_FAILED', 'Failed to update customer');
   }
 };
 

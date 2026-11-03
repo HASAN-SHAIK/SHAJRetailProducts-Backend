@@ -45,9 +45,10 @@ describe('V1 Central customer CRUD authority and tenant-global scope', () => {
     await updateCustomer(tenantPool, 11, { name: 'Asha Updated', email: 'asha@example.com' });
 
     const [, params] = tenantPool.query.mock.calls[0];
-    expect(params[3]).toBeNull();
-    expect(params[7]).toBeNull();
-    expect(params[8]).toBeNull();
+    expect(params[3]).toBeNull(); // type preserved
+    expect(params[7]).toBeNull(); // credit_limit preserved (no financial permission)
+    expect(params.slice(13, 19)).toEqual([false, false, false, false, false, false]); // nothing cleared
+    expect(tenantPool.query.mock.calls[0][0]).not.toMatch(/current_balance\s*=/);
   });
 
   test('customer list is tenant-global across stores and never branch-filtered', async () => {

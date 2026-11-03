@@ -1,8 +1,14 @@
+const { canManageCustomerFinancials } = require('../../../../modules/customers/financialPolicy');
 const legacyCustomerService = require('../../../../modules/customers/service');
 
 class CustomerRepository {
-  constructor(pool) {
+  constructor(pool, user = null) {
     this.pool = pool;
+    this.user = user;
+  }
+
+  writeOptions() {
+    return { canManageFinancials: canManageCustomerFinancials(this.user) };
   }
 
   async findMany({ search, offset, limit, sortColumn, sortOrder }) {
@@ -48,11 +54,11 @@ class CustomerRepository {
   }
 
   async create(payload) {
-    return legacyCustomerService.createCustomer(this.pool, payload);
+    return legacyCustomerService.createCustomer(this.pool, payload, this.writeOptions());
   }
 
   async update(id, payload) {
-    return legacyCustomerService.updateCustomer(this.pool, id, payload);
+    return legacyCustomerService.updateCustomer(this.pool, id, payload, this.writeOptions());
   }
 
   async deactivate(id) {

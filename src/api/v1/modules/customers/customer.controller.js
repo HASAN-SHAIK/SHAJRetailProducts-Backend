@@ -21,13 +21,17 @@ const getCustomer = asyncHandler(async (req, res) => {
 });
 
 const createCustomer = asyncHandler(async (req, res) => {
-  const customer = await createCustomerService(req).create(req.body);
-  return sendCreated(res, { customer });
+  const service = createCustomerService(req);
+  const customer = await service.create(req.body);
+  const ignored = service.ignoredFields(req.body);
+  return sendCreated(res, ignored.length ? { customer, ignored_fields: ignored } : { customer });
 });
 
 const updateCustomer = asyncHandler(async (req, res) => {
-  const customer = await createCustomerService(req).update(req.params.id, req.body);
-  return sendSuccess(res, { customer });
+  const service = createCustomerService(req);
+  const customer = await service.update(req.params.id, req.body);
+  const ignored = service.ignoredFields(req.body);
+  return sendSuccess(res, ignored.length ? { customer, ignored_fields: ignored } : { customer });
 });
 
 const deleteCustomer = asyncHandler(async (req, res) => {

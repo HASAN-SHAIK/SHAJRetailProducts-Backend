@@ -1,6 +1,7 @@
 const { AppError } = require('../../shared/errors/AppError');
 const { parsePagination } = require('../../shared/utils/pagination');
 const { parseSort } = require('../../shared/utils/sort');
+const { canManageCustomerFinancials, listIgnoredFinancialFields } = require('../../../../modules/customers/financialPolicy');
 const { CustomerRepository } = require('./customer.repository');
 const { toCustomerDto, toCustomerDetailDto } = require('./customer.dto');
 
@@ -12,7 +13,8 @@ const SORTABLE = {
 
 class CustomerService {
   constructor(req) {
-    this.repo = new CustomerRepository(req.tenantPool);
+    this.repo = new CustomerRepository(req.tenantPool, req.user);
+    this.user = req.user;
   }
 
   async list(query) {
@@ -37,6 +39,10 @@ class CustomerService {
   async create(body) {
     const row = await this.repo.create(body);
     return toCustomerDto(row);
+  }
+
+  ignoredFields(body) {
+    return listIgnoredFinancialFields(body, canManageCustomerFinancials(this.user));
   }
 
   async update(id, body) {
