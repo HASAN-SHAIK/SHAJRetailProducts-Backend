@@ -27,13 +27,14 @@ const BRANCH_A = '11111111-1111-4111-8111-111111111111';
 const BRANCH_B = '22222222-2222-4222-8222-222222222222';
 
 describe('V1 protected Central route permissions', () => {
-  test('cashier keeps ordinary sale/customer/read authority but cannot invoke privileged order mutations', () => {
+  test('cashier keeps ordinary sale/customer-read authority but cannot mutate customers or invoke privileged order mutations', () => {
     const cashier = { type: 'tenant', role: 'cashier' };
     expect(runGuard(cashier, 'pos:sale').nextCalled).toBe(true);
     expect(runGuard(cashier, 'products:read').nextCalled).toBe(true);
-    expect(runGuard(cashier, 'customers:write').nextCalled).toBe(true);
+    expect(runGuard(cashier, 'customers:read').nextCalled).toBe(true);
+    expect(runGuard(cashier, 'customers:write').nextCalled).toBe(false);
 
-    for (const permission of ['pos:discount', 'pos:refund', 'pos:void', 'orders:write', 'inventory:write']) {
+    for (const permission of ['customers:write', 'pos:discount', 'pos:refund', 'pos:void', 'orders:write', 'inventory:write']) {
       const result = runGuard(cashier, permission);
       expect(result.nextCalled).toBe(false);
       expect(result.status).toBe(403);

@@ -23,16 +23,18 @@ const {
 
 const router = express.Router();
 
-// Financial mutations remain Central/admin authority. Read-only books and
-// statements reuse the existing reports:read permission rather than creating a
-// parallel accounting role model.
-router.post('/receipt', isAdmin, validateReceiptEntry, createReceipt);
-router.post('/payment', isAdmin, validatePaymentEntry, createPayment);
-router.get('/opening-setup', requirePermission('reports:read'), getOpeningSetupSummary);
+// Operational receipt and payment entries are authorized via dedicated accounting permissions.
+// Opening setup and finalization remain strictly admin authority.
+router.post('/receipt', requirePermission('accounting:receipt:create'), validateReceiptEntry, createReceipt);
+router.post('/payment', requirePermission('accounting:payment:create'), validatePaymentEntry, createPayment);
+router.get('/receipt', requirePermission('accounting:receipt:read'), getReceiptEntries);
+router.get('/payment', requirePermission('accounting:payment:read'), getPaymentEntries);
+
+router.get('/opening-setup', isAdmin, getOpeningSetupSummary);
 router.post('/opening-setup', isAdmin, saveOpeningSetup);
 router.post('/finalize-opening', isAdmin, finalizeOpening);
-router.get('/receipt', requirePermission('reports:read'), getReceiptEntries);
-router.get('/payment', requirePermission('reports:read'), getPaymentEntries);
+
+// Read-only accounting books and reports require reports:read permission.
 router.get('/cashbook', requirePermission('reports:read'), getCashBook);
 router.get('/bankbook', requirePermission('reports:read'), getBankBook);
 router.get('/cash-book', requirePermission('reports:read'), getCashBook);

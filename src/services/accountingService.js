@@ -5,12 +5,15 @@ const { getDateRange } = require('../utils/dateRange');
 const { resolveBranchIdFromRequest } = require('../utils/branch');
 const {
   buildValidationError,
+  buildConflictError,
   normalizeNumber,
   resolveCashBankLedgerName,
   getExistingTxnByClientTxnId,
   insertLedgerEntries,
 } = require('./ledgerPostingService');
- 
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 const parseNumberInput = (value) => {
   if (value === null || value === undefined) return NaN;
   if (typeof value === 'string' && value.trim() === '') return NaN;
@@ -34,35 +37,136 @@ const normalizeOrderStatusForBalance = ({ total, paid, returned }) => {
   return remaining <= 0 ? 'completed' : 'pending';
 };
 
+const areAmountsEqual = (a, b) => {
+  const numA = Number(a);
+  const numB = Number(b);
+  if (!Number.isFinite(numA) || !Number.isFinite(numB)) return false;
+  return Math.abs(numA - numB) < 0.001;
+};
+
+const assertReceiptIdempotencyMatch = (existing, expected) => {
+  if (!existing) {
+    throw buildConflictError('client_txn_id has already been used with different transaction parameters.');
+  }
+
+  const amountMatch = areAmountsEqual(existing.amount ?? existing.total_price, expected.amount);
+  const partyTypeMatch = String(existing.party_type || '').toLowerCase() === 'customer';
+  const partyIdMatch = Number(existing.party_id) === Number(expected.customerId);
+  const modeMatch = String(existing.payment_mode || '').toLowerCase() === String(expected.normalizedMode || '').toLowerCase();
+
+  const existingOrderId = Number.isFinite(Number(existing.order_id)) ? Number(existing.order_id) : null;
+  const expectedOrderId = Number.isFinite(Number(expected.orderId)) ? Number(expected.orderId) : null;
+  const orderMatch = existingOrderId === expectedOrderId;
+
+  const existingBranch = existing.branch_id ? String(existing.branch_id).toLowerCase() : null;
+  const expectedBranch = expected.branchId ? String(expected.branchId).toLowerCase() : null;
+  const branchMatch = !expectedBranch || !existingBranch || existingBranch === expectedBranch;
+
+  const txnType = String(existing.txn_type || '').toLowerCase();
+  const typeMatch = txnType === 'receipt' || existing.direction === 'in';
+
+  if (!amountMatch || !partyTypeMatch || !partyIdMatch || !modeMatch || !orderMatch || !branchMatch || !typeMatch) {
+    throw buildConflictError('client_txn_id has already been used with different transaction parameters.');
+  }
+};
+
+const assertPaymentIdempotencyMatch = (existing, expected) => {
+  if (!existing) {
+    throw buildConflictError('client_txn_id has already been used with different transaction parameters.');
+  }
+
+  const amountMatch = areAmountsEqual(existing.amount ?? existing.total_price, expected.amount);
+  const expectedPartyType = expected.type === 'supplier' ? 'supplier' : 'expense';
+  const partyTypeMatch = String(existing.party_type || '').toLowerCase() === expectedPartyType;
+
+  let partyIdMatch = true;
+  if (expected.type === 'supplier') {
+    partyIdMatch = Number(existing.party_id) === Number(expected.partyId);
+  }
+
+  const existingMode = String(existing.payment_mode || '').toLowerCase();
+  const modeMatch = ['cash', 'bank'].includes(existingMode) && existingMode === String(expected.normalizedMode || '').toLowerCase();
+
+  const existingBranch = existing.branch_id ? String(existing.branch_id).toLowerCase() : null;
+  const expectedBranch = expected.branchId ? String(expected.branchId).toLowerCase() : null;
+  const branchMatch = !expectedBranch || !existingBranch || existingBranch === expectedBranch;
+
+  const txnType = String(existing.txn_type || '').toLowerCase();
+  const typeMatch = txnType === 'payment' || existing.direction === 'out';
+
+  if (!amountMatch || !partyTypeMatch || !partyIdMatch || !modeMatch || !branchMatch || !typeMatch) {
+    throw buildConflictError('client_txn_id has already been used with different transaction parameters.');
+  }
+};
+
 const createReceipt = async (req, payload = {}) => {
   const requestPool = getRequestPool(req);
   const client = await requestPool.connect();
+  let clientTxnId = null;
+  let customerId = null;
+  let amount = null;
+  let normalizedMode = null;
+  let orderId = null;
+  let branchId = null;
+
   try {
-    const customerId = parseNumberInput(payload.customer_id);
-    const amount = parseNumberInput(payload.amount);
+    customerId = parseNumberInput(payload.customer_id);
+    amount = parseNumberInput(payload.amount);
     if (!Number.isFinite(customerId)) throw buildValidationError('customer_id is required.');
     if (!Number.isFinite(amount) || amount <= 0) throw buildValidationError('amount must be > 0.');
-    const orderId = parseNumberInput(payload.order_id || payload.orderId);
-    const paymentMode = normalizePaymentMode(payload.payment_mode || payload.paymentMode);
-    const normalizedMode = paymentMode === 'upi' ? 'online' : paymentMode;
+    orderId = parseNumberInput(payload.order_id || payload.orderId);
+    const rawMode = String(payload.payment_mode || payload.paymentMode || '').trim().toLowerCase();
+    normalizedMode = rawMode === 'upi' ? 'online' : rawMode;
     if (!['cash', 'bank', 'online'].includes(normalizedMode)) {
       throw buildValidationError('payment_mode must be cash, bank, or online for receipt entry.');
     }
     const notes = payload.notes || null;
-    const branchId = payload.branch_id || payload.branchId || resolveBranchIdFromRequest(req);
+    branchId = resolveBranchIdFromRequest(req);
     const date = payload.date || payload.created_at || null;
-    const clientTxnId = payload.client_txn_id || payload.clientTxnId || null;
-    if (!clientTxnId) throw buildValidationError('client_txn_id is required.');
+    const rawClientTxnId = String(payload.client_txn_id || payload.clientTxnId || '').trim();
+    if (!rawClientTxnId || !UUID_REGEX.test(rawClientTxnId)) {
+      throw buildValidationError('client_txn_id must be a valid UUID.');
+    }
+    clientTxnId = rawClientTxnId;
 
     await client.query('BEGIN');
     const existingTxn = await getExistingTxnByClientTxnId(client, clientTxnId);
     if (existingTxn) {
+      assertReceiptIdempotencyMatch(existingTxn, {
+        customerId,
+        amount,
+        normalizedMode,
+        orderId: Number.isFinite(orderId) ? orderId : null,
+        branchId,
+      });
       await client.query('COMMIT');
-      return { id: existingTxn.id, created_at: existingTxn.created_at, idempotent: true };
+      return {
+        id: existingTxn.id,
+        created_at: existingTxn.created_at,
+        order_id: existingTxn.order_id || null,
+        idempotent: true,
+      };
     }
 
     const customerRes = await client.query('SELECT id FROM customers WHERE id = $1 FOR UPDATE', [customerId]);
     if (customerRes.rowCount === 0) throw buildValidationError('customer_id is invalid.');
+
+    if (Number.isFinite(orderId)) {
+      // Validate that the linked order is a sales order belonging to this customer and not a purchase order
+      const orderCheckRes = await client.query(
+        `SELECT id, total_price, total_paid, returned_amount, order_status, customer_id
+         FROM orders
+         WHERE id = $1 AND (transaction_type IS NULL OR transaction_type <> 'purchase')
+         FOR UPDATE`,
+        [orderId]
+      );
+      if (orderCheckRes.rowCount === 0) {
+        throw buildValidationError('order_id is invalid or is not a sales order.');
+      }
+      if (Number(orderCheckRes.rows[0].customer_id) !== Number(customerId)) {
+        throw buildValidationError('order_id does not belong to the specified customer.');
+      }
+    }
 
     const insertRes = await client.query(
       `INSERT INTO transactions (order_id, total_price, payment_mode, created_at, amount, party_type, party_id, direction, txn_type, notes, branch_id, client_txn_id)
@@ -90,8 +194,10 @@ const createReceipt = async (req, payload = {}) => {
     });
 
     if (Number.isFinite(orderId)) {
+      // The transactions_refresh_total_paid trigger already updated orders.total_paid.
+      // Re-read order to evaluate status without manually double-incrementing total_paid.
       const orderRes = await client.query(
-        `SELECT id, total_price, total_paid, returned_amount
+        `SELECT id, total_price, total_paid, returned_amount, order_status
          FROM orders
          WHERE id = $1
          FOR UPDATE`,
@@ -102,15 +208,21 @@ const createReceipt = async (req, payload = {}) => {
         const total = Number(orderRow.total_price || 0);
         const paid = Number(orderRow.total_paid || 0);
         const returned = Number(orderRow.returned_amount || 0);
-        const nextTotalPaid = paid + amount;
-        const nextStatus = normalizeOrderStatusForBalance({ total, paid: nextTotalPaid, returned });
+        const nextStatus = normalizeOrderStatusForBalance({ total, paid, returned });
         await client.query(
           `UPDATE orders
-           SET total_paid = $1, order_status = $2
-           WHERE id = $3`,
-          [nextTotalPaid, nextStatus, orderId]
+           SET order_status = $1
+           WHERE id = $2 AND order_status <> $1`,
+          [nextStatus, orderId]
         );
       }
+    } else {
+      // On-account receipt: insert into customer_payments so trg_customer_payments_outstanding recomputes current_balance
+      await client.query(
+        `INSERT INTO customer_payments (customer_id, amount, payment_mode, notes, created_at)
+         VALUES ($1, $2, $3, $4, COALESCE($5, NOW()))`,
+        [customerId, amount, normalizedMode, notes, date]
+      );
     }
 
     await client.query('COMMIT');
@@ -121,6 +233,42 @@ const createReceipt = async (req, payload = {}) => {
     };
   } catch (error) {
     await client.query('ROLLBACK');
+
+    const isClientTxnConflict =
+      error?.code === '23505' &&
+      (error?.constraint === 'uq_transactions_client_txn_id' ||
+       error?.constraint === 'idx_transactions_client_txn' ||
+       error?.constraint === 'uq_ledger_entries_client_ledger' ||
+       error?.constraint === 'idx_unique_client_txn' ||
+       String(error?.constraint || '').includes('client_txn') ||
+       String(error?.detail || '').includes('client_txn_id'));
+
+    if (clientTxnId && isClientTxnConflict) {
+      const existingRes = await requestPool.query(
+        `SELECT id, party_type, party_id, txn_type, direction, total_price, amount, payment_mode, order_id, branch_id, created_at, client_txn_id
+         FROM transactions
+         WHERE client_txn_id = $1
+         LIMIT 1`,
+        [clientTxnId]
+      );
+
+      if (existingRes.rowCount > 0) {
+        assertReceiptIdempotencyMatch(existingRes.rows[0], {
+          customerId,
+          amount,
+          normalizedMode,
+          orderId: Number.isFinite(orderId) ? orderId : null,
+          branchId,
+        });
+        return {
+          id: existingRes.rows[0].id,
+          created_at: existingRes.rows[0].created_at,
+          order_id: existingRes.rows[0].order_id || null,
+          idempotent: true,
+        };
+      }
+    }
+
     throw error;
   } finally {
     client.release();
@@ -130,36 +278,85 @@ const createReceipt = async (req, payload = {}) => {
 const createPayment = async (req, payload = {}) => {
   const requestPool = getRequestPool(req);
   const client = await requestPool.connect();
+  let clientTxnId = null;
+  let type = null;
+  let supplierId = null;
+  let amount = null;
+  let normalizedMode = null;
+  let orderId = null;
+  let branchId = null;
+
   try {
-    const type = String(payload.type || 'supplier').trim().toLowerCase();
-    const supplierId = parseNumberInput(payload.supplier_id);
-    const amount = parseNumberInput(payload.amount);
+    type = String(payload.type || 'supplier').trim().toLowerCase();
+    supplierId = parseNumberInput(payload.supplier_id);
+    amount = parseNumberInput(payload.amount);
     if (!['supplier', 'expense', 'drawings'].includes(type)) throw buildValidationError('type must be supplier, expense, or drawings.');
     if (type === 'supplier' && !Number.isFinite(supplierId)) throw buildValidationError('supplier_id is required.');
     if (!Number.isFinite(amount) || amount <= 0) throw buildValidationError('amount must be > 0.');
-    const orderId = parseNumberInput(payload.order_id || payload.orderId);
-    const paymentMode = normalizePaymentMode(payload.payment_mode || payload.paymentMode);
-    const normalizedMode = paymentMode === 'upi' ? 'online' : paymentMode;
-    if (!['cash', 'bank', 'online'].includes(normalizedMode)) {
-      throw buildValidationError('payment_mode must be cash, bank, or online for payment entry.');
+
+    // Payments strictly restrict payment_mode to cash and bank only (no online/upi)
+    const rawMode = String(payload.payment_mode || payload.paymentMode || '').trim().toLowerCase();
+    if (!['cash', 'bank'].includes(rawMode)) {
+      throw buildValidationError('payment_mode must be cash or bank for payment entry.');
     }
+    normalizedMode = rawMode;
+
+    // order_id is only allowed for supplier payments (purchase orders). Expense and drawings never attach an order_id.
+    const rawOrderId = parseNumberInput(payload.order_id || payload.orderId);
+    orderId = type === 'supplier' && Number.isFinite(rawOrderId) ? rawOrderId : null;
+    if (type !== 'supplier' && (payload.order_id !== undefined && payload.order_id !== null && payload.order_id !== '')) {
+      throw buildValidationError('order_id is not allowed for expense or drawings payment.');
+    }
+
     const notes = payload.notes || null;
-    const branchId = payload.branch_id || payload.branchId || resolveBranchIdFromRequest(req);
+    branchId = resolveBranchIdFromRequest(req);
     const date = payload.date || payload.created_at || null;
-    const clientTxnId = payload.client_txn_id || payload.clientTxnId || null;
+    const rawClientTxnId = String(payload.client_txn_id || payload.clientTxnId || '').trim();
     const expenseCategory = payload.expense_category || payload.expenseCategory || null;
-    if (!clientTxnId) throw buildValidationError('client_txn_id is required.');
+    if (!rawClientTxnId || !UUID_REGEX.test(rawClientTxnId)) {
+      throw buildValidationError('client_txn_id must be a valid UUID.');
+    }
+    clientTxnId = rawClientTxnId;
 
     await client.query('BEGIN');
     const existingTxn = await getExistingTxnByClientTxnId(client, clientTxnId);
     if (existingTxn) {
+      assertPaymentIdempotencyMatch(existingTxn, {
+        type,
+        partyId: type === 'supplier' ? supplierId : null,
+        amount,
+        normalizedMode,
+        branchId,
+      });
       await client.query('COMMIT');
-      return { id: existingTxn.id, created_at: existingTxn.created_at, idempotent: true };
+      return {
+        id: existingTxn.id,
+        created_at: existingTxn.created_at,
+        order_id: existingTxn.order_id || null,
+        idempotent: true,
+      };
     }
 
     if (type === 'supplier') {
       const supplierRes = await client.query('SELECT id FROM suppliers WHERE id = $1 FOR UPDATE', [supplierId]);
       if (supplierRes.rowCount === 0) throw buildValidationError('supplier_id is invalid.');
+
+      if (Number.isFinite(orderId)) {
+        // Enforce that order_id is strictly a purchase order for this supplier and NEVER a sales order
+        const purchaseCheckRes = await client.query(
+          `SELECT id, total_price, total_paid, order_status, supplier_id
+           FROM orders
+           WHERE id = $1 AND transaction_type = 'purchase'
+           FOR UPDATE`,
+          [orderId]
+        );
+        if (purchaseCheckRes.rowCount === 0) {
+          throw buildValidationError('order_id is invalid or is not a purchase order.');
+        }
+        if (Number(purchaseCheckRes.rows[0].supplier_id) !== Number(supplierId)) {
+          throw buildValidationError('order_id does not belong to the specified supplier.');
+        }
+      }
     }
 
     const insertRes = await client.query(
@@ -175,7 +372,7 @@ const createPayment = async (req, payload = {}) => {
         type === 'supplier' ? supplierId : null,
         notes,
         branchId,
-        clientTxnId
+        clientTxnId,
       ]
     );
 
@@ -209,8 +406,10 @@ const createPayment = async (req, payload = {}) => {
     });
 
     if (type === 'supplier' && Number.isFinite(orderId)) {
+      // The transactions_refresh_total_paid trigger already updated orders.total_paid.
+      // Re-read order to evaluate status without manually double-incrementing total_paid.
       const purchaseRes = await client.query(
-        `SELECT id, total_price, total_paid
+        `SELECT id, total_price, total_paid, order_status
          FROM orders
          WHERE id = $1 AND transaction_type = 'purchase'
          FOR UPDATE`,
@@ -220,13 +419,12 @@ const createPayment = async (req, payload = {}) => {
         const purchase = purchaseRes.rows[0];
         const totalPrice = Number(purchase.total_price || 0);
         const totalPaid = Number(purchase.total_paid || 0);
-        const nextTotalPaid = totalPaid + amount;
-        const nextStatus = nextTotalPaid >= totalPrice ? 'completed' : 'pending';
+        const nextStatus = totalPaid >= totalPrice ? 'completed' : 'pending';
         await client.query(
           `UPDATE orders
-           SET total_paid = $1, order_status = $2
-           WHERE id = $3`,
-          [nextTotalPaid, nextStatus, orderId]
+           SET order_status = $1
+           WHERE id = $2 AND order_status <> $1`,
+          [nextStatus, orderId]
         );
       }
     }
@@ -235,15 +433,52 @@ const createPayment = async (req, payload = {}) => {
     return {
       id: insertRes.rows[0]?.id,
       created_at: insertRes.rows[0]?.created_at,
-      order_id: Number.isFinite(orderId) ? orderId : null
+      order_id: Number.isFinite(orderId) ? orderId : null,
     };
   } catch (error) {
     await client.query('ROLLBACK');
+
+    const isClientTxnConflict =
+      error?.code === '23505' &&
+      (error?.constraint === 'uq_transactions_client_txn_id' ||
+       error?.constraint === 'idx_transactions_client_txn' ||
+       error?.constraint === 'uq_ledger_entries_client_ledger' ||
+       error?.constraint === 'idx_unique_client_txn' ||
+       String(error?.constraint || '').includes('client_txn') ||
+       String(error?.detail || '').includes('client_txn_id'));
+
+    if (clientTxnId && isClientTxnConflict) {
+      const existingRes = await requestPool.query(
+        `SELECT id, party_type, party_id, txn_type, direction, total_price, amount, payment_mode, order_id, branch_id, created_at, client_txn_id
+         FROM transactions
+         WHERE client_txn_id = $1
+         LIMIT 1`,
+        [clientTxnId]
+      );
+
+      if (existingRes.rowCount > 0) {
+        assertPaymentIdempotencyMatch(existingRes.rows[0], {
+          type,
+          partyId: type === 'supplier' ? supplierId : null,
+          amount,
+          normalizedMode,
+          branchId,
+        });
+        return {
+          id: existingRes.rows[0].id,
+          created_at: existingRes.rows[0].created_at,
+          order_id: existingRes.rows[0].order_id || null,
+          idempotent: true,
+        };
+      }
+    }
+
     throw error;
   } finally {
     client.release();
   }
 };
+
 
 const buildBookQuery = (paymentModes = []) => {
   const modes = paymentModes.map((value) => String(value).toLowerCase());

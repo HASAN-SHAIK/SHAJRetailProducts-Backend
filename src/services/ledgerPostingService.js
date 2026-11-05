@@ -4,6 +4,13 @@ const buildValidationError = (message) => {
   return err;
 };
 
+const buildConflictError = (message = 'client_txn_id has already been used with different transaction parameters.') => {
+  const err = new Error(message);
+  err.status = 409;
+  err.code = 'IDEMPOTENCY_CONFLICT';
+  return err;
+};
+
 const normalizeNumber = (value) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -48,7 +55,7 @@ const assertBalanced = (lines = []) => {
 const getExistingTxnByClientTxnId = async (client, clientTxnId) => {
   if (!clientTxnId) return null;
   const res = await client.query(
-    `SELECT id, created_at, txn_type
+    `SELECT id, created_at, txn_type, direction, party_type, party_id, total_price, amount, payment_mode, order_id, branch_id, client_txn_id
      FROM transactions
      WHERE client_txn_id = $1
      LIMIT 1`,
@@ -124,6 +131,7 @@ const insertLedgerEntries = async ({
 
 module.exports = {
   buildValidationError,
+  buildConflictError,
   normalizeNumber,
   resolveCashBankLedgerName,
   getLedgerIdByName,

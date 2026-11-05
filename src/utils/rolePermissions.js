@@ -6,6 +6,13 @@ const POS_PERMISSIONS = Object.freeze({
   APPROVE: 'pos:approve',
 });
 
+const ACCOUNTING_PERMISSIONS = Object.freeze({
+  RECEIPT_CREATE: 'accounting:receipt:create',
+  RECEIPT_READ: 'accounting:receipt:read',
+  PAYMENT_CREATE: 'accounting:payment:create',
+  PAYMENT_READ: 'accounting:payment:read',
+});
+
 const ROLE_PERMISSIONS = {
   admin: ['*'],
   manager: [
@@ -20,6 +27,10 @@ const ROLE_PERMISSIONS = {
     'suppliers:read',
     'expenses:read',
     'reports:read',
+    ACCOUNTING_PERMISSIONS.RECEIPT_CREATE,
+    ACCOUNTING_PERMISSIONS.RECEIPT_READ,
+    ACCOUNTING_PERMISSIONS.PAYMENT_CREATE,
+    ACCOUNTING_PERMISSIONS.PAYMENT_READ,
     POS_PERMISSIONS.SALE,
     POS_PERMISSIONS.DISCOUNT,
     POS_PERMISSIONS.VOID,
@@ -30,8 +41,9 @@ const ROLE_PERMISSIONS = {
     'products:read',
     'orders:read',
     'customers:read',
-    'customers:write',
     'inventory:read',
+    ACCOUNTING_PERMISSIONS.RECEIPT_CREATE,
+    ACCOUNTING_PERMISSIONS.RECEIPT_READ,
     POS_PERMISSIONS.SALE,
   ],
   // Transitional general store role. Keep the existing central permissions so
@@ -80,6 +92,7 @@ const hasPermission = (user, permission) => {
 
 module.exports = {
   POS_PERMISSIONS,
+  ACCOUNTING_PERMISSIONS,
   ROLE_PERMISSIONS,
   getPermissionsForRole,
   getStorePermissions,
