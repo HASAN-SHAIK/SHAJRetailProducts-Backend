@@ -27,6 +27,7 @@ const purchaseReturnRoutes = require('./purchaseReturnRoutes');
 const hsnRoutes = require('./hsnRoutes');
 const batchRoutes = require('./batchRoutes');
 const accountingRoutes = require('./accountingRoutes');
+const shiftRoutes = require('./shiftRoutes');
 const importsRoutes = require('./importsRoutes');
 const dataQualityRoutes = require('./dataQualityRoutes');
 const ownerDailyDigestRoutes = require('./ownerDailyDigestRoutes');
@@ -96,6 +97,7 @@ router.use('/owner-digest', ownerDailyDigestRoutes);
 router.use('/hsn', hsnRoutes);
 router.use('/batches', batchRoutes);
 router.use('/accounts', accountingRoutes);
+router.use('/shifts', shiftRoutes);
 router.get('/tenant/me', getTenantMe);
 router.get('/banner', getPlatformBanner);
 router.get(
@@ -134,3 +136,4 @@ router.post('/pos-registration/requests/:requestId/approve', isAdmin, approveReg
 router.post('/pos-registration/requests/:requestId/reject', isAdmin, rejectRegistrationRequest);
 
 module.exports = router;
+
