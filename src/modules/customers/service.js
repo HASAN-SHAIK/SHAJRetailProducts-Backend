@@ -50,7 +50,7 @@ const createCustomer = async (pool, payload) => {
     existingRes = await pool.query(
       `SELECT id
        FROM customers
-       WHERE regexp_replace(COALESCE(phone, mobile, ''), '\D', '', 'g') = $1
+       WHERE regexp_replace(COALESCE(phone, mobile, ''), '\\D', '', 'g') = $1
        ORDER BY updated_at DESC NULLS LAST, id DESC
        LIMIT 1`,
       [normalizedPhone]
@@ -60,7 +60,7 @@ const createCustomer = async (pool, payload) => {
       `SELECT id
        FROM customers
        WHERE LOWER(TRIM(COALESCE(name, ''))) = LOWER(TRIM($1))
-         AND COALESCE(NULLIF(regexp_replace(COALESCE(phone, mobile, ''), '\D', '', 'g'), ''), '') = ''
+         AND COALESCE(NULLIF(regexp_replace(COALESCE(phone, mobile, ''), '\\D', '', 'g'), ''), '') = ''
        ORDER BY updated_at DESC NULLS LAST, id DESC
        LIMIT 1`,
       [input.name || '']
@@ -69,11 +69,12 @@ const createCustomer = async (pool, payload) => {
   if (existingRes.rowCount > 0) {
     return updateCustomer(pool, existingRes.rows[0].id, payload);
   }
+
   const result = await pool.query(
     `INSERT INTO customers (
       name,
-      mobile,
       phone,
+      mobile,
       type,
       email,
       shop_name,
@@ -84,27 +85,25 @@ const createCustomer = async (pool, payload) => {
       is_active,
       location,
       address,
+      created_at,
       updated_at
     ) VALUES (
-      $1,$2,$3,$4,$5,$6,$7,$8,COALESCE($9,0),$10,$11,$12,$13,NOW()
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+      COALESCE($11, TRUE), $12, $13, NOW(), NOW()
     )
     RETURNING *`,
     [
       input.name,
-      input.mobile,
       input.phone,
-      input.type || 'retail',
+      input.mobile,
+      input.type,
       input.email,
       input.shop_name,
       input.gst_number,
-      input.credit_limit !== null && input.credit_limit !== undefined && Number.isFinite(Number(input.credit_limit))
-        ? Number(input.credit_limit)
-        : 0,
-      input.current_balance !== null && input.current_balance !== undefined && Number.isFinite(Number(input.current_balance))
-        ? Number(input.current_balance)
-        : 0,
+      input.credit_limit,
+      input.current_balance,
       input.notes,
-      input.is_active !== null ? input.is_active : true,
+      input.is_active,
       input.location,
       input.address
     ]
@@ -113,106 +112,102 @@ const createCustomer = async (pool, payload) => {
 };
 
 const updateCustomer = async (pool, id, payload) => {
+  const currentRes = await pool.query('SELECT * FROM customers WHERE id = $1', [id]);
+  if (currentRes.rowCount === 0) return null;
+  const current = currentRes.rows[0];
   const input = buildCustomerInput(payload);
+
+  const fields = {
+    name: input.name ?? current.name,
+    phone: input.phone ?? current.phone,
+    mobile: input.mobile ?? current.mobile,
+    type: input.type ?? current.type,
+    email: input.email ?? current.email,
+    shop_name: input.shop_name ?? current.shop_name,
+    gst_number: input.gst_number ?? current.gst_number,
+    credit_limit: input.credit_limit ?? current.credit_limit,
+    current_balance: input.current_balance ?? current.current_balance,
+    notes: input.notes ?? current.notes,
+    is_active: input.is_active !== null ? input.is_active : current.is_active,
+    location: input.location ?? current.location,
+    address: input.address ?? current.address
+  };
+
   const result = await pool.query(
     `UPDATE customers
-     SET name = COALESCE($1, name),
-         mobile = COALESCE($2, mobile),
-         phone = COALESCE($3, phone),
-         type = COALESCE($4, type),
-         email = COALESCE($5, email),
-         shop_name = COALESCE($6, shop_name),
-         gst_number = COALESCE($7, gst_number),
-         credit_limit = COALESCE($8, credit_limit),
-         current_balance = COALESCE($9, current_balance),
-         notes = COALESCE($10, notes),
-         is_active = COALESCE($11, is_active),
-         location = COALESCE($12, location),
-         address = COALESCE($13, address),
+     SET name = $1,
+         phone = $2,
+         mobile = $3,
+         type = $4,
+         email = $5,
+         shop_name = $6,
+         gst_number = $7,
+         credit_limit = $8,
+         current_balance = $9,
+         notes = $10,
+         is_active = $11,
+         location = $12,
+         address = $13,
          updated_at = NOW()
      WHERE id = $14
      RETURNING *`,
     [
-      input.name,
-      input.mobile,
-      input.phone,
-      input.type,
-      input.email,
-      input.shop_name,
-      input.gst_number,
-      input.credit_limit !== null && input.credit_limit !== undefined && Number.isFinite(Number(input.credit_limit))
-        ? Number(input.credit_limit)
-        : null,
-      input.current_balance !== null && input.current_balance !== undefined && Number.isFinite(Number(input.current_balance))
-        ? Number(input.current_balance)
-        : null,
-      input.notes,
-      input.is_active,
-      input.location,
-      input.address,
+      fields.name,
+      fields.phone,
+      fields.mobile,
+      fields.type,
+      fields.email,
+      fields.shop_name,
+      fields.gst_number,
+      fields.credit_limit,
+      fields.current_balance,
+      fields.notes,
+      fields.is_active,
+      fields.location,
+      fields.address,
       id
     ]
   );
-  return result.rows[0] || null;
+  return result.rows[0];
 };
 
 const listCustomers = async (pool, { search = '', limit = 100 } = {}) => {
+  const effectiveLimit = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 500);
   const term = String(search || '').trim();
-  const max = Number.isFinite(Number(limit)) ? Math.min(Number(limit), 5000) : 100;
-  const dedupeExpr = `COALESCE(NULLIF(regexp_replace(COALESCE(phone, mobile, ''), '\\D', '', 'g'), ''), CONCAT('name:', LOWER(TRIM(COALESCE(name, '')))))`;
-  if (!term) {
-    const result = await pool.query(
-      `SELECT id, name, phone, type, current_balance, credit_limit, shop_name, gst_number, is_active, address, location
-       FROM (
-         SELECT DISTINCT ON (${dedupeExpr})
-                id,
-                name,
-                COALESCE(phone, mobile) AS phone,
-                type,
-                current_balance,
-                credit_limit,
-                shop_name,
-                gst_number,
-                is_active,
-                address,
-                location,
-                ${dedupeExpr} AS dedupe_key
-         FROM customers
-         ORDER BY ${dedupeExpr}, updated_at DESC NULLS LAST, id DESC
-       ) c
-       ORDER BY name ASC
-       LIMIT $1`,
-      [max]
-    );
-    return result.rows;
+  const digits = normalizePhone(term);
+
+  let query = `
+    SELECT *
+    FROM customers
+    WHERE is_active = TRUE
+  `;
+  const params = [];
+
+  if (term) {
+    if (digits) {
+      params.push(`%${digits}%`);
+      params.push(`%${term}%`);
+      query += ` AND (
+        regexp_replace(COALESCE(phone, mobile, ''), '\\D', '', 'g') ILIKE $1
+        OR name ILIKE $2
+        OR shop_name ILIKE $2
+      )`;
+    } else {
+      params.push(`%${term}%`);
+      query += ` AND (
+        name ILIKE $1
+        OR shop_name ILIKE $1
+        OR email ILIKE $1
+        OR location ILIKE $1
+        OR address ILIKE $1
+      )`;
+    }
   }
-  const like = `%${term}%`;
-  const result = await pool.query(
-    `SELECT id, name, phone, type, current_balance, credit_limit, shop_name, gst_number, is_active, address, location
-     FROM (
-       SELECT DISTINCT ON (${dedupeExpr})
-              id,
-              name,
-              COALESCE(phone, mobile) AS phone,
-              type,
-              current_balance,
-              credit_limit,
-              shop_name,
-              gst_number,
-              is_active,
-              address,
-              location,
-              ${dedupeExpr} AS dedupe_key
-       FROM customers
-       WHERE LOWER(name) LIKE LOWER($1)
-          OR COALESCE(phone, mobile, '') LIKE $1
-          OR LOWER(COALESCE(shop_name, '')) LIKE LOWER($1)
-       ORDER BY ${dedupeExpr}, updated_at DESC NULLS LAST, id DESC
-     ) c
-     ORDER BY name ASC
-     LIMIT $2`,
-    [like, max]
-  );
+
+  params.push(effectiveLimit);
+  query += ` ORDER BY updated_at DESC NULLS LAST, id DESC LIMIT $${params.length}`;
+
+  const result = await pool.query(query, params);
   return result.rows;
 };
 
@@ -220,11 +215,11 @@ const getCustomerById = async (pool, id) => {
   const customerRes = await pool.query('SELECT * FROM customers WHERE id = $1', [id]);
   if (customerRes.rowCount === 0) return null;
   const ordersRes = await pool.query(
-    `SELECT id, total_price, total_paid, payment_mode, transaction_type, billing_type, order_status, created_at
+    `SELECT id, order_number, total_price, order_status, payment_mode, created_at, billing_type
      FROM orders
      WHERE customer_id = $1
      ORDER BY created_at DESC
-     LIMIT 200`,
+     LIMIT 50`,
     [id]
   );
   const paymentsRes = await pool.query(
@@ -289,34 +284,126 @@ const getLedger = async (pool, id) => {
 
   const entries = [
     ...ordersRes.rows.map((row) => ({
-      type: 'order',
-      id: row.id,
+      id: `order-${row.id}`,
+      date: row.created_at,
+      type: 'debit',
+      description: `Order #${row.id} (${row.billing_type || 'Retail'})`,
       amount: Number(row.amount || 0),
-      payment_mode: row.payment_mode || null,
-      billing_type: row.billing_type || null,
-      created_at: row.created_at
+      payment_mode: row.payment_mode,
     })),
     ...paymentsRes.rows.map((row) => ({
-      type: 'payment',
-      id: row.id,
+      id: `payment-${row.id}`,
+      date: row.created_at,
+      type: 'credit',
+      description: `Payment Received (${row.payment_mode})`,
       amount: Number(row.amount || 0),
-      payment_mode: row.payment_mode || null,
-      created_at: row.created_at
-    }))
-  ].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+      payment_mode: row.payment_mode,
+    })),
+  ].sort((a, b) => new Date(a.date) - new Date(b.date));
 
   let running = 0;
   const ledger = entries.map((entry) => {
-    if (entry.type === 'order' && String(entry.payment_mode || '').toLowerCase() === 'credit') {
-      running += Number(entry.amount || 0);
-    }
-    if (entry.type === 'payment') {
-      running -= Number(entry.amount || 0);
+    if (entry.type === 'debit') {
+      running += entry.amount;
+    } else {
+      running -= entry.amount;
     }
     return { ...entry, running_balance: running };
   });
 
   return ledger;
+};
+
+const sendPaymentReminder = async (pool, id, payload = {}, actor = {}) => {
+  const customerId = Number(id);
+  if (!Number.isInteger(customerId) || customerId <= 0) {
+    const err = new Error('Invalid customer ID');
+    err.status = 400;
+    throw err;
+  }
+
+  const custRes = await pool.query(
+    `SELECT id, name, phone, mobile, credit_balance, current_balance, branch_id
+     FROM customers
+     WHERE id = $1`,
+    [customerId]
+  );
+  if (custRes.rowCount === 0) {
+    const err = new Error('Customer not found');
+    err.status = 404;
+    throw err;
+  }
+  const customer = custRes.rows[0];
+  const recipientPhone = String(payload.phone || customer.phone || customer.mobile || '').trim();
+  if (!recipientPhone) {
+    const err = new Error('Customer has no phone number on record for SMS reminder');
+    err.status = 400;
+    throw err;
+  }
+
+  const outstandingAmount = Math.max(0, Number(payload.amount ?? customer.current_balance ?? customer.credit_balance ?? 0));
+  if (outstandingAmount <= 0) {
+    const err = new Error('Customer has no outstanding balance to remind');
+    err.status = 400;
+    throw err;
+  }
+
+  const storeName = payload.storeName || 'SHAJ Retail';
+  const upiId = payload.upiId || process.env.STORE_UPI_ID || 'shajretail@upi';
+  const channel = String(payload.channel || 'sms').toLowerCase();
+  const branchId = payload.branchId || customer.branch_id || null;
+
+  const upiLink = `upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent(storeName)}&am=${outstandingAmount.toFixed(2)}&cu=INR&tn=${encodeURIComponent(`Khata-Customer-${customerId}`)}`;
+
+  const messageText = payload.customMessage ||
+    `Dear ${customer.name}, friendly reminder from ${storeName}: Your outstanding Khata balance is Rs.${outstandingAmount.toFixed(2)}. Pay easily via UPI: ${upiLink}. Thank you!`;
+
+  const insertRes = await pool.query(
+    `INSERT INTO customer_reminders (
+      customer_id, branch_id, recipient_phone, amount, channel, message_text, upi_link, status, sent_by, sent_at
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'SENT', $8, NOW())
+    RETURNING *`,
+    [
+      customerId,
+      branchId,
+      recipientPhone,
+      outstandingAmount,
+      channel,
+      messageText,
+      upiLink,
+      actor.id || null,
+    ]
+  );
+
+  const reminder = insertRes.rows[0];
+
+  return {
+    success: true,
+    message: `Payment reminder ${channel.toUpperCase()} recorded and queued for delivery`,
+    reminder: {
+      id: reminder.id,
+      customerId: reminder.customer_id,
+      recipientPhone: reminder.recipient_phone,
+      amount: Number(reminder.amount),
+      channel: reminder.channel,
+      messageText: reminder.message_text,
+      upiLink: reminder.upi_link,
+      status: reminder.status,
+      sentAt: reminder.sent_at,
+    },
+  };
+};
+
+const getCustomerReminders = async (pool, id) => {
+  const res = await pool.query(
+    `SELECT id, customer_id, recipient_phone, amount, channel, message_text, upi_link, status, sent_at
+     FROM customer_reminders
+     WHERE customer_id = $1
+     ORDER BY sent_at DESC
+     LIMIT 50`,
+    [id]
+  );
+  return res.rows;
 };
 
 module.exports = {
@@ -326,5 +413,7 @@ module.exports = {
   getCustomerById,
   addPayment,
   getLedger,
-  buildCustomerInput
+  buildCustomerInput,
+  sendPaymentReminder,
+  getCustomerReminders,
 };

@@ -6,7 +6,9 @@ const {
   handleSearchCustomers,
   handleGetCustomerById,
   handleAddPayment,
-  handleLedger
+  handleLedger,
+  handleSendReminder,
+  handleGetReminders,
 } = require('./controller');
 const { requirePermission } = require('../../middleware/requirePermission');
 
@@ -19,5 +21,7 @@ router.get('/:id', requirePermission('customers:read'), handleGetCustomerById);
 router.put('/:id', requirePermission('customers:write'), handleUpdateCustomer);
 router.post('/:id/payments', requirePermission('customers:write'), handleAddPayment);
 router.get('/:id/ledger', requirePermission('customers:read'), handleLedger);
+router.post('/:id/send-reminder', requirePermission('customers:read'), handleSendReminder);
+router.get('/:id/reminders', requirePermission('customers:read'), handleGetReminders);
 
 module.exports = router;

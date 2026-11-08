@@ -5,7 +5,9 @@ const {
   listCustomers,
   getCustomerById,
   addPayment,
-  getLedger
+  getLedger,
+  sendPaymentReminder,
+  getCustomerReminders,
 } = require('./service');
 
 const requireNamePhone = (payload) => {
@@ -98,6 +100,32 @@ const handleLedger = async (req, res) => {
   }
 };
 
+const handleSendReminder = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const actor = {
+      id: req.user?.id,
+      name: req.user?.username || req.user?.name,
+      role: req.user?.role,
+    };
+    const result = await sendPaymentReminder(req.tenantPool, id, req.body || {}, actor);
+    return jsonOk(res, result);
+  } catch (error) {
+    const status = error.status || 500;
+    return jsonError(res, status, 'REMINDER_DISPATCH_FAILED', error.message || 'Failed to send reminder');
+  }
+};
+
+const handleGetReminders = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const reminders = await getCustomerReminders(req.tenantPool, id);
+    return jsonOk(res, { reminders });
+  } catch (error) {
+    return jsonError(res, 500, 'REMINDER_FETCH_FAILED', error.message || 'Failed to load reminders');
+  }
+};
+
 module.exports = {
   handleCreateCustomer,
   handleUpdateCustomer,
@@ -105,5 +133,7 @@ module.exports = {
   handleSearchCustomers,
   handleGetCustomerById,
   handleAddPayment,
-  handleLedger
+  handleLedger,
+  handleSendReminder,
+  handleGetReminders,
 };
