@@ -1,10 +1,17 @@
 const express = require('express');
-const { getStockByBranch, adjustStock } = require('../controllers/stockController');
+const {
+  getStockByBranch,
+  adjustStock,
+  lookupProductForAudit,
+  submitStockAuditScans,
+} = require('../controllers/stockController');
 const { requirePermission } = require('../middleware/requirePermission');
 const isAdmin = require('../middleware/isAdmin');
 
 const router = express.Router();
 
+router.get('/audit/lookup', requirePermission('inventory:read'), lookupProductForAudit);
+router.post('/audit/submit-scan', requirePermission('inventory:read'), submitStockAuditScans);
 router.get('/', requirePermission('inventory:read'), getStockByBranch);
 router.post('/adjustments', isAdmin, adjustStock);
 

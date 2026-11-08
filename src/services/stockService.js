@@ -1,6 +1,7 @@
+const crypto = require('crypto');
 const pool = require('../db');
 const { resolveBranchIdFromRequest } = require('../utils/branch');
-const { setStockAuditContext } = require('./stockAuditService');
+const { setStockAuditContext, writeStockAudit } = require('./stockAuditService');
 
 const getRequestPool = (req) => req.tenantPool || pool;
 
@@ -164,4 +165,144 @@ const adjustStock = async (req, payload = {}) => {
   }
 };
 
-module.exports = { getBranchStock, adjustStock };
+const lookupProductForAudit = async (req, queryParam) => {
+  const requestPool = getRequestPool(req);
+  const q = String(queryParam || '').trim();
+  if (!q) return null;
+
+  const result = await requestPool.query(
+    `SELECT id, name, barcode, stock_quantity AS "bookStock", price, mrp, category_id, is_weight_based
+     FROM products
+     WHERE is_deleted = FALSE
+       AND (barcode = $1 OR id::text = $1 OR name ILIKE $2)
+     ORDER BY CASE WHEN barcode = $1 THEN 1 WHEN id::text = $1 THEN 2 ELSE 3 END
+     LIMIT 1`,
+    [q, `%${q}%`]
+  );
+
+  if (result.rowCount === 0) return null;
+  const row = result.rows[0];
+  return {
+    productId: row.id,
+    name: row.name,
+    barcode: row.barcode,
+    bookStock: Number(row.bookStock || 0),
+    price: Number(row.price || 0),
+    mrp: Number(row.mrp || 0),
+    isWeightBased: Boolean(row.is_weight_based),
+  };
+};
+
+const submitStockAuditScans = async (req, payload = {}) => {
+  const requestPool = getRequestPool(req);
+  const scans = Array.isArray(payload.scans) ? payload.scans : [];
+  if (scans.length === 0) {
+    throw buildValidationError('At least one barcode audit scan is required.');
+  }
+
+  const branchId = resolveBranchIdFromRequest(req) || payload.branchId || null;
+  const auditSessionId = payload.auditSessionId || crypto.randomUUID();
+  const notes = payload.notes || 'Physical stocktaking barcode audit';
+  const actorUserId = req.user?.id || null;
+  const actorName = req.user?.username || req.user?.name || 'Cashier / Auditor';
+  const actorRole = req.user?.role || 'staff';
+
+  const client = await requestPool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const results = [];
+    let totalVariances = 0;
+    let netVariance = 0;
+
+    for (const scan of scans) {
+      const productId = Number(scan.productId ?? scan.product_id);
+      if (!Number.isInteger(productId) || productId <= 0) {
+        throw buildValidationError('Valid product_id is required for each audit entry.');
+      }
+
+      const physicalCount = Number(scan.physicalCount ?? scan.physical_count ?? 0);
+      if (!Number.isFinite(physicalCount) || physicalCount < 0) {
+        throw buildValidationError(`Invalid physical count for product ID ${productId}`);
+      }
+
+      const prodRes = await client.query(
+        `SELECT id, name, barcode, stock_quantity, price, mrp
+         FROM products
+         WHERE id = $1
+           AND is_deleted = FALSE
+         FOR UPDATE`,
+        [productId]
+      );
+      if (prodRes.rowCount === 0) {
+        throw buildNotFoundError(`Product ${productId} not found.`);
+      }
+
+      const product = prodRes.rows[0];
+      const bookStock = Number(product.stock_quantity || 0);
+      const variance = Math.round((physicalCount - bookStock) * 1000) / 1000;
+
+      if (variance !== 0) {
+        totalVariances++;
+        netVariance += variance;
+
+        await client.query(
+          `UPDATE products
+           SET stock_quantity = $1,
+               updated_at = NOW()
+           WHERE id = $2`,
+          [physicalCount, productId]
+        );
+
+        await writeStockAudit(client, {
+          productId,
+          branchId,
+          reason: 'physical_stocktake_audit',
+          sourceType: 'barcode_scanner',
+          referenceId: auditSessionId,
+          deltaQty: variance,
+          beforeQty: bookStock,
+          afterQty: physicalCount,
+          note: `Physical: ${physicalCount}, Book: ${bookStock}. Variance: ${variance > 0 ? '+' : ''}${variance}. ${notes}`,
+          actorUserId,
+          actorName,
+          actorRole,
+        });
+      }
+
+      results.push({
+        productId,
+        name: product.name,
+        barcode: product.barcode,
+        bookStock,
+        physicalCount,
+        variance,
+        adjusted: variance !== 0,
+      });
+    }
+
+    await client.query('COMMIT');
+
+    return {
+      auditSessionId,
+      notes,
+      totalScanned: scans.length,
+      matched: scans.length - totalVariances,
+      discrepancies: totalVariances,
+      netVariance: Math.round(netVariance * 1000) / 1000,
+      records: results,
+    };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
+module.exports = {
+  getBranchStock,
+  adjustStock,
+  lookupProductForAudit,
+  submitStockAuditScans,
+};
