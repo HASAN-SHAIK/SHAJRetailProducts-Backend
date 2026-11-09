@@ -60,3 +60,10 @@ temp/
 
 # Docker
 .dockerignore
+
+# Credentials
+TEST_CREDENTIALS.md
+CREDENTIALS.md
+credentials.*
+*.credentials
+
