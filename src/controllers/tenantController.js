@@ -3,11 +3,11 @@ const { jsonError, jsonOk } = require('../utils/responses');
 
 const loadActiveSubscription = async (tenantId) => {
   const subscriptionRes = await masterPool.query(
-    `SELECT s.start_date, s.end_date, s.plan_id, p.name AS plan_name
+    `SELECT s.payment_status, s.start_date, s.end_date, s.plan_id, p.name AS plan_name
      FROM subscriptions s
      LEFT JOIN plans p ON p.id = s.plan_id
      WHERE s.tenant_id = $1
-       AND s.payment_status = 'paid'
+       AND s.payment_status IN ('paid', 'trial')
        AND s.end_date IS NOT NULL
      ORDER BY s.end_date DESC NULLS LAST, s.id DESC
      LIMIT 1`,
@@ -27,7 +27,9 @@ const buildSubscriptionStatus = (row) => {
       days_left: 0,
       is_expiring: false,
       is_urgent: false,
-      is_expired: true
+      is_expired: true,
+      status: 'none',
+      ends_at: null
     };
   }
 
@@ -43,7 +45,9 @@ const buildSubscriptionStatus = (row) => {
     days_left: daysLeft,
     is_expiring: daysLeft <= 7 && daysLeft > 0,
     is_urgent: daysLeft <= 3 && daysLeft > 0,
-    is_expired: daysLeft <= 0
+    is_expired: daysLeft <= 0,
+    status: daysLeft <= 0 ? 'expired' : (String(row.payment_status || '').toLowerCase() === 'trial' ? 'trial' : 'paid'),
+    ends_at: row.end_date ?? null
   };
 };
 

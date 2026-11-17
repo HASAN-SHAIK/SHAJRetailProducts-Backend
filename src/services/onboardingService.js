@@ -9,6 +9,7 @@ const { registerTenantLoginEntry } = require('./tenantLoginDirectoryService');
 const branchService = require('./branchService');
 const { issueMobileAuthSession } = require('../controllers/authController');
 const { resolveFeatures } = require('../utils/resolveFeatures');
+const { loadLatestSubscriptionInfo } = require('./subscriptionStatusService');
 
 const DEFAULT_TRIAL_DAYS = Math.max(1, Number(process.env.ONBOARDING_TRIAL_DAYS || 14));
 const GST_MODES = new Set(['INCLUSIVE', 'EXCLUSIVE']);
@@ -152,7 +153,7 @@ const onboardCompany = async (payload = {}, deviceContext = {}) => {
       city: payload.city ? String(payload.city).trim() : null,
       state: payload.state ? String(payload.state).trim() : null,
       pincode: payload.pincode ? String(payload.pincode).trim() : null,
-      subscription_status: 'paid',
+      subscription_status: 'trial',
       subscription_end_date: trialEndDate,
       subscription_amount: 0,
       gst_mode: gstModeRaw,
@@ -204,6 +205,11 @@ const onboardCompany = async (payload = {}, deviceContext = {}) => {
       company_code: companyCode,
       trial_days: DEFAULT_TRIAL_DAYS,
       trial_ends_at: trialEndDate,
+      subscription: {
+        status: 'trial',
+        ends_at: trialEndDate,
+        days_left: DEFAULT_TRIAL_DAYS,
+      },
       branch: firstBranch,
     };
   } catch (error) {
@@ -225,7 +231,8 @@ const safeQueryRows = async (pool, sql, params = []) => {
 };
 
 const getOnboardingStatus = async ({ tenant, tenantPool }) => {
-  const [branches, shopRows, deviceCounts, pendingRequests, userCounts] = await Promise.all([
+  const [subscription, branches, shopRows, deviceCounts, pendingRequests, userCounts] = await Promise.all([
+    tenant?.id ? loadLatestSubscriptionInfo(tenant.id) : Promise.resolve(null),
     branchService.getBranches({ tenantPool }),
     safeQueryRows(
       tenantPool,
@@ -276,6 +283,7 @@ const getOnboardingStatus = async ({ tenant, tenantPool }) => {
   );
 
   return {
+    ...(subscription ? { subscription } : {}),
     company: {
       id: tenant?.id || null,
       shop_name: shop.shop_name || tenant?.shop_name || '',

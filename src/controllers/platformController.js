@@ -18,6 +18,7 @@ const { resolvePlanDeviceLimit, normalizePlan } = require('../config/planDeviceL
 const { resolveFeatures } = require('../utils/resolveFeatures');
 const { sanitizeAddons } = require('../utils/addons');
 const { clearCachedSubscription } = require('../config/subscriptionCache');
+const { isAccessStatus } = require('../services/subscriptionStatusService');
 const { registerTenantLoginEntry } = require('../services/tenantLoginDirectoryService');
 
 const GST_MODES = new Set(['INCLUSIVE', 'EXCLUSIVE']);
@@ -43,7 +44,7 @@ const logAdminAction = async (adminId, action, entityType, entityId, metadata) =
 
 const isSubscriptionActive = (subscription) => {
   if (!subscription) return false;
-  const isPaid = subscription.payment_status === 'paid';
+  const isPaid = isAccessStatus(subscription.payment_status);
   const isExpired = subscription.end_date ? new Date(subscription.end_date) < new Date() : true;
   return isPaid && !isExpired;
 };
@@ -722,7 +723,7 @@ const updatePlan = async (req, res) => {
       `UPDATE subscriptions
        SET plan_id = $1,
            amount = COALESCE($2, amount),
-           payment_status = COALESCE($3, payment_status)
+           payment_status = COALESCE($3, CASE WHEN payment_status = 'trial' AND COALESCE($2::numeric, 0) > 0 THEN 'paid' END, payment_status)
        WHERE id = (
          SELECT id
          FROM subscriptions
@@ -858,7 +859,7 @@ const updateTenantPlanAndFlags = async (req, res) => {
         `UPDATE subscriptions
          SET plan_id = $1,
              amount = COALESCE($2, amount),
-             payment_status = COALESCE($3, payment_status)
+             payment_status = COALESCE($3, CASE WHEN payment_status = 'trial' AND COALESCE($2::numeric, 0) > 0 THEN 'paid' END, payment_status)
          WHERE id = (
            SELECT id
            FROM subscriptions

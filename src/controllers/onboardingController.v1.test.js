@@ -168,7 +168,9 @@ describe('onboardingController', () => {
     }, res);
 
     expect(res.status).toHaveBeenCalledWith(201);
-    expect(mockProvisionTenant).toHaveBeenCalledWith(expect.objectContaining({ plan_type: 'basic' }));
+    expect(mockProvisionTenant).toHaveBeenCalledWith(expect.objectContaining({ plan_type: 'basic', subscription_status: 'trial', subscription_amount: 0 }));
+    const body = res.json.mock.calls[0][0];
+    expect(body.subscription).toEqual(expect.objectContaining({ status: 'trial', days_left: expect.any(Number) }));
   });
 
   test('rolls back provisioned tenant database if initial store creation fails', async () => {
@@ -242,5 +244,19 @@ describe('onboardingController', () => {
       pos_onboarded: true,
     });
     expect(data.pos_devices).toEqual({ active_count: 1, pending_requests_count: 2 });
+  });
+
+  test('onboarding status exposes trial subscription state additively', async () => {
+    mockGetBranches.mockResolvedValue([]);
+    const future = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString();
+    mockMasterQuery.mockResolvedValueOnce({ rows: [{ payment_status: 'trial', end_date: future }] });
+    const res = makeRes();
+    await getOnboardingStatusHandler({
+      tenant: { id: 5, shop_name: 'T', domain: 't', plan_type: 'basic' },
+      tenantPool: { query: jest.fn(async () => ({ rows: [] })) },
+    }, res);
+    const data = res.json.mock.calls[0][0].data;
+    expect(data.subscription).toEqual({ status: 'trial', ends_at: future, days_left: 5 });
+    expect(data.checklist).toBeDefined();
   });
 });

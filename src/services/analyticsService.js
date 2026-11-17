@@ -14,8 +14,8 @@ const getActiveSubscriptionCounts = async () => {
        ORDER BY tenant_id, end_date DESC NULLS LAST, id DESC
      )
      SELECT
-       COUNT(*) FILTER (WHERE payment_status = 'paid' AND end_date >= CURRENT_DATE) AS active_count,
-       COUNT(*) FILTER (WHERE end_date < CURRENT_DATE OR payment_status != 'paid') AS expired_count
+       COUNT(*) FILTER (WHERE payment_status IN ('paid', 'trial') AND end_date >= CURRENT_DATE) AS active_count,
+       COUNT(*) FILTER (WHERE end_date < CURRENT_DATE OR payment_status NOT IN ('paid', 'trial')) AS expired_count
      FROM latest`
   );
   return result.rows[0] || { active_count: 0, expired_count: 0 };
