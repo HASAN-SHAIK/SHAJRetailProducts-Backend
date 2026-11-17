@@ -26,6 +26,7 @@ const createCompanySchema = Joi.object({
   store_name: Joi.string().trim().min(2).max(120).allow('', null),
   store_number: Joi.string().trim().uppercase().max(32).allow('', null),
   store_location: Joi.string().trim().max(200).allow('', null),
+  captcha_token: Joi.string().trim().allow('', null),
 });
 
 const listPlansHandler = async (_req, res) => {
