@@ -10,44 +10,54 @@ const result = (rows = []) => ({ rows, rowCount: rows.length });
 const makePool = (responses = []) => {
   const query = jest.fn();
   for (const response of responses) query.mockResolvedValueOnce(response);
-  return { query };
+  query.mockResolvedValue(result([]));
+  return { query, connect: jest.fn(async () => ({ query, release: jest.fn() })) };
 };
 
 describe('V1 Central customer CRUD authority and tenant-global scope', () => {
   test('create and update remain inside the supplied tenant pool', async () => {
+    const created0 = { id: 11, name: 'Asha', phone: '9000000001', credit_limit: 0, current_balance: 0 };
     const tenantA = makePool([
-      result([]),
-      result([{ id: 11, name: 'Asha', phone: '9000000001', credit_limit: 0, current_balance: 0 }]),
-      result([{ id: 11, name: 'Asha Updated', phone: '9000000001', credit_limit: 500, current_balance: 0 }]),
+      result([]), // BEGIN
+      result([]), // advisory lock
+      result([]), // duplicate lookup
+      result([created0]), // INSERT
+      result([]), // COMMIT
+      result([created0]), // update: SELECT current
+      result([{ ...created0, name: 'Asha Updated' }]), // update: UPDATE
     ]);
     const tenantB = makePool();
 
     const created = await createCustomer(tenantA, { name: 'Asha', phone: '9000000001' });
-    const updated = await updateCustomer(tenantA, created.id, { name: 'Asha Updated', credit_limit: 500 });
+    const updated = await updateCustomer(tenantA, created.id, { name: 'Asha Updated' });
 
     expect(updated.name).toBe('Asha Updated');
-    expect(tenantA.query).toHaveBeenCalledTimes(3);
+    const sqls = tenantA.query.mock.calls.map(([sql]) => sql);
+    expect(sqls).toHaveLength(7);
     expect(tenantB.query).not.toHaveBeenCalled();
+    expect(tenantB.connect).not.toHaveBeenCalled();
 
-    const insertSql = tenantA.query.mock.calls[1][0];
-    const updateSql = tenantA.query.mock.calls[2][0];
-    expect(insertSql).toContain('INSERT INTO customers');
-    expect(updateSql).toContain('UPDATE customers');
+    const insertSql = sqls.find((sql) => sql.includes('INSERT INTO customers'));
+    const updateSql = sqls.find((sql) => sql.includes('UPDATE customers'));
+    expect(insertSql).toBeDefined();
+    expect(updateSql).toBeDefined();
     expect(insertSql).not.toMatch(/branch_id/i);
     expect(updateSql).not.toMatch(/branch_id/i);
   });
 
   test('partial profile updates preserve omitted type and financial projection fields', async () => {
-    const tenantPool = makePool([
-      result([{ id: 11, name: 'Asha Updated', type: 'wholesale', credit_limit: 750, current_balance: 125 }]),
-    ]);
+    const current = { id: 11, name: 'Asha', type: 'wholesale', credit_limit: 750, current_balance: 125 };
+    const tenantPool = makePool([result([current]), result([{ ...current, name: 'Asha Updated' }])]);
 
     await updateCustomer(tenantPool, 11, { name: 'Asha Updated', email: 'asha@example.com' });
 
-    const [, params] = tenantPool.query.mock.calls[0];
-    expect(params[3]).toBeNull();
-    expect(params[7]).toBeNull();
-    expect(params[8]).toBeNull();
+    expect(tenantPool.query).toHaveBeenCalledTimes(2);
+    expect(tenantPool.connect).not.toHaveBeenCalled();
+    const [updateSql, params] = tenantPool.query.mock.calls[1];
+    expect(updateSql).not.toMatch(/current_balance/);
+    // Omitted type and credit limit fall back to the stored row instead of being reset.
+    expect(params[3]).toBe('wholesale');
+    expect(params[4]).toBe(750);
   });
 
   test('customer list is tenant-global across stores and never branch-filtered', async () => {

@@ -1,6 +1,6 @@
 const toCustomerDto = (row) => {
   if (!row) return null;
-  return {
+  const dto = {
     id: row.id,
     name: row.name,
     phone: row.phone || row.mobile || null,
@@ -18,6 +18,8 @@ const toCustomerDto = (row) => {
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
+  if (Array.isArray(row.ignored_fields) && row.ignored_fields.length) dto.ignored_fields = row.ignored_fields;
+  return dto;
 };
 
 const toCustomerDetailDto = (payload) => {

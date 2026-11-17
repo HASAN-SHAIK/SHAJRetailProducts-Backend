@@ -9,6 +9,7 @@ const {
   sendPaymentReminder,
   getCustomerReminders,
 } = require('./service');
+const { canManageCustomerFinancials } = require('./financialPolicy');
 
 const requireNamePhone = (payload) => {
   const name = String(payload?.name || payload?.customer_name || '').trim();
@@ -24,9 +25,14 @@ const handleCreateCustomer = async (req, res) => {
     if (validation) {
       return jsonError(res, 400, 'VALIDATION_ERROR', validation);
     }
-    const customer = await createCustomer(req.tenantPool, req.body);
+    const customer = await createCustomer(req.tenantPool, req.body, {
+      canManageFinancials: canManageCustomerFinancials(req.user),
+    });
     return jsonOk(res, { customer });
   } catch (error) {
+    if (error.code === 'DUPLICATE_CUSTOMER') {
+      return jsonError(res, 409, 'DUPLICATE_CUSTOMER', error.message, error.details);
+    }
     return jsonError(res, 500, 'CUSTOMER_CREATE_FAILED', error.message || 'Failed to create customer');
   }
 };
@@ -34,10 +40,15 @@ const handleCreateCustomer = async (req, res) => {
 const handleUpdateCustomer = async (req, res) => {
   try {
     const { id } = req.params;
-    const customer = await updateCustomer(req.tenantPool, id, req.body);
+    const customer = await updateCustomer(req.tenantPool, id, req.body, {
+      canManageFinancials: canManageCustomerFinancials(req.user),
+    });
     if (!customer) return jsonError(res, 404, 'NOT_FOUND', 'Customer not found');
     return jsonOk(res, { customer });
   } catch (error) {
+    if (error.code === 'DUPLICATE_CUSTOMER') {
+      return jsonError(res, 409, 'DUPLICATE_CUSTOMER', error.message, error.details);
+    }
     return jsonError(res, 500, 'CUSTOMER_UPDATE_FAILED', error.message || 'Failed to update customer');
   }
 };

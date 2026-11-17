@@ -4,171 +4,201 @@ const normalizePhone = (value) => {
   return digits || null;
 };
 
+const has = (payload, key) => Object.prototype.hasOwnProperty.call(payload, key);
+
 const optionalValue = (payload, snakeKey, camelKey) => {
-  if (Object.prototype.hasOwnProperty.call(payload, snakeKey)) return payload[snakeKey];
-  if (camelKey && Object.prototype.hasOwnProperty.call(payload, camelKey)) return payload[camelKey];
+  if (has(payload, snakeKey) && payload[snakeKey] !== undefined) return payload[snakeKey];
+  if (camelKey && has(payload, camelKey) && payload[camelKey] !== undefined) return payload[camelKey];
   return null;
+};
+
+// Presence-based optional text: omitted/null -> not provided (preserve);
+// '' or whitespace -> provided and cleared (NULL); otherwise the provided value.
+const resolveClearable = (payload, keys) => {
+  for (const key of keys) {
+    if (!has(payload, key)) continue;
+    const raw = payload[key];
+    if (raw === undefined || raw === null) continue;
+    const text = String(raw).trim();
+    return { provided: true, value: text === '' ? null : text };
+  }
+  return { provided: false, value: null };
+};
+
+const resolveAddress = (payload) => {
+  const direct = resolveClearable(payload, ['address']);
+  if (direct.provided) return direct;
+  const l1 = resolveClearable(payload, ['address_line1', 'addressLine1']);
+  const l2 = resolveClearable(payload, ['address_line2', 'addressLine2']);
+  if (!l1.provided && !l2.provided) return { provided: false, value: null };
+  const combined = [l1.value, l2.value].filter(Boolean).join(', ');
+  return { provided: true, value: combined || null };
 };
 
 const buildCustomerInput = (payload = {}) => {
   const phone = normalizePhone(payload.phone || payload.mobile || payload.customer_phone);
-  const rawAddress =
-    payload.address ||
-    payload.address_line1 ||
-    payload.addressLine1 ||
-    payload.address_line2 ||
-    payload.addressLine2 ||
-    null;
-  const addressLine1 = payload.address_line1 || payload.addressLine1 || null;
-  const addressLine2 = payload.address_line2 || payload.addressLine2 || null;
-  const combinedAddress = [addressLine1, addressLine2].filter(Boolean).join(', ');
-  const resolvedAddress = rawAddress || (combinedAddress ? combinedAddress : null);
-  const resolvedLocation =
-    payload.location || payload.customer_location || payload.city || payload.customer_city || null;
   return {
     name: payload.name || payload.customer_name || null,
     phone,
     mobile: payload.mobile || phone || null,
     type: optionalValue(payload, 'type', 'customer_type'),
-    email: payload.email || null,
-    shop_name: payload.shop_name || payload.shopName || null,
-    gst_number: payload.gst_number || payload.gstNumber || null,
+    email: resolveClearable(payload, ['email']),
+    shop_name: resolveClearable(payload, ['shop_name', 'shopName']),
+    gst_number: resolveClearable(payload, ['gst_number', 'gstNumber']),
     credit_limit: optionalValue(payload, 'credit_limit', 'creditLimit'),
-    current_balance: optionalValue(payload, 'current_balance', 'currentBalance'),
-    notes: payload.notes || null,
-    is_active: payload.is_active !== undefined ? Boolean(payload.is_active) : null,
-    location: resolvedLocation,
-    address: resolvedAddress,
+    notes: resolveClearable(payload, ['notes']),
+    is_active: payload.is_active !== undefined && payload.is_active !== null ? Boolean(payload.is_active) : null,
+    location: resolveClearable(payload, ['location', 'customer_location', 'city', 'customer_city']),
+    address: resolveAddress(payload),
   };
 };
 
-const createCustomer = async (pool, payload) => {
-  const input = buildCustomerInput(payload);
-  const normalizedPhone = normalizePhone(input.phone || input.mobile);
-  let existingRes;
-  if (normalizedPhone) {
-    existingRes = await pool.query(
-      `SELECT id
-       FROM customers
-       WHERE regexp_replace(COALESCE(phone, mobile, ''), '\\D', '', 'g') = $1
-       ORDER BY updated_at DESC NULLS LAST, id DESC
-       LIMIT 1`,
-      [normalizedPhone]
-    );
-  } else {
-    existingRes = await pool.query(
-      `SELECT id
-       FROM customers
-       WHERE LOWER(TRIM(COALESCE(name, ''))) = LOWER(TRIM($1))
-         AND COALESCE(NULLIF(regexp_replace(COALESCE(phone, mobile, ''), '\\D', '', 'g'), ''), '') = ''
-       ORDER BY updated_at DESC NULLS LAST, id DESC
-       LIMIT 1`,
-      [input.name || '']
-    );
-  }
-  if (existingRes.rowCount > 0) {
-    return updateCustomer(pool, existingRes.rows[0].id, payload);
-  }
-
-  const result = await pool.query(
-    `INSERT INTO customers (
-      name,
-      phone,
-      mobile,
-      type,
-      email,
-      shop_name,
-      gst_number,
-      credit_limit,
-      current_balance,
-      notes,
-      is_active,
-      location,
-      address,
-      created_at,
-      updated_at
-    ) VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-      COALESCE($11, TRUE), $12, $13, NOW(), NOW()
-    )
-    RETURNING *`,
-    [
-      input.name,
-      input.phone,
-      input.mobile,
-      input.type,
-      input.email,
-      input.shop_name,
-      input.gst_number,
-      input.credit_limit,
-      input.current_balance,
-      input.notes,
-      input.is_active,
-      input.location,
-      input.address
-    ]
-  );
-  return result.rows[0];
+const duplicateError = (existing) => {
+  const err = new Error('A customer with this mobile number already exists');
+  err.status = 409;
+  err.statusCode = 409;
+  err.code = 'DUPLICATE_CUSTOMER';
+  err.details = { existing_customer: existing };
+  return err;
 };
 
-const updateCustomer = async (pool, id, payload) => {
-  const currentRes = await pool.query('SELECT * FROM customers WHERE id = $1', [id]);
-  if (currentRes.rowCount === 0) return null;
-  const current = currentRes.rows[0];
-  const input = buildCustomerInput(payload);
+const withIgnored = (row, ignored) => (ignored.length ? { ...row, ignored_fields: ignored } : row);
 
-  const fields = {
-    name: input.name ?? current.name,
-    phone: input.phone ?? current.phone,
-    mobile: input.mobile ?? current.mobile,
-    type: input.type ?? current.type,
-    email: input.email ?? current.email,
-    shop_name: input.shop_name ?? current.shop_name,
-    gst_number: input.gst_number ?? current.gst_number,
-    credit_limit: input.credit_limit ?? current.credit_limit,
-    current_balance: input.current_balance ?? current.current_balance,
-    notes: input.notes ?? current.notes,
-    is_active: input.is_active !== null ? input.is_active : current.is_active,
-    location: input.location ?? current.location,
-    address: input.address ?? current.address
+const findByPhoneDigits = (db, digits, excludeId = null) =>
+  db.query(
+    `SELECT id, name, phone, mobile, type, email, shop_name, gst_number, credit_limit, current_balance, is_active
+     FROM customers
+     WHERE regexp_replace(COALESCE(phone, mobile, ''), '\\D', '', 'g') = $1
+       AND ($2::bigint IS NULL OR id <> $2::bigint)
+     ORDER BY updated_at DESC NULLS LAST, id DESC
+     LIMIT 1`,
+    [digits, excludeId]
+  );
+
+const lockPhone = (db, digits) =>
+  db.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`customer-phone:${digits}`]);
+
+const inTransaction = async (pool, fn) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const out = await fn(client);
+    await client.query('COMMIT');
+    return out;
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (_) {
+      // keep the original error
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+};
+
+const createCustomer = async (pool, payload = {}, { canManageFinancials = false } = {}) => {
+  const input = buildCustomerInput(payload);
+  const digits = normalizePhone(input.phone || input.mobile);
+  const creditProvided = input.credit_limit !== null && input.credit_limit !== undefined;
+  const ignored = !canManageFinancials && creditProvided ? ['credit_limit'] : [];
+  const creditLimit = canManageFinancials && creditProvided ? input.credit_limit : 0;
+
+  const row = await inTransaction(pool, async (client) => {
+    if (digits) {
+      await lockPhone(client, digits);
+      const existing = await findByPhoneDigits(client, digits);
+      if (existing.rowCount > 0) throw duplicateError(existing.rows[0]);
+    }
+    const result = await client.query(
+      `INSERT INTO customers (
+        name, phone, mobile, type, email, shop_name, gst_number,
+        credit_limit, current_balance, notes, is_active, location, address,
+        created_at, updated_at
+      ) VALUES (
+        $1, $2, $3, COALESCE($4, 'retail'), $5, $6, $7,
+        $8, 0, $9, COALESCE($10, TRUE), $11, $12, NOW(), NOW()
+      )
+      RETURNING *`,
+      [
+        input.name,
+        input.phone,
+        input.mobile,
+        input.type,
+        input.email.value,
+        input.shop_name.value,
+        input.gst_number.value,
+        creditLimit,
+        input.notes.value,
+        input.is_active,
+        input.location.value,
+        input.address.value,
+      ]
+    );
+    return result.rows[0];
+  });
+  return withIgnored(row, ignored);
+};
+
+const updateCustomer = async (pool, id, payload = {}, { canManageFinancials = false } = {}) => {
+  const input = buildCustomerInput(payload);
+  const creditProvided = input.credit_limit !== null && input.credit_limit !== undefined;
+  const ignored = !canManageFinancials && creditProvided ? ['credit_limit'] : [];
+
+  const run = async (db, lockOnPhone) => {
+    const currentRes = await db.query('SELECT * FROM customers WHERE id = $1', [id]);
+    if (currentRes.rowCount === 0) return null;
+    const current = currentRes.rows[0];
+
+    if (lockOnPhone && input.phone) {
+      const currentDigits = normalizePhone(current.phone || current.mobile);
+      if (input.phone !== currentDigits) {
+        await lockPhone(db, input.phone);
+        const dup = await findByPhoneDigits(db, input.phone, current.id);
+        if (dup.rowCount > 0) throw duplicateError(dup.rows[0]);
+      }
+    }
+
+    const result = await db.query(
+      `UPDATE customers
+       SET name = $1,
+           phone = $2,
+           mobile = $3,
+           type = $4,
+           credit_limit = $5,
+           is_active = $6,
+           email = CASE WHEN $7::boolean THEN $8::text ELSE email END,
+           shop_name = CASE WHEN $9::boolean THEN $10::text ELSE shop_name END,
+           gst_number = CASE WHEN $11::boolean THEN $12::text ELSE gst_number END,
+           notes = CASE WHEN $13::boolean THEN $14::text ELSE notes END,
+           location = CASE WHEN $15::boolean THEN $16::text ELSE location END,
+           address = CASE WHEN $17::boolean THEN $18::text ELSE address END,
+           updated_at = NOW()
+       WHERE id = $19
+       RETURNING *`,
+      [
+        input.name ?? current.name,
+        input.phone ?? current.phone,
+        input.mobile ?? current.mobile,
+        input.type ?? current.type,
+        canManageFinancials && creditProvided ? input.credit_limit : current.credit_limit,
+        input.is_active !== null ? input.is_active : current.is_active,
+        input.email.provided, input.email.value,
+        input.shop_name.provided, input.shop_name.value,
+        input.gst_number.provided, input.gst_number.value,
+        input.notes.provided, input.notes.value,
+        input.location.provided, input.location.value,
+        input.address.provided, input.address.value,
+        id,
+      ]
+    );
+    return result.rows[0];
   };
 
-  const result = await pool.query(
-    `UPDATE customers
-     SET name = $1,
-         phone = $2,
-         mobile = $3,
-         type = $4,
-         email = $5,
-         shop_name = $6,
-         gst_number = $7,
-         credit_limit = $8,
-         current_balance = $9,
-         notes = $10,
-         is_active = $11,
-         location = $12,
-         address = $13,
-         updated_at = NOW()
-     WHERE id = $14
-     RETURNING *`,
-    [
-      fields.name,
-      fields.phone,
-      fields.mobile,
-      fields.type,
-      fields.email,
-      fields.shop_name,
-      fields.gst_number,
-      fields.credit_limit,
-      fields.current_balance,
-      fields.notes,
-      fields.is_active,
-      fields.location,
-      fields.address,
-      id
-    ]
-  );
-  return result.rows[0];
+  const row = input.phone
+    ? await inTransaction(pool, (client) => run(client, true))
+    : await run(pool, false);
+  return row ? withIgnored(row, ignored) : row;
 };
 
 const listCustomers = async (pool, { search = '', limit = 100 } = {}) => {

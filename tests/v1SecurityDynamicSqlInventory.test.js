@@ -7,7 +7,7 @@ const walkJs = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((en
   return entry.isFile() && entry.name.endsWith('.js') ? [full] : [];
 });
 
-const BASELINE_INTERPOLATED_QUERY_COUNT = 80;
+const BASELINE_INTERPOLATED_QUERY_COUNT = 78;
 const readSource = (relativePath) => fs.readFileSync(path.join(__dirname, '..', relativePath), 'utf8');
 
 const REVIEWED_STRUCTURAL_EXPRESSION_PATTERNS = [
