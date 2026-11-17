@@ -120,7 +120,7 @@ describe('V1 accounting authorization and validation', () => {
     expect(routes).toContain("router.get('/:id', requirePermission('customers:read'), controller.validateCustomerId, controller.getCustomer)");
     expect(routes).toContain("router.post('/', requirePermission('customers:write'), controller.validateCreateCustomer, controller.createCustomer)");
     expect(routes).toContain("router.put('/:id', requirePermission('customers:write'), controller.validateCustomerId, controller.validateUpdateCustomer, controller.updateCustomer)");
-    expect(routes).toContain("router.delete('/:id', isAdmin, controller.validateCustomerId, controller.deleteCustomer)");
+    expect(routes).toContain("router.delete('/:id', requirePermission('customers:write'), requireCustomerDeleteRole, controller.validateCustomerId, controller.deleteCustomer)");
 
     // Cashier: has customers:read (for customer search and receipt collection), but CANNOT create, update, or delete
     expect(runPermissionGuard('cashier', 'customers:read').nextCalled).toBe(true);
