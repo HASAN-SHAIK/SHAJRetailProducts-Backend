@@ -9,16 +9,21 @@ const { resolveTenantContext } = require('../config/tenantDbResolver');
 
 const authTenantMiddleware = async (req, res, next) => {
   const token = getTokenFromRequest(req, DEFAULT_TENANT_COOKIE);
-  if (!token) return jsonError(res, 401, 'UNAUTHORIZED', 'Unauthorized');
+  if (!token) {
+    console.warn(`[Auth] Tenant auth missing token for: ${req.method} ${req.originalUrl}`);
+    return jsonError(res, 401, 'UNAUTHORIZED', 'Unauthorized');
+  }
 
   try {
     const verified = verifyTenantToken(token);
     if (verified?.type !== 'tenant' || !verified?.tenant_id || !verified?.user_id) {
+      console.warn(`[Auth] Invalid tenant token payload for: ${req.method} ${req.originalUrl}`, verified);
       return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid token payload');
     }
 
     const normalizedRole = String(verified.role || '').trim().toLowerCase();
     if (!Object.prototype.hasOwnProperty.call(ROLE_PERMISSIONS, normalizedRole)) {
+      console.warn(`[Auth] Invalid tenant role '${verified.role}' for: ${req.method} ${req.originalUrl}`);
       return jsonError(res, 403, 'FORBIDDEN', 'Invalid tenant role');
     }
     verified.role = normalizedRole;
@@ -31,6 +36,7 @@ const authTenantMiddleware = async (req, res, next) => {
     // disabled tenant authorized until access-token expiry.
     const context = await resolveTenantContext(verified.tenant_id);
     if (!context || context.tenant?.is_active === false) {
+      console.warn(`[Auth] Tenant ${verified.tenant_id} is disabled or not found for: ${req.method} ${req.originalUrl}`);
       return jsonError(res, 403, 'TENANT_DISABLED', 'Tenant is disabled');
     }
 
@@ -39,6 +45,7 @@ const authTenantMiddleware = async (req, res, next) => {
     req.planFeatures = context.planFeatures || {};
     return next();
   } catch (error) {
+    console.error(`[Auth] Tenant auth verification failed for ${req.method} ${req.originalUrl}:`, error?.stack || error?.message || error);
     return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid token');
   }
 };
