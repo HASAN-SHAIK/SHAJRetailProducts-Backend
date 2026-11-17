@@ -8,6 +8,7 @@ const {
 const { tenantAuthMiddleware } = require('../middleware/tenantAuthMiddleware');
 const { subscriptionMiddleware } = require('../middleware/subscription');
 const { mergeFeatureFlags } = require('../middleware/featureFlags');
+const { signupProtectionMiddleware } = require('../middleware/signupProtectionMiddleware');
 
 const onboardingCreateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -37,7 +38,7 @@ const onboardingDailyLimiter = rateLimit({
 const router = express.Router();
 
 router.get('/plans', listPlansHandler);
-router.post('/company', onboardingDailyLimiter, onboardingCreateLimiter, createCompanyHandler);
+router.post('/company', onboardingDailyLimiter, onboardingCreateLimiter, signupProtectionMiddleware, createCompanyHandler);
 router.get(
   '/status',
   tenantAuthMiddleware,
