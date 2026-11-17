@@ -92,7 +92,9 @@ const rollbackProvisionedTenant = async (provisioned) => {
       console.error('Onboarding rollback failed to close tenant pool:', err.message || err);
     }
     try {
-      await adminPool.query(`DROP DATABASE IF EXISTS ${quoteIdentifier(provisioned.database_name)}`);
+      // database_name is generated internally by tenant provisioning and always quoted.
+      const dbIdentifier = quoteIdentifier(provisioned.database_name);
+      await adminPool.query(`DROP DATABASE IF EXISTS ${dbIdentifier}`);
     } catch (err) {
       console.error('Onboarding rollback failed to drop tenant DB:', err.message || err);
     }
