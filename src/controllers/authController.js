@@ -18,6 +18,7 @@ const {
   getRefreshTtlMs
 } = require('../services/authSessionService');
 const { ensureDeviceRegistration, sanitizeDeviceContext } = require('../utils/branchDeviceLicensing');
+const { resolveTenantsForLogin } = require('../services/tenantLoginDirectoryService');
 require('dotenv').config();
 
 const parseRefreshTenantId = (rawToken) => {
@@ -27,16 +28,23 @@ const parseRefreshTenantId = (rawToken) => {
   return text.slice(0, separatorIndex);
 };
 
-const resolveTenantFromRequest = async ({ email }) => {
-  if (email && email.includes('@')) {
+const resolveTenantFromRequest = async ({ email, companyCode = null, tenantId = null }) => {
+  const resolution = await resolveTenantsForLogin({ email, companyCode, tenantId });
+  if (resolution?.ambiguous) {
+    return { tenant: null, ambiguous: true, candidates: resolution.candidates || [] };
+  }
+  if (resolution?.tenant) {
+    return { tenant: resolution.tenant, ambiguous: false, candidates: [resolution.tenant] };
+  }
+  if (email && email.includes('@') && !companyCode && !tenantId) {
     const domain = email.split('@')[1].trim().toLowerCase();
     const cleanDomain = domain.replace(/\.com$/, '');
     if (cleanDomain) {
-      console.log(`Resolving tenant for domain: ${cleanDomain}`);
-      return getTenantByDomain(cleanDomain);
+      const tenant = await getTenantByDomain(cleanDomain);
+      return { tenant, ambiguous: false, candidates: tenant ? [tenant] : [] };
     }
   }
-  return null;
+  return { tenant: null, ambiguous: false, candidates: [] };
 };
 
 const buildTenantTokenPayload = (user, tenant) => ({
@@ -79,6 +87,14 @@ const buildVerifiedSessionUser = (verified) => ({
   store_permissions: verified.store_permissions || getStorePermissions(verified),
 });
 
+const buildTenantSummary = (tenant) => ({
+  id: tenant.id,
+  name: tenant.shop_name,
+  plan: tenant.plan_type,
+  company_code: tenant.domain || null,
+  gst_mode: tenant.gst_mode || 'INCLUSIVE',
+});
+
 const normalizeBranchScope = (value) => {
   if (value === null || value === undefined || value === '') return null;
   return String(value).trim() || null;
@@ -107,8 +123,7 @@ const clearSessionCookies = (res) => {
   clearAuthCookie(res, DEFAULT_TENANT_REFRESH_COOKIE);
 };
 
-const issueAuthSession = async ({
-  res,
+const createSessionTokens = async ({
   user,
   tenant,
   tenantPool,
@@ -125,18 +140,161 @@ const issueAuthSession = async ({
     branchId,
   });
 
+  const sessionPayload = {
+    user: buildSessionUser(user, tenant),
+    tenant: buildTenantSummary(tenant),
+    permissions: getPermissionsForRole(user.role),
+    store_permissions: getStorePermissions(user),
+    remember_me: rememberMe === true,
+  };
+
+  return { accessToken, refresh, sessionPayload };
+};
+
+const issueAuthSession = async ({
+  res,
+  user,
+  tenant,
+  tenantPool,
+  rememberMe = false,
+  deviceId = null,
+  branchId = null,
+}) => {
+  const { accessToken, refresh, sessionPayload } = await createSessionTokens({
+    user,
+    tenant,
+    tenantPool,
+    rememberMe,
+    deviceId,
+    branchId,
+  });
+
   setAccessAuthCookies(res, accessToken);
   setRefreshAuthCookie(res, refresh.rawToken, rememberMe);
 
   // V1 browser auth is credentialed-cookie only. Access and refresh tokens are
   // never returned in JSON where browser JavaScript can persist or inspect them.
+  return sessionPayload;
+};
+
+const issueMobileAuthSession = async ({
+  user,
+  tenant,
+  tenantPool,
+  rememberMe = true,
+  deviceId = null,
+  branchId = null,
+}) => {
+  const { accessToken, refresh, sessionPayload } = await createSessionTokens({
+    user,
+    tenant,
+    tenantPool,
+    rememberMe,
+    deviceId,
+    branchId,
+  });
+
   return {
-    user: buildSessionUser(user, tenant),
-    tenant: { id: tenant.id, name: tenant.shop_name, plan: tenant.plan_type },
-    permissions: getPermissionsForRole(user.role),
-    store_permissions: getStorePermissions(user),
-    remember_me: rememberMe === true,
+    ...sessionPayload,
+    access_token: accessToken,
+    refresh_token: refresh.rawToken,
+    token_type: 'Bearer',
+    expires_in_ms: getAccessTtlMs(),
   };
+};
+
+const authenticateTenantLogin = async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const password = String(req.body?.password || '');
+  const companyCode = String(req.body?.company_code || req.body?.domain || '').trim().toLowerCase() || null;
+  const tenantIdParam = req.body?.tenant_id || null;
+
+  if (!email || !password) {
+    jsonError(res, 400, 'VALIDATION_ERROR', 'Missing required fields');
+    return null;
+  }
+
+  const resolved = await resolveTenantFromRequest({ email, companyCode, tenantId: tenantIdParam });
+  if (resolved.ambiguous) {
+    res.status(409).json({
+      success: false,
+      code: 'COMPANY_SELECTION_REQUIRED',
+      message: 'Multiple shops use this email. Please select a company.',
+      companies: (resolved.candidates || []).map((c) => ({
+        tenant_id: c.id,
+        shop_name: c.shop_name,
+        company_code: c.company_code || c.domain,
+      })),
+    });
+    return null;
+  }
+
+  const tenant = resolved.tenant;
+  if (!tenant) {
+    jsonError(res, 404, 'TENANT_NOT_FOUND', 'Tenant not found');
+    return null;
+  }
+  if (tenant.is_active === false) {
+    jsonError(res, 403, 'TENANT_DISABLED', 'Tenant is disabled');
+    return null;
+  }
+
+  const tenantPool = getTenantPool(tenant.database_name);
+  const userResult = await tenantPool.query(
+    'SELECT * FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1',
+    [email]
+  );
+  if (userResult.rowCount === 0) {
+    jsonError(res, 401, 'UNAUTHORIZED', 'Invalid email or password');
+    return null;
+  }
+
+  const user = userResult.rows[0];
+  const validPassword = await bcrypt.compare(password, user.password);
+  if (!validPassword) {
+    jsonError(res, 401, 'UNAUTHORIZED', 'Invalid email or password');
+    return null;
+  }
+
+  const branchIdRaw = req.body?.branch_id || req.headers?.['x-branch-id'] || null;
+  const branchId = branchIdRaw && branchIdRaw !== 'all' ? branchIdRaw : null;
+  const { deviceId, deviceInfo } = sanitizeDeviceContext(req);
+  if (branchId && !hasAllBranchAccess(user) && normalizeBranchScope(user.branch_id) !== normalizeBranchScope(branchId)) {
+    jsonError(res, 403, 'POS_DEVICE_BRANCH_FORBIDDEN', 'POS device is outside the user branch scope');
+    return null;
+  }
+  if (branchId && deviceId) {
+    const deviceResult = await ensureDeviceRegistration({
+      tenantPool,
+      branchId,
+      deviceId,
+      userId: user.id,
+      mode: 'validate',
+      deviceInfo
+    });
+    if (!deviceResult.allowed) {
+      if (deviceResult.code === 'DEVICE_LIMIT_REACHED') {
+        jsonError(
+          res,
+          403,
+          'DEVICE_LIMIT_REACHED',
+          'Device limit reached for this branch. Please remove an existing device or upgrade your plan.'
+        );
+        return null;
+      }
+      jsonError(res, 403, 'DEVICE_NOT_ALLOWED', 'Access denied from this device');
+      return null;
+    }
+  }
+
+  const rememberMe =
+    req.body?.remember_me === undefined || req.body?.remember_me === null
+      ? true
+      : req.body?.remember_me === true ||
+        req.body?.remember_me === 1 ||
+        String(req.body?.remember_me).toLowerCase() === 'true';
+
+  return { user, tenant, tenantPool, rememberMe, deviceId, branchId };
 };
 
 const register = async (req, res) => {
@@ -146,7 +304,7 @@ const register = async (req, res) => {
       return jsonError(res, 400, 'VALIDATION_ERROR', 'Missing required fields');
     }
 
-    const tenant = await resolveTenantFromRequest({ email });
+    const { tenant } = await resolveTenantFromRequest({ email });
     if (!tenant) return jsonError(res, 404, 'TENANT_NOT_FOUND', 'Tenant not found');
     if (tenant.is_active === false) {
       return jsonError(res, 403, 'TENANT_DISABLED', 'Tenant is disabled');
@@ -175,72 +333,12 @@ const register = async (req, res) => {
 
 const login = async (req, res) => {
   try {
-    const { email, password } = req.body;
-    if (!email || !password) {
-      return jsonError(res, 400, 'VALIDATION_ERROR', 'Missing required fields');
-    }
-
-    const tenant = await resolveTenantFromRequest({ email });
-    if (!tenant) return jsonError(res, 404, 'TENANT_NOT_FOUND', 'Tenant not found');
-    if (tenant.is_active === false) {
-      return jsonError(res, 403, 'TENANT_DISABLED', 'Tenant is disabled');
-    }
-
-    const tenantPool = getTenantPool(tenant.database_name);
-    const userResult = await tenantPool.query('SELECT * FROM users WHERE email = $1', [email]);
-    if (userResult.rowCount === 0) {
-      return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid email or password');
-    }
-
-    const user = userResult.rows[0];
-    const validPassword = await bcrypt.compare(password, user.password);
-    if (!validPassword) {
-      return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid email or password');
-    }
-
-    const branchIdRaw = req.body?.branch_id || req.headers['x-branch-id'] || null;
-    const branchId = branchIdRaw && branchIdRaw !== 'all' ? branchIdRaw : null;
-    const { deviceId, deviceInfo } = sanitizeDeviceContext(req);
-    if (branchId && !hasAllBranchAccess(user) && normalizeBranchScope(user.branch_id) !== normalizeBranchScope(branchId)) {
-      return jsonError(res, 403, 'POS_DEVICE_BRANCH_FORBIDDEN', 'POS device is outside the user branch scope');
-    }
-    if (branchId && deviceId) {
-      const deviceResult = await ensureDeviceRegistration({
-        tenantPool,
-        branchId,
-        deviceId,
-        userId: user.id,
-        mode: 'validate',
-        deviceInfo
-      });
-      if (!deviceResult.allowed) {
-        if (deviceResult.code === 'DEVICE_LIMIT_REACHED') {
-          return jsonError(
-            res,
-            403,
-            'DEVICE_LIMIT_REACHED',
-            'Device limit reached for this branch. Please remove an existing device or upgrade your plan.'
-          );
-        }
-        return jsonError(res, 403, 'DEVICE_NOT_ALLOWED', 'Access denied from this device');
-      }
-    }
-
-    const rememberMe =
-      req.body?.remember_me === undefined || req.body?.remember_me === null
-        ? true
-        : req.body?.remember_me === true ||
-          req.body?.remember_me === 1 ||
-          String(req.body?.remember_me).toLowerCase() === 'true';
+    const auth = await authenticateTenantLogin(req, res);
+    if (!auth) return;
 
     const session = await issueAuthSession({
       res,
-      user,
-      tenant,
-      tenantPool,
-      rememberMe,
-      deviceId,
-      branchId,
+      ...auth,
     });
 
     return res.status(200).json({
@@ -252,57 +350,114 @@ const login = async (req, res) => {
   }
 };
 
-const refresh = async (req, res) => {
+const mobileLogin = async (req, res) => {
   try {
-    const rawRefreshToken = req?.cookies?.[DEFAULT_TENANT_REFRESH_COOKIE];
-    if (!rawRefreshToken) {
-      return jsonError(res, 401, 'UNAUTHORIZED', 'Refresh token missing');
-    }
+    const auth = await authenticateTenantLogin(req, res);
+    if (!auth) return;
 
-    const tenantId = parseRefreshTenantId(rawRefreshToken);
-    if (!tenantId) {
-      return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid refresh token');
-    }
-
-    const tenant = await getTenantById(tenantId);
-    if (!tenant) {
-      return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid refresh token');
-    }
-    if (tenant.is_active === false) {
-      clearSessionCookies(res);
-      return jsonError(res, 403, 'TENANT_DISABLED', 'Tenant is disabled');
-    }
-
-    const tenantPool = getTenantPool(tenant.database_name);
-    const rotated = await consumeAndRotateRefreshToken(tenantPool, rawRefreshToken, tenant.id);
-    if (!rotated) {
-      return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid, expired, or already used refresh token');
-    }
-
-    const row = rotated.row;
-    const user = {
-      id: row.user_id,
-      name: row.name,
-      email: row.email,
-      role: row.role,
-      branch_id: row.branch_id || null,
-      all_branch_access: row.all_branch_access !== false,
-    };
-
-    const accessToken = signTenantToken(buildTenantTokenPayload(user, tenant));
-    setAccessAuthCookies(res, accessToken);
-    setRefreshAuthCookie(res, rotated.rawToken, row.remember_me === true);
+    const session = await issueMobileAuthSession(auth);
 
     return res.status(200).json({
       success: true,
-      user: buildSessionUser(user, tenant),
-      tenant: { id: tenant.id, name: tenant.shop_name, plan: tenant.plan_type },
-      permissions: getPermissionsForRole(user.role),
-      store_permissions: getStorePermissions(user),
-      remember_me: row.remember_me === true,
+      ...session,
+    });
+  } catch (error) {
+    return jsonError(res, 500, 'MOBILE_LOGIN_FAILED', error.message);
+  }
+};
+
+const rotateRefreshSession = async (rawRefreshToken, res, { clearCookiesOnDisabled = false } = {}) => {
+  if (!rawRefreshToken) {
+    jsonError(res, 401, 'UNAUTHORIZED', 'Refresh token missing');
+    return null;
+  }
+
+  const tenantId = parseRefreshTenantId(rawRefreshToken);
+  if (!tenantId) {
+    jsonError(res, 401, 'UNAUTHORIZED', 'Invalid refresh token');
+    return null;
+  }
+
+  const tenant = await getTenantById(tenantId);
+  if (!tenant) {
+    jsonError(res, 401, 'UNAUTHORIZED', 'Invalid refresh token');
+    return null;
+  }
+  if (tenant.is_active === false) {
+    if (clearCookiesOnDisabled) clearSessionCookies(res);
+    jsonError(res, 403, 'TENANT_DISABLED', 'Tenant is disabled');
+    return null;
+  }
+
+  const tenantPool = getTenantPool(tenant.database_name);
+  const rotated = await consumeAndRotateRefreshToken(tenantPool, rawRefreshToken, tenant.id);
+  if (!rotated) {
+    jsonError(res, 401, 'UNAUTHORIZED', 'Invalid, expired, or already used refresh token');
+    return null;
+  }
+
+  const row = rotated.row;
+  const user = {
+    id: row.user_id,
+    name: row.name,
+    email: row.email,
+    role: row.role,
+    branch_id: row.branch_id || null,
+    all_branch_access: row.all_branch_access !== false,
+  };
+
+  const accessToken = signTenantToken(buildTenantTokenPayload(user, tenant));
+  return {
+    accessToken,
+    rawRefreshToken: rotated.rawToken,
+    rememberMe: row.remember_me === true,
+    user,
+    tenant,
+  };
+};
+
+const refresh = async (req, res) => {
+  try {
+    const rawRefreshToken = req?.cookies?.[DEFAULT_TENANT_REFRESH_COOKIE];
+    const rotated = await rotateRefreshSession(rawRefreshToken, res, { clearCookiesOnDisabled: true });
+    if (!rotated) return;
+
+    setAccessAuthCookies(res, rotated.accessToken);
+    setRefreshAuthCookie(res, rotated.rawRefreshToken, rotated.rememberMe);
+
+    return res.status(200).json({
+      success: true,
+      user: buildSessionUser(rotated.user, rotated.tenant),
+      tenant: buildTenantSummary(rotated.tenant),
+      permissions: getPermissionsForRole(rotated.user.role),
+      store_permissions: getStorePermissions(rotated.user),
+      remember_me: rotated.rememberMe,
     });
   } catch (error) {
     return jsonError(res, 500, 'REFRESH_FAILED', error.message);
+  }
+};
+
+const mobileRefresh = async (req, res) => {
+  try {
+    const rawRefreshToken = req.body?.refresh_token || req.headers?.['x-refresh-token'] || null;
+    const rotated = await rotateRefreshSession(rawRefreshToken, res);
+    if (!rotated) return;
+
+    return res.status(200).json({
+      success: true,
+      access_token: rotated.accessToken,
+      refresh_token: rotated.rawRefreshToken,
+      token_type: 'Bearer',
+      expires_in_ms: getAccessTtlMs(),
+      user: buildSessionUser(rotated.user, rotated.tenant),
+      tenant: buildTenantSummary(rotated.tenant),
+      permissions: getPermissionsForRole(rotated.user.role),
+      store_permissions: getStorePermissions(rotated.user),
+      remember_me: rotated.rememberMe,
+    });
+  } catch (error) {
+    return jsonError(res, 500, 'MOBILE_REFRESH_FAILED', error.message);
   }
 };
 
@@ -367,4 +522,34 @@ const logout = async (req, res) => {
   }
 };
 
-module.exports = { register, login, refresh, getLogin, logout };
+const mobileLogout = async (req, res) => {
+  try {
+    const rawRefreshToken = req.body?.refresh_token || req?.cookies?.[DEFAULT_TENANT_REFRESH_COOKIE] || null;
+    let tenantPool = req.tenantPool || null;
+    if (!tenantPool && rawRefreshToken) {
+      const tenantId = parseRefreshTenantId(rawRefreshToken);
+      const tenant = tenantId ? await getTenantById(tenantId) : null;
+      if (tenant) {
+        tenantPool = getTenantPool(tenant.database_name);
+      }
+    }
+    if (rawRefreshToken && tenantPool) {
+      await revokeRefreshToken(tenantPool, rawRefreshToken);
+    }
+    return res.status(200).json({ success: true, message: 'Logged out' });
+  } catch (error) {
+    return jsonError(res, 500, 'MOBILE_LOGOUT_FAILED', error.message);
+  }
+};
+
+module.exports = {
+  register,
+  login,
+  mobileLogin,
+  refresh,
+  mobileRefresh,
+  getLogin,
+  logout,
+  mobileLogout,
+  issueMobileAuthSession,
+};
