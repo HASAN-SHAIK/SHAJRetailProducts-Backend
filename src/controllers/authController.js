@@ -19,6 +19,7 @@ const {
 } = require('../services/authSessionService');
 const { ensureDeviceRegistration, sanitizeDeviceContext } = require('../utils/branchDeviceLicensing');
 const { resolveTenantsForLogin } = require('../services/tenantLoginDirectoryService');
+const { loadLatestSubscriptionInfo } = require('../services/subscriptionStatusService');
 require('dotenv').config();
 
 const parseRefreshTenantId = (rawToken) => {
@@ -147,6 +148,8 @@ const createSessionTokens = async ({
     store_permissions: getStorePermissions(user),
     remember_me: rememberMe === true,
   };
+  const subscriptionInfo = await loadLatestSubscriptionInfo(tenant.id);
+  if (subscriptionInfo) sessionPayload.subscription = subscriptionInfo;
 
   return { accessToken, refresh, sessionPayload };
 };

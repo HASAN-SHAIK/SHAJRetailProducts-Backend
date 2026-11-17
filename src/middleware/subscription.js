@@ -22,7 +22,7 @@ const subscriptionMiddleware = async (req, res, next) => {
          FROM subscriptions s
          LEFT JOIN plans p ON p.id = s.plan_id
          WHERE s.tenant_id = $1
-           AND s.payment_status = 'paid'
+           AND s.payment_status IN ('paid', 'trial')
            AND s.end_date IS NOT NULL
          ORDER BY s.end_date DESC NULLS LAST, s.id DESC
          LIMIT 1`,
