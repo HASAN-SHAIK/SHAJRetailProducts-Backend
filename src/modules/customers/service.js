@@ -62,6 +62,13 @@ const duplicateError = (existing) => {
   return err;
 };
 
+const PHONE_UNIQUE_INDEX = 'idx_customers_active_phone_digits_unique';
+
+// A concurrent writer or a reactivation can still hit the DB-level guarantee.
+const isPhoneUniqueViolation = (err) =>
+  err && err.code === '23505' &&
+  (!err.constraint || err.constraint === PHONE_UNIQUE_INDEX);
+
 const withIgnored = (row, ignored) => (ignored.length ? { ...row, ignored_fields: ignored } : row);
 
 const findByPhoneDigits = (db, digits, excludeId = null) =>
@@ -97,6 +104,15 @@ const inTransaction = async (pool, fn) => {
   }
 };
 
+const mapPhoneViolation = async (fn) => {
+  try {
+    return await fn();
+  } catch (err) {
+    if (isPhoneUniqueViolation(err)) throw duplicateError(null);
+    throw err;
+  }
+};
+
 const createCustomer = async (pool, payload = {}, { canManageFinancials = false } = {}) => {
   const input = buildCustomerInput(payload);
   const digits = normalizePhone(input.phone || input.mobile);
@@ -104,7 +120,7 @@ const createCustomer = async (pool, payload = {}, { canManageFinancials = false 
   const ignored = !canManageFinancials && creditProvided ? ['credit_limit'] : [];
   const creditLimit = canManageFinancials && creditProvided ? input.credit_limit : 0;
 
-  const row = await inTransaction(pool, async (client) => {
+  const row = await mapPhoneViolation(() => inTransaction(pool, async (client) => {
     if (digits) {
       await lockPhone(client, digits);
       const existing = await findByPhoneDigits(client, digits);
@@ -136,7 +152,7 @@ const createCustomer = async (pool, payload = {}, { canManageFinancials = false 
       ]
     );
     return result.rows[0];
-  });
+  }));
   return withIgnored(row, ignored);
 };
 
@@ -195,9 +211,11 @@ const updateCustomer = async (pool, id, payload = {}, { canManageFinancials = fa
     return result.rows[0];
   };
 
-  const row = input.phone
-    ? await inTransaction(pool, (client) => run(client, true))
-    : await run(pool, false);
+  const row = await mapPhoneViolation(() =>
+    input.phone
+      ? inTransaction(pool, (client) => run(client, true))
+      : run(pool, false)
+  );
   return row ? withIgnored(row, ignored) : row;
 };
 
