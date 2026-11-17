@@ -2,6 +2,7 @@ const { asyncHandler } = require('../../shared/errors/asyncHandler');
 const { sendSuccess, sendCreated, sendNoContent, buildPaginationMeta } = require('../../shared/dto/apiResponse');
 const { validateRequest } = require('../../shared/middleware/validateRequest');
 const { requireTenantUser } = require('../../shared/middleware/authorizeRoles');
+const { canManageCustomerFinancials } = require('../../../../modules/customers/financialPolicy');
 const { createCustomerService } = require('./customer.service');
 const {
   listCustomersQuerySchema,
@@ -21,12 +22,14 @@ const getCustomer = asyncHandler(async (req, res) => {
 });
 
 const createCustomer = asyncHandler(async (req, res) => {
-  const customer = await createCustomerService(req).create(req.body);
+  const customer = await createCustomerService(req).create(req.body, { canManageFinancials: canManageCustomerFinancials(req.user) });
   return sendCreated(res, { customer });
 });
 
 const updateCustomer = asyncHandler(async (req, res) => {
-  const customer = await createCustomerService(req).update(req.params.id, req.body);
+  const customer = await createCustomerService(req).update(req.params.id, req.body, {
+    canManageFinancials: canManageCustomerFinancials(req.user),
+  });
   return sendSuccess(res, { customer });
 });
 

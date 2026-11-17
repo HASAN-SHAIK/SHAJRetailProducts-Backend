@@ -34,13 +34,13 @@ class CustomerService {
     return toCustomerDetailDto(detail);
   }
 
-  async create(body) {
-    const row = await this.repo.create(body);
+  async create(body, options = {}) {
+    const row = await this.repo.create(body, options);
     return toCustomerDto(row);
   }
 
-  async update(id, body) {
-    const row = await this.repo.update(id, body);
+  async update(id, body, options = {}) {
+    const row = await this.repo.update(id, body, options);
     if (!row) throw AppError.notFound('Customer not found');
     return toCustomerDto(row);
   }

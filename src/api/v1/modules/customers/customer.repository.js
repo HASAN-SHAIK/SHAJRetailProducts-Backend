@@ -47,12 +47,12 @@ class CustomerRepository {
     return legacyCustomerService.getCustomerById(this.pool, id);
   }
 
-  async create(payload) {
-    return legacyCustomerService.createCustomer(this.pool, payload);
+  async create(payload, options = {}) {
+    return legacyCustomerService.createCustomer(this.pool, payload, options);
   }
 
-  async update(id, payload) {
-    return legacyCustomerService.updateCustomer(this.pool, id, payload);
+  async update(id, payload, options = {}) {
+    return legacyCustomerService.updateCustomer(this.pool, id, payload, options);
   }
 
   async deactivate(id) {
