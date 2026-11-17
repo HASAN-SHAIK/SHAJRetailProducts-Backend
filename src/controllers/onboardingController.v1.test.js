@@ -146,6 +146,31 @@ describe('onboardingController', () => {
     }));
   });
 
+  test('self-serve trial ignores a requested higher plan and always provisions basic', async () => {
+    mockGetTenantByDomain.mockResolvedValue(null);
+    mockProvisionTenant.mockResolvedValue({ tenant_id: 66, database_name: 'shaj_tenant_66' });
+    mockGetTenantById.mockResolvedValue({
+      id: 66, shop_name: 'Plan Shop', domain: 'plan-shop', database_name: 'shaj_tenant_66', plan_type: 'basic',
+    });
+    mockGetTenantPool.mockReturnValue({
+      query: jest.fn(async () => ({ rowCount: 1, rows: [{ id: 1, role: 'admin', email: 'p@x.com' }] })),
+    });
+    mockCreateBranch.mockResolvedValue({ id: 'b1', name: 'Main Store', is_active: true });
+    mockIssueMobileAuthSession.mockResolvedValue({ access_token: 't', refresh_token: 'r' });
+
+    const res = makeRes();
+    await createCompanyHandler({
+      body: {
+        shop_name: 'Plan Shop', owner_name: 'Owner', email: 'p@x.com', mobile: '9876543210',
+        password: 'StrongPassword1', plan_type: 'premium',
+      },
+      headers: {},
+    }, res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(mockProvisionTenant).toHaveBeenCalledWith(expect.objectContaining({ plan_type: 'basic' }));
+  });
+
   test('rolls back provisioned tenant database if initial store creation fails', async () => {
     mockGetTenantByDomain.mockResolvedValue(null);
     mockProvisionTenant.mockResolvedValue({ tenant_id: 77, database_name: 'shaj_tenant_77' });

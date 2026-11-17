@@ -11,7 +11,6 @@ const { issueMobileAuthSession } = require('../controllers/authController');
 const { resolveFeatures } = require('../utils/resolveFeatures');
 
 const DEFAULT_TRIAL_DAYS = Math.max(1, Number(process.env.ONBOARDING_TRIAL_DAYS || 14));
-const ALLOWED_PLANS = new Set(['basic', 'pro', 'premium']);
 const GST_MODES = new Set(['INCLUSIVE', 'EXCLUSIVE']);
 
 const quoteIdentifier = (value) => `"${String(value).replace(/"/g, '""')}"`;
@@ -115,8 +114,10 @@ const onboardCompany = async (payload = {}, deviceContext = {}) => {
   const mobile = String(payload.mobile || '').trim();
   const password = String(payload.password || '');
   const requestedCode = String(payload.company_code || '').trim();
-  const planTypeRaw = String(payload.plan_type || 'basic').trim().toLowerCase();
-  const planType = ALLOWED_PLANS.has(planTypeRaw) ? planTypeRaw : 'basic';
+  // Self-serve signup is an unauthenticated, unpaid trial: it always starts on
+  // the entry plan. Higher plans are granted by a platform admin after payment,
+  // so a caller-supplied plan_type is deliberately ignored here.
+  const planType = 'basic';
   const gstModeRaw = String(payload.gst_mode || 'INCLUSIVE').trim().toUpperCase();
   if (!GST_MODES.has(gstModeRaw)) {
     throw createHttpError(400, 'VALIDATION_ERROR', 'gst_mode must be INCLUSIVE or EXCLUSIVE');
