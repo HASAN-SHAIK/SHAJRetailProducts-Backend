@@ -64,7 +64,12 @@ describe('V1 cross-tenant authentication isolation', () => {
     expect(controller).toContain('const tenantId = parseRefreshTenantId(rawRefreshToken);');
     expect(controller).toContain('const tenant = await getTenantById(tenantId);');
     expect(controller).toContain('consumeAndRotateRefreshToken(tenantPool, rawRefreshToken, tenant.id)');
-    expect(controller).not.toContain('req.body?.tenant_id');
+    // Caller-selected tenant_id is only valid for login; refresh paths must never read it.
+    const refreshSection = controller.slice(
+      controller.indexOf('const rotateRefreshSession = async'),
+      controller.indexOf('const getLogin = async')
+    );
+    expect(refreshSection).not.toContain('req.body?.tenant_id');
   });
 
   test('platform-admin verification remains on its dedicated signing authority', () => {

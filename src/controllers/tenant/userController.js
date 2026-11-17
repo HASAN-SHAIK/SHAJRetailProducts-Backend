@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const { jsonError, jsonOk } = require('../../utils/responses');
 const { ROLE_PERMISSIONS } = require('../../utils/rolePermissions');
+const { registerTenantLoginEntry } = require('../../services/tenantLoginDirectoryService');
 
 const currentUserId = (req) => Number(req?.user?.user_id || req?.user?.id || 0);
 const normalizeRole = (role) => String(role || '').trim().toLowerCase();
@@ -74,6 +75,15 @@ const createUser = async (req, res) => {
        RETURNING id, name, email, role, branch_id, all_branch_access, created_at`,
       [name, email, hashedPassword, role, branchId, allBranchAccess]
     );
+    try {
+      const tenantId = req.tenant?.id || req.tenant_id || req.user?.tenant_id;
+      const companyCode = req.tenant?.domain;
+      if (tenantId && companyCode) {
+        await registerTenantLoginEntry({ tenantId, email, companyCode });
+      }
+    } catch (dirError) {
+      console.warn('Login directory sync skipped during createUser:', dirError.message || dirError);
+    }
     return jsonOk(res, { user: result.rows[0] }, 'User created');
   } catch (error) {
     if (error?.status) return jsonError(res, error.status, 'VALIDATION_ERROR', error.message);

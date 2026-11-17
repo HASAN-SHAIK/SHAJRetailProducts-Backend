@@ -3,6 +3,7 @@ const path = require('path');
 const bcrypt = require('bcryptjs');
 const masterPool = require('../db/masterPool');
 const { resolvePlatformAdminSeedConfig } = require('../security/platformAdminSeedPolicy');
+const { ensureTenantLoginDirectorySchema } = require('./tenantLoginDirectoryService');
 
 const EXPECTED_TABLES = [
   'shop_types',
@@ -16,7 +17,8 @@ const EXPECTED_TABLES = [
   'platform_settings',
   'support_cases',
   'support_case_messages',
-  'support_case_attachments'
+  'support_case_attachments',
+  'tenant_login_directory'
 ];
 
 const DUPLICATE_OBJECT_CODES = new Set(['42P07', '42710']);
@@ -159,6 +161,7 @@ const ensureDefaultPlans = async () => {
 const bootstrapMasterDatabase = async () => {
   await masterPool.query('SELECT 1');
   await ensurePlatformSchema();
+  await ensureTenantLoginDirectorySchema();
   await ensureDefaultPlatformAdmin();
   await ensureDefaultPlans();
   console.log('Master DB bootstrap completed.');

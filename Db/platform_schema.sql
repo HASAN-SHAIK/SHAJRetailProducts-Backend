@@ -209,3 +209,17 @@ CREATE TABLE IF NOT EXISTS support_case_attachments (
 CREATE INDEX IF NOT EXISTS idx_support_cases_tenant_id ON support_cases(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_support_cases_status ON support_cases(status);
 CREATE INDEX IF NOT EXISTS idx_support_cases_priority ON support_cases(priority);
+
+CREATE TABLE IF NOT EXISTS tenant_login_directory (
+  id SERIAL PRIMARY KEY,
+  tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  email VARCHAR(255) NOT NULL,
+  mobile VARCHAR(20),
+  company_code VARCHAR(255) NOT NULL,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'UTC'),
+  UNIQUE (tenant_id, email)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tenant_login_directory_email ON tenant_login_directory (LOWER(email));
+CREATE INDEX IF NOT EXISTS idx_tenant_login_directory_company_code ON tenant_login_directory (LOWER(company_code));

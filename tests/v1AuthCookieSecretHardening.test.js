@@ -54,10 +54,19 @@ describe('V1 tenant auth cookie and secret hardening', () => {
   test('login and refresh keep access JWTs in cookies rather than JSON response payloads', () => {
     expect(controllerSource).toContain('setAccessAuthCookies(res, accessToken);');
     expect(controllerSource).toContain('setRefreshAuthCookie(res, refresh.rawToken, rememberMe);');
-    expect(controllerSource).toContain('setRefreshAuthCookie(res, rotated.rawToken, row.remember_me === true);');
+    expect(controllerSource).toContain('setRefreshAuthCookie(res, rotated.rawRefreshToken, rotated.rememberMe);');
     expect(controllerSource).not.toContain('\n    token,\n');
-    expect(controllerSource).not.toContain('token: accessToken');
+    // A bare `token: accessToken` JSON field is still forbidden; the mobile-only
+    // `access_token` field is covered by the web-session scope check below.
+    expect(controllerSource).not.toMatch(/(^|[^_])token: accessToken/m);
     expect(controllerSource).toContain('Access and refresh tokens are');
     expect(controllerSource).toContain('never returned in JSON');
+    // Bearer tokens in JSON are confined to the explicit native-mobile session path.
+    const webSession = controllerSource.slice(
+      controllerSource.indexOf('const issueAuthSession = async'),
+      controllerSource.indexOf('const issueMobileAuthSession = async')
+    );
+    expect(webSession).not.toContain('access_token');
+    expect(webSession).not.toContain('refresh_token');
   });
 });

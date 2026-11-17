@@ -33,7 +33,7 @@ const loadTenant = async (tenantId) => {
   let tenantRes;
   try {
     tenantRes = await masterPool.query(
-      `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.plan_type, t.is_active, t.addons, t.gst_mode
+      `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.domain, t.plan_type, t.is_active, t.addons, t.gst_mode
        FROM tenants t
        WHERE t.id = $1`,
       [tenantId]
@@ -41,7 +41,7 @@ const loadTenant = async (tenantId) => {
   } catch (error) {
     if (!isMissingGstModeColumnError(error)) throw error;
     tenantRes = await masterPool.query(
-      `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.plan_type, t.is_active, t.addons
+      `SELECT t.id, t.shop_name, t.owner_name, t.email, t.mobile, t.domain, t.plan_type, t.is_active, t.addons
        FROM tenants t
        WHERE t.id = $1`,
       [tenantId]

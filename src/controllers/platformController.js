@@ -18,6 +18,7 @@ const { resolvePlanDeviceLimit, normalizePlan } = require('../config/planDeviceL
 const { resolveFeatures } = require('../utils/resolveFeatures');
 const { sanitizeAddons } = require('../utils/addons');
 const { clearCachedSubscription } = require('../config/subscriptionCache');
+const { registerTenantLoginEntry } = require('../services/tenantLoginDirectoryService');
 
 const GST_MODES = new Set(['INCLUSIVE', 'EXCLUSIVE']);
 
@@ -1928,6 +1929,19 @@ const createTenantUser = async (req, res) => {
       branch_id: result.rows[0].branch_id || null,
       all_branch_access: result.rows[0].all_branch_access === true
     });
+
+    try {
+      const companyCode = context.tenant?.domain;
+      if (companyCode) {
+        await registerTenantLoginEntry({
+          tenantId: context.tenant.id || tenantId,
+          email: result.rows[0].email,
+          companyCode,
+        });
+      }
+    } catch (dirError) {
+      console.warn('Login directory sync skipped during createTenantUser:', dirError.message || dirError);
+    }
 
     return jsonOk(res, { user: result.rows[0] }, 'User created');
   } catch (error) {
