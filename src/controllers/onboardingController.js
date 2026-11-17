@@ -57,6 +57,7 @@ const createCompanyHandler = async (req, res) => {
       ...result,
     });
   } catch (error) {
+    console.error('[Onboarding] Company creation failed:', error?.stack || error?.message || error);
     const status = error?.status || (error?.code === '23505' ? 409 : 500);
     const code = error?.code && typeof error.code === 'string' && !/^\d+$/.test(error.code)
       ? error.code

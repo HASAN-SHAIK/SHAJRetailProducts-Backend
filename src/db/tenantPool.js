@@ -22,6 +22,22 @@ const buildTenantPoolConfig = (database) => {
     };
   }
 
+  // If running on cloud/Render where only MASTER_DATABASE_URL or ADMIN_DATABASE_URL is set,
+  // automatically derive the tenant connection string on the same database cluster.
+  const baseDbUrl = process.env.MASTER_DATABASE_URL || process.env.ADMIN_DATABASE_URL;
+  if (baseDbUrl) {
+    try {
+      const parsed = new URL(baseDbUrl);
+      parsed.pathname = `/${database}`;
+      return {
+        connectionString: parsed.toString(),
+        ssl
+      };
+    } catch {
+      // Ignore URL parse error and fall back to individual properties below
+    }
+  }
+
   return {
     user: process.env.TENANT_DB_USER || process.env.DB_USER,
     host: process.env.TENANT_DB_HOST || process.env.DB_HOST,

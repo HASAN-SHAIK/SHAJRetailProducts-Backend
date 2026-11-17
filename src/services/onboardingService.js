@@ -112,7 +112,8 @@ const onboardCompany = async (payload = {}, deviceContext = {}) => {
   const shopName = String(payload.shop_name || '').trim();
   const ownerName = String(payload.owner_name || '').trim();
   const email = String(payload.email || '').trim().toLowerCase();
-  const mobile = String(payload.mobile || '').trim();
+  const mobileRaw = String(payload.mobile || '').trim();
+  const mobile = mobileRaw.replace(/[^\d+]/g, '').slice(-15) || mobileRaw.slice(0, 15);
   const password = String(payload.password || '');
   const requestedCode = String(payload.company_code || '').trim();
   // Self-serve signup is an unauthenticated, unpaid trial: it always starts on
