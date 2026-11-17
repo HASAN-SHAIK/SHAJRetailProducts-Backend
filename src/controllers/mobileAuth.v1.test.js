@@ -33,7 +33,7 @@ jest.mock('bcryptjs', () => ({
   hash: jest.fn(async () => 'hashed'),
 }));
 
-process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-jwt-secret';
+if (!process.env.JWT_SECRET) process.env.JWT_SECRET = 'test-jwt-secret';
 
 const {
   login,

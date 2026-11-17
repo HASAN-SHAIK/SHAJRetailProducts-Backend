@@ -5,6 +5,10 @@ jest.mock('../src/db/masterPool', () => ({
   query: jest.fn(),
 }));
 
+jest.mock('../src/services/tenantLoginDirectoryService', () => ({
+  ensureTenantLoginDirectorySchema: jest.fn().mockResolvedValue(undefined),
+}));
+
 jest.mock('bcryptjs', () => ({
   hash: jest.fn(),
 }));
@@ -26,6 +30,7 @@ const EXPECTED_TABLES = [
   'support_cases',
   'support_case_messages',
   'support_case_attachments',
+  'tenant_login_directory',
 ];
 
 const installQueryBehavior = ({ hasAdmin }) => {
