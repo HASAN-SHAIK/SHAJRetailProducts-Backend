@@ -18,6 +18,7 @@ describe('V1 Central customer CRUD authority and tenant-global scope', () => {
     const tenantA = makePool([
       result([]),
       result([{ id: 11, name: 'Asha', phone: '9000000001', credit_limit: 0, current_balance: 0 }]),
+      result([{ id: 11, name: 'Asha', phone: '9000000001', credit_limit: 0, current_balance: 0 }]),
       result([{ id: 11, name: 'Asha Updated', phone: '9000000001', credit_limit: 500, current_balance: 0 }]),
     ]);
     const tenantB = makePool();
@@ -26,11 +27,11 @@ describe('V1 Central customer CRUD authority and tenant-global scope', () => {
     const updated = await updateCustomer(tenantA, created.id, { name: 'Asha Updated', credit_limit: 500 });
 
     expect(updated.name).toBe('Asha Updated');
-    expect(tenantA.query).toHaveBeenCalledTimes(3);
+    expect(tenantA.query).toHaveBeenCalledTimes(4);
     expect(tenantB.query).not.toHaveBeenCalled();
 
     const insertSql = tenantA.query.mock.calls[1][0];
-    const updateSql = tenantA.query.mock.calls[2][0];
+    const updateSql = tenantA.query.mock.calls[3][0];
     expect(insertSql).toContain('INSERT INTO customers');
     expect(updateSql).toContain('UPDATE customers');
     expect(insertSql).not.toMatch(/branch_id/i);
@@ -38,16 +39,16 @@ describe('V1 Central customer CRUD authority and tenant-global scope', () => {
   });
 
   test('partial profile updates preserve omitted type and financial projection fields', async () => {
-    const tenantPool = makePool([
-      result([{ id: 11, name: 'Asha Updated', type: 'wholesale', credit_limit: 750, current_balance: 125 }]),
-    ]);
+    const current = { id: 11, name: 'Asha', type: 'wholesale', credit_limit: 750, current_balance: 125 };
+    const tenantPool = makePool([result([current]), result([{ ...current, name: 'Asha Updated' }])]);
 
     await updateCustomer(tenantPool, 11, { name: 'Asha Updated', email: 'asha@example.com' });
 
-    const [, params] = tenantPool.query.mock.calls[0];
-    expect(params[3]).toBeNull();
-    expect(params[7]).toBeNull();
-    expect(params[8]).toBeNull();
+    // Omitted type and financial fields fall back to the stored row instead of being reset.
+    const [, params] = tenantPool.query.mock.calls[1];
+    expect(params[3]).toBe('wholesale');
+    expect(params[7]).toBe(750);
+    expect(params[8]).toBe(125);
   });
 
   test('customer list is tenant-global across stores and never branch-filtered', async () => {
