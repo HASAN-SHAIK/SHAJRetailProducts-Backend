@@ -32,6 +32,7 @@ describe('V1 tenant auth cookie and secret hardening', () => {
   test('tenant auth cookies are HttpOnly and production Secure with SameSite Lax', () => {
     process.env.JWT_SECRET = 'tenant-secret';
     process.env.NODE_ENV = 'production';
+    delete process.env.AUTH_COOKIE_SAMESITE;
     const { setAuthCookie, clearAuthCookie } = loadJwtUtils();
     const res = { cookie: jest.fn(), clearCookie: jest.fn() };
 
@@ -49,6 +50,33 @@ describe('V1 tenant auth cookie and secret hardening', () => {
       secure: true,
       sameSite: 'lax',
     });
+  });
+
+  test('AUTH_COOKIE_SAMESITE=none enables cross-site POS sessions and always forces Secure', () => {
+    process.env.JWT_SECRET = 'tenant-secret';
+    process.env.NODE_ENV = 'development';
+    process.env.AUTH_COOKIE_SAMESITE = ' None ';
+    const { setAuthCookie, clearAuthCookie } = loadJwtUtils();
+    const res = { cookie: jest.fn(), clearCookie: jest.fn() };
+
+    setAuthCookie(res, 'secret-token', 'token', 1000);
+    expect(res.cookie).toHaveBeenCalledWith('token', 'secret-token', {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'none',
+      maxAge: 1000,
+    });
+    // Clearing must use the same attributes or the browser keeps the cookie.
+    clearAuthCookie(res, 'token');
+    expect(res.clearCookie).toHaveBeenCalledWith('token', { httpOnly: true, secure: true, sameSite: 'none' });
+  });
+
+  test('unknown AUTH_COOKIE_SAMESITE values fall back to Lax', () => {
+    process.env.JWT_SECRET = 'tenant-secret';
+    process.env.NODE_ENV = 'production';
+    process.env.AUTH_COOKIE_SAMESITE = 'whatever';
+    const { getCookieOptions } = loadJwtUtils();
+    expect(getCookieOptions()).toEqual({ httpOnly: true, secure: true, sameSite: 'lax' });
   });
 
   test('login and refresh keep access JWTs in cookies rather than JSON response payloads', () => {

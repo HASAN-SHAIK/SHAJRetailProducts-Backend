@@ -57,11 +57,21 @@ const verifyAdminToken = (token) => {
   return jwt.verify(token, getAdminJwtSecret());
 };
 
-const getCookieOptions = () => ({
-  httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: 'lax'
-});
+// Browsers only send SameSite=Lax cookies on same-site requests. When the POS web app
+// and Central run on different sites (e.g. two *.onrender.com services, or a POS on its
+// own domain) the login cookie is stored but never sent back, so every call after login
+// is 401. Set AUTH_COOKIE_SAMESITE=none for such deployments; None always requires
+// Secure (HTTPS). CORS_ORIGINS still limits which sites may make credentialed calls.
+const ALLOWED_SAME_SITE = new Set(['lax', 'strict', 'none']);
+const getCookieOptions = () => {
+  const configured = String(process.env.AUTH_COOKIE_SAMESITE || '').trim().toLowerCase();
+  const sameSite = ALLOWED_SAME_SITE.has(configured) ? configured : 'lax';
+  return {
+    httpOnly: true,
+    secure: sameSite === 'none' || process.env.NODE_ENV === 'production',
+    sameSite
+  };
+};
 
 const setAuthCookie = (res, token, cookieName, maxAgeMs) => {
   const options = getCookieOptions();
@@ -83,5 +93,6 @@ module.exports = {
   verifyTenantToken,
   verifyAdminToken,
   setAuthCookie,
-  clearAuthCookie
+  clearAuthCookie,
+  getCookieOptions
 };
