@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const { jsonError, jsonOk } = require('../../utils/responses');
 const { ROLE_PERMISSIONS } = require('../../utils/rolePermissions');
 const { registerTenantLoginEntry } = require('../../services/tenantLoginDirectoryService');
+const { getTenantById } = require('../../services/tenantService');
 
 const currentUserId = (req) => Number(req?.user?.user_id || req?.user?.id || 0);
 const normalizeRole = (role) => String(role || '').trim().toLowerCase();
@@ -9,6 +10,23 @@ const parseBoolean = (value, fallback = false) => {
   if (value === undefined || value === null || value === '') return fallback;
   if (typeof value === 'boolean') return value;
   return ['1', 'true', 'yes', 'y'].includes(String(value).trim().toLowerCase());
+};
+
+// Mobile/POS sign-in finds a user's company through the login directory, so every
+// new user must be registered there. The company code normally comes from the
+// request's tenant; if that object lacks it (older cached shape), load it.
+const syncLoginDirectory = async (req, email) => {
+  const tenantId = req.tenant?.id || req.tenant_id || req.user?.tenant_id;
+  let companyCode = req.tenant?.domain;
+  if (tenantId && !companyCode) {
+    const tenant = await getTenantById(tenantId);
+    companyCode = tenant?.domain;
+  }
+  if (!tenantId || !companyCode) {
+    throw new Error('company code unavailable for the current tenant');
+  }
+  const entry = await registerTenantLoginEntry({ tenantId, email, companyCode });
+  if (!entry) throw new Error('login directory entry was not written');
 };
 
 const validateRole = (role) => Object.prototype.hasOwnProperty.call(ROLE_PERMISSIONS, role);
@@ -75,16 +93,21 @@ const createUser = async (req, res) => {
        RETURNING id, name, email, role, branch_id, all_branch_access, created_at`,
       [name, email, hashedPassword, role, branchId, allBranchAccess]
     );
+    let loginDirectorySynced = true;
     try {
-      const tenantId = req.tenant?.id || req.tenant_id || req.user?.tenant_id;
-      const companyCode = req.tenant?.domain;
-      if (tenantId && companyCode) {
-        await registerTenantLoginEntry({ tenantId, email, companyCode });
-      }
+      await syncLoginDirectory(req, email);
     } catch (dirError) {
-      console.warn('Login directory sync skipped during createUser:', dirError.message || dirError);
+      // The user exists, so do not fail the request; report it so it is not silent.
+      loginDirectorySynced = false;
+      console.warn('Login directory sync failed during createUser:', dirError.message || dirError);
     }
-    return jsonOk(res, { user: result.rows[0] }, 'User created');
+    return jsonOk(
+      res,
+      { user: result.rows[0], login_directory_synced: loginDirectorySynced },
+      loginDirectorySynced
+        ? 'User created'
+        : 'User created, but sign-in lookup could not be updated. Ask your administrator to re-run the login directory sync.'
+    );
   } catch (error) {
     if (error?.status) return jsonError(res, error.status, 'VALIDATION_ERROR', error.message);
     if (error?.code === '23505') return jsonError(res, 409, 'USER_EXISTS', 'User already exists');
