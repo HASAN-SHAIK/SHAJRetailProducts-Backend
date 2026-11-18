@@ -20,7 +20,8 @@ describe('V1 Backend container runtime security', () => {
 
   test('drops root privileges before starting Central', () => {
     const userIndex = dockerfile.indexOf('USER node');
-    const cmdIndex = dockerfile.indexOf('CMD ["node", "src/server.js"]');
+    // server.js lives at the repo root (there is no src/server.js).
+    const cmdIndex = dockerfile.indexOf('CMD ["node", "server.js"]');
 
     expect(userIndex).toBeGreaterThan(-1);
     expect(cmdIndex).toBeGreaterThan(userIndex);
