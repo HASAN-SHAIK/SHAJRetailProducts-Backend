@@ -1032,7 +1032,7 @@ const computeOpeningInventory = async (client, branchId = null) => {
 const getOpeningSetupSummary = async (req) => {
   const requestPool = getRequestPool(req);
   const branchId = resolveBranchIdFromRequest(req);
-  const [stateRes, summaryRes] = await Promise.all([
+  const [stateRes, summaryRes, setupRes] = await Promise.all([
     requestPool.query(
       'SELECT COALESCE(is_opening_completed, FALSE) AS is_opening_completed FROM settings ORDER BY id ASC LIMIT 1'
     ),
@@ -1045,6 +1045,9 @@ const getOpeningSetupSummary = async (req) => {
          AND ($1::uuid IS NULL OR branch_id = $1)`,
       [branchId]
     ),
+    requestPool.query(
+      'SELECT cash_amount, bank_amount, total_capital FROM opening_setup WHERE id = 1 LIMIT 1'
+    ).catch(() => ({ rows: [] })),
   ]);
 
   return {
@@ -1052,6 +1055,9 @@ const getOpeningSetupSummary = async (req) => {
     total_products: Number(summaryRes.rows[0]?.total_products || 0),
     total_quantity: Number(summaryRes.rows[0]?.total_quantity || 0),
     inventory_value: Number(summaryRes.rows[0]?.inventory_value || 0),
+    cash_amount: Number(setupRes.rows[0]?.cash_amount || 0),
+    bank_amount: Number(setupRes.rows[0]?.bank_amount || 0),
+    total_capital: Number(setupRes.rows[0]?.total_capital || 0),
   };
 };
 

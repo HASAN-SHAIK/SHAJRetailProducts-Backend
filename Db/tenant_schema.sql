@@ -528,6 +528,8 @@ CREATE TRIGGER orders_customer_snapshot_biu
 BEFORE INSERT OR UPDATE OF customer_id ON orders
 FOR EACH ROW EXECUTE FUNCTION set_order_customer_snapshot();
 
+DROP FUNCTION IF EXISTS apply_order_item_metrics(integer, integer, numeric, numeric, integer, text, text) CASCADE;
+DROP FUNCTION IF EXISTS apply_order_item_metrics(integer, integer, numeric, numeric, integer) CASCADE;
 CREATE OR REPLACE FUNCTION apply_order_item_metrics(
   p_order_id INT,
   p_product_id INT,
@@ -1692,6 +1694,19 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
   CHECK (debit >= 0 AND credit >= 0),
   CHECK ((debit = 0 AND credit > 0) OR (credit = 0 AND debit > 0))
 );
+
+ALTER TABLE IF EXISTS ledger_entries
+  ADD COLUMN IF NOT EXISTS sync_status TEXT NOT NULL DEFAULT 'SYNCED';
+ALTER TABLE IF EXISTS ledger_entries
+  ADD COLUMN IF NOT EXISTS source_event_key TEXT;
+ALTER TABLE IF EXISTS ledger_entries
+  ADD COLUMN IF NOT EXISTS line_no INT NOT NULL DEFAULT 1;
+ALTER TABLE IF EXISTS ledger_entries
+  ADD COLUMN IF NOT EXISTS client_txn_id UUID;
+ALTER TABLE IF EXISTS ledger_entries
+  ADD COLUMN IF NOT EXISTS party_type TEXT;
+ALTER TABLE IF EXISTS ledger_entries
+  ADD COLUMN IF NOT EXISTS party_id INT;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_ledger_entries_event_line
   ON ledger_entries (source_event_key, line_no);

@@ -3,6 +3,7 @@ const path = require('path');
 const masterPool = require('../db/masterPool');
 const adminPool = require('../db/adminPool');
 const { getTenantPool, closeTenantPool } = require('../db/tenantPool');
+const { runPendingMigrationsForTenant } = require('./migrationService');
 
 const quoteIdentifier = (value) => {
   const escaped = String(value).replace(/"/g, '""');
@@ -78,6 +79,7 @@ const provisionTenant = async (payload) => {
     for (const migrationPath of tenantOverlayPaths) {
       await runSqlFile(tenantPool, migrationPath);
     }
+    await runPendingMigrationsForTenant(dbName);
 
     masterClient = await masterPool.connect();
     await masterClient.query('BEGIN');

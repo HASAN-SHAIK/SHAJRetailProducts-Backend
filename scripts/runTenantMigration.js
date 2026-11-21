@@ -4,7 +4,9 @@ const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
 
-const usage = () => 'Usage: node scripts/runTenantMigration.js <sql_file_path> [--tenant=<db_name>]';
+const { runAllTenantMigrations } = require('../src/services/migrationService');
+
+const usage = () => 'Usage: node scripts/runTenantMigration.js [<sql_file_path> | --all] [--tenant=<db_name>]';
 
 const runStatements = async (pool, label, sql, { migrationKey, migrationChecksum }) => {
   const client = await pool.connect();
@@ -148,8 +150,8 @@ const runFleetMigration = async ({
 
 const main = async (argv = process.argv.slice(2), env = process.env) => {
   const sqlFilePath = argv[0];
-  if (!sqlFilePath) {
-    throw new Error(usage());
+  if (!sqlFilePath || sqlFilePath === '--all') {
+    return runAllTenantMigrations();
   }
 
   const tenantArg = argv.find((arg) => arg.startsWith('--tenant='));
@@ -177,15 +179,19 @@ const main = async (argv = process.argv.slice(2), env = process.env) => {
 };
 
 if (require.main === module) {
-  main().catch((error) => {
-    console.error('Migration runner failed:', error.message);
-    if (Array.isArray(error.failures)) {
-      for (const failure of error.failures) {
-        console.error(` - ${failure.tenant}: ${failure.error}`);
+  main()
+    .then(() => {
+      process.exit(0);
+    })
+    .catch((error) => {
+      console.error('Migration runner failed:', error.message);
+      if (Array.isArray(error.failures)) {
+        for (const failure of error.failures) {
+          console.error(` - ${failure.tenant}: ${failure.error}`);
+        }
       }
-    }
-    process.exitCode = 1;
-  });
+      process.exit(1);
+    });
 }
 
 module.exports = {

@@ -24,6 +24,7 @@ const { apiV1AuthRouter, apiV1Router, swaggerRoutes } = require('./api/v1');
 const posSyncRoutes = require('./api/v1/modules/sync/posSync.routes');
 const { getTenantMe, getPlatformBanner } = require('./controllers/tenantController');
 const { bootstrapMasterDatabase } = require('./services/masterBootstrap');
+const { bootstrapMigrationsOnStartup } = require('./services/migrationService');
 const { startPoolWarmup } = require('./services/poolWarmup');
 const { startStockConsistencyJob } = require('./services/stockConsistencyJob');
 const { startOwnerDailyDigestJob } = require('./services/ownerDailyDigestJob');
@@ -190,6 +191,12 @@ const startServer = async () => {
       throw error;
     }
     console.error('Master DB bootstrap skipped:', error.message || error);
+  }
+
+  try {
+    await bootstrapMigrationsOnStartup();
+  } catch (error) {
+    console.error('Tenant migrations bootstrap skipped:', error.message || error);
   }
 
   app.listen(PORT, () => {
